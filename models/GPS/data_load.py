@@ -165,6 +165,8 @@ def prepare_single_city_data(area_id=None, pe_type='rwpe', data_path=DATA_PATH, 
     gd = build_graph(adjacency, node_features_scaled, distances_scaled, device, pe_type=pe_type)
     dt = torch.FloatTensor(distances_scaled).to(device)
 
+    coords_tensor = torch.FloatTensor(coords).to(device) if coords is not None else None
+
     return {
         'city_id': area_id, 'graph_data': gd, 'distance_matrix': dt,
         'od_matrix_np': od_matrix_raw, 'od_matrix_train': od_train,
@@ -176,6 +178,7 @@ def prepare_single_city_data(area_id=None, pe_type='rwpe', data_path=DATA_PATH, 
         'train_mask': train_mask, 'val_mask': val_mask, 'test_mask': test_mask,
         'val_dest_dict': val_dest_dict,
         'node_features_scaled': node_features_scaled, 'distances_scaled': distances_scaled,
+        'coords': coords, 'coords_tensor': coords_tensor,
     }
 
 
@@ -231,6 +234,8 @@ def prepare_city_data(cid, raw, pe_type='rwpe'):
     nzd = build_dest_dict(od)
     hfg, hwt = build_huber_weight_table(od, od > 0)
     cnd = max(8, min(int(np.mean([len(v) for v in nzd.values()])), 128)) if nzd else N_DEST_SAMPLE
+    coords = raw.get('coords')
+    coords_tensor = torch.FloatTensor(coords).to(device) if coords is not None else None
     return {
         'city_id': cid, 'graph_data': g, 'distance_matrix': dt,
         'od_matrix_np': od, 'od_matrix_train': od,
@@ -243,6 +248,7 @@ def prepare_city_data(cid, raw, pe_type='rwpe'):
         'train_mask': od > 0, 'val_mask': od > 0, 'test_mask': od > 0,
         'val_dest_dict': nzd,
         'node_features_scaled': nfs, 'distances_scaled': ds,
+        'coords': coords, 'coords_tensor': coords_tensor,
     }
 
 

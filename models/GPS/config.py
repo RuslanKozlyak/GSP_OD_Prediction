@@ -77,11 +77,21 @@ class TrainingConfig:
     patience:           int   = PATIENCE
     mc_epochs:          int   = MC_EPOCHS
     mc_val_cpc_sample:  int   = 512
+    # Encoder type: 'gps' (GNN) or 'mlp' (simple MLP, TransFlower-style)
+    encoder_type:       str   = 'gps'
+    # Relative Location Encoder (RLE)
+    use_rle:            bool  = False
+    rle_freq:           int   = 16
+    rle_out_dim:        int   = 64
+    rle_lambda_min:     float = 1.0
+    rle_lambda_max:     float = 20000.0
 
     def describe(self):
-        parts = [f"GPS+{self.decoder_type}+{self.loss_type}+{self.prediction_mode}",
+        enc = 'MLP' if self.encoder_type == 'mlp' else 'GPS'
+        parts = [f"{enc}+{self.decoder_type}+{self.loss_type}+{self.prediction_mode}",
                  f"pe={self.pe_type}", f"norm={self.gps_norm_type}"]
         if self.use_log_transform: parts.append("log")
+        if self.use_rle: parts.append("RLE")
         parts.append(f"zeros={self.include_zero_pairs} samp={self.use_dest_sampling}")
         return " | ".join(parts)
 

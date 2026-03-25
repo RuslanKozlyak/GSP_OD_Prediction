@@ -105,17 +105,20 @@ class BilinearDecoder(nn.Module):
 
 
 class TransFlowerDecoder(nn.Module):
-    def __init__(self, hd, nh=4, nl=2, do=0.1):
+    def __init__(self, hd, nh=4, nl=2, do=0.1, extra_dim=0):
         super().__init__()
-        self.fp = Sequential(Linear(hd * 2 + 1, hd), ReLU(), Linear(hd, hd))
+        self.fp = Sequential(Linear(hd * 2 + 1 + extra_dim, hd), ReLU(), Linear(hd, hd))
         tl = nn.TransformerEncoderLayer(
             d_model=hd, nhead=nh, dim_feedforward=hd * 4, dropout=do, batch_first=True
         )
         self.tf = nn.TransformerEncoder(tl, num_layers=nl)
         self.ph = Sequential(Linear(hd, hd // 2), ReLU(), Linear(hd // 2, 1))
 
-    def forward(self, oe, de, d):
-        fe = self.fp(torch.cat([oe, de, d], dim=-1))
+    def forward(self, oe, de, d, extra=None):
+        parts = [oe, de, d]
+        if extra is not None:
+            parts.append(extra)
+        fe = self.fp(torch.cat(parts, dim=-1))
         return self.ph(self.tf(fe.unsqueeze(0)).squeeze(0)).squeeze(-1)
 
 
