@@ -237,14 +237,15 @@ SINGLE_CITY_RUNS = [
     ('B2+spe', 'B2+SPE: GPS+TF+Huber+SPE (raw)', TrainingConfig(decoder_type='transflower', loss_type='huber', prediction_mode='raw', pe_type='spe')),
     ('B2+rrwp', 'B2+RRWP: GPS+TF+Huber+RRWP (raw)', TrainingConfig(decoder_type='transflower', loss_type='huber', prediction_mode='raw', pe_type='rrwp')),
     ('B2+gnorm', 'B2+GraphNorm: GPS+TF+Huber+GraphNorm (raw)', TrainingConfig(decoder_type='transflower', loss_type='huber', prediction_mode='raw', gps_norm_type='graph_norm')),
-    ('B2+granola', 'B2+GRANOLA: GPS+TF+Huber+GRANOLA (raw)', TrainingConfig(decoder_type='transflower', loss_type='huber', prediction_mode='raw', gps_norm_type='granola')),
     ('B2+zinb', 'B2+ZINB: GPS+TF+ZINB (raw)', TrainingConfig(decoder_type='transflower', loss_type='zinb', prediction_mode='raw', include_zero_pairs=True, zero_pair_ratio=0.5)),
     ('B2+log', 'B2+Log: GPS+TF+Huber+Log (raw)', TrainingConfig(decoder_type='transflower', loss_type='huber', prediction_mode='raw', use_log_transform=True)),
     # CE ablations
     ('B7+spe', 'B7+SPE: GPS+TF+CE+SPE (norm)', TrainingConfig(decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=False, pe_type='spe')),
     ('B7+rrwp', 'B7+RRWP: GPS+TF+CE+RRWP (norm)', TrainingConfig(decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=False, pe_type='rrwp')),
     ('B7+gnorm', 'B7+GraphNorm: GPS+TF+CE+GraphNorm (norm)', TrainingConfig(decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=False, gps_norm_type='graph_norm')),
-    ('B7+granola', 'B7+GRANOLA: GPS+TF+CE+GRANOLA (norm)', TrainingConfig(decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=False, gps_norm_type='granola')),
+    # CE new single modifications
+    ('B7+log', 'B7+Log: GPS+TF+CE+Log (norm)', TrainingConfig(decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=False, use_log_transform=True)),
+    ('B7+zinb', 'B7+ZINB: GPS+TF+ZINB (norm)', TrainingConfig(decoder_type='transflower', loss_type='zinb', prediction_mode='normalized', use_dest_sampling=False, include_zero_pairs=True, zero_pair_ratio=0.5)),
     # CE sampling
     ('B7+samp', 'B7+samp128: GPS+TF+CE+samp128', TrainingConfig(decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=True, n_dest_sample=128, include_zero_pairs=False)),
     ('B7+samp256', 'B7+samp256: GPS+TF+CE+samp256', TrainingConfig(decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=True, n_dest_sample=256, include_zero_pairs=False)),
@@ -254,6 +255,12 @@ SINGLE_CITY_RUNS = [
     ('B2+combo1', 'B2+SPE+GraphNorm: GPS+TF+Huber+SPE+GN (raw)', TrainingConfig(decoder_type='transflower', loss_type='huber', prediction_mode='raw', pe_type='spe', gps_norm_type='graph_norm')),
     ('B2+combo2', 'B2+SPE+ZINB: GPS+TF+ZINB+SPE (raw)', TrainingConfig(decoder_type='transflower', loss_type='zinb', prediction_mode='raw', pe_type='spe', include_zero_pairs=True, zero_pair_ratio=0.5)),
     ('B7+combo1', 'B7+SPE+GraphNorm: GPS+TF+CE+SPE+GN (norm)', TrainingConfig(decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=False, pe_type='spe', gps_norm_type='graph_norm')),
+    # Tier 2 combinations
+    ('B2+log+spe', 'B2+Log+SPE: GPS+TF+Huber+Log+SPE (raw)', TrainingConfig(decoder_type='transflower', loss_type='huber', prediction_mode='raw', use_log_transform=True, pe_type='spe')),
+    ('B7+sz30+log', 'B7+sz30+Log: GPS+TF+CE+sz30+Log', TrainingConfig(decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=True, n_dest_sample=128, include_zero_pairs=True, zero_pair_ratio=0.3, use_log_transform=True)),
+    ('B7+sz50+log', 'B7+sz50+Log: GPS+TF+CE+sz50+Log', TrainingConfig(decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=True, n_dest_sample=128, include_zero_pairs=True, zero_pair_ratio=0.5, use_log_transform=True)),
+    # Tier 3 exploratory
+    ('B7+sz30+spe', 'B7+sz30+SPE: GPS+TF+CE+sz30+SPE', TrainingConfig(decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=True, n_dest_sample=128, include_zero_pairs=True, zero_pair_ratio=0.3, pe_type='spe')),
 ]
 
 MULTI_CITY_RUNS = [
@@ -264,18 +271,29 @@ MULTI_CITY_RUNS = [
     ('C1+spe', 'C1+SPE: MC GPS+TF+Huber+SPE', TrainingConfig(decoder_type='transflower', loss_type='huber', prediction_mode='raw', pe_type='spe', mc_epochs=MC_EPOCHS)),
     ('C1+rrwp', 'C1+RRWP: MC GPS+TF+Huber+RRWP', TrainingConfig(decoder_type='transflower', loss_type='huber', prediction_mode='raw', pe_type='rrwp', mc_epochs=MC_EPOCHS)),
     ('C1+gnorm', 'C1+GraphNorm: MC GPS+TF+Huber+GN', TrainingConfig(decoder_type='transflower', loss_type='huber', prediction_mode='raw', gps_norm_type='graph_norm', mc_epochs=MC_EPOCHS)),
-    ('C1+granola', 'C1+GRANOLA: MC GPS+TF+Huber+GRANOLA', TrainingConfig(decoder_type='transflower', loss_type='huber', prediction_mode='raw', gps_norm_type='granola', mc_epochs=MC_EPOCHS)),
     ('C1+zinb', 'C1+ZINB: MC GPS+TF+ZINB', TrainingConfig(decoder_type='transflower', loss_type='zinb', prediction_mode='raw', include_zero_pairs=True, zero_pair_ratio=0.5, mc_epochs=MC_EPOCHS)),
     ('C1+log', 'C1+Log: MC GPS+TF+Huber+Log', TrainingConfig(decoder_type='transflower', loss_type='huber', prediction_mode='raw', use_log_transform=True, mc_epochs=MC_EPOCHS)),
     # CE ablations
     ('C2+spe', 'C2+SPE: MC GPS+TF+CE+SPE', TrainingConfig(decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=True, include_zero_pairs=False, pe_type='spe', mc_epochs=MC_EPOCHS)),
     ('C2+rrwp', 'C2+RRWP: MC GPS+TF+CE+RRWP', TrainingConfig(decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=True, include_zero_pairs=False, pe_type='rrwp', mc_epochs=MC_EPOCHS)),
     ('C2+gnorm', 'C2+GraphNorm: MC GPS+TF+CE+GN', TrainingConfig(decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=True, include_zero_pairs=False, gps_norm_type='graph_norm', mc_epochs=MC_EPOCHS)),
-    ('C2+granola', 'C2+GRANOLA: MC GPS+TF+CE+GRANOLA', TrainingConfig(decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=True, include_zero_pairs=False, gps_norm_type='granola', mc_epochs=MC_EPOCHS)),
+    # CE new single modifications
+    ('C2+log', 'C2+Log: MC GPS+TF+CE+Log', TrainingConfig(decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=True, include_zero_pairs=False, use_log_transform=True, mc_epochs=MC_EPOCHS)),
+    # Zeros-sampling (Huber)
+    ('C1+sz30', 'C1+sz30: MC GPS+TF+Huber+sz30', TrainingConfig(decoder_type='transflower', loss_type='huber', prediction_mode='raw', use_dest_sampling=True, n_dest_sample=128, include_zero_pairs=True, zero_pair_ratio=0.3, mc_epochs=MC_EPOCHS)),
+    ('C1+sz50', 'C1+sz50: MC GPS+TF+Huber+sz50', TrainingConfig(decoder_type='transflower', loss_type='huber', prediction_mode='raw', use_dest_sampling=True, n_dest_sample=128, include_zero_pairs=True, zero_pair_ratio=0.5, mc_epochs=MC_EPOCHS)),
+    # Zeros-sampling (CE)
+    ('C2+sz30', 'C2+sz30: MC GPS+TF+CE+sz30', TrainingConfig(decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=True, n_dest_sample=128, include_zero_pairs=True, zero_pair_ratio=0.3, mc_epochs=MC_EPOCHS)),
+    ('C2+sz50', 'C2+sz50: MC GPS+TF+CE+sz50', TrainingConfig(decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=True, n_dest_sample=128, include_zero_pairs=True, zero_pair_ratio=0.5, mc_epochs=MC_EPOCHS)),
     # Combinations
     ('C1+combo1', 'C1+SPE+GN: MC GPS+TF+Huber+SPE+GN', TrainingConfig(decoder_type='transflower', loss_type='huber', prediction_mode='raw', pe_type='spe', gps_norm_type='graph_norm', mc_epochs=MC_EPOCHS)),
     ('C1+combo2', 'C1+SPE+ZINB: MC GPS+TF+ZINB+SPE', TrainingConfig(decoder_type='transflower', loss_type='zinb', prediction_mode='raw', pe_type='spe', include_zero_pairs=True, zero_pair_ratio=0.5, mc_epochs=MC_EPOCHS)),
     ('C2+combo1', 'C2+SPE+GN: MC GPS+TF+CE+SPE+GN', TrainingConfig(decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=True, include_zero_pairs=False, pe_type='spe', gps_norm_type='graph_norm', mc_epochs=MC_EPOCHS)),
+    # Tier 2 combinations
+    ('C1+log+gnorm', 'C1+Log+GN: MC GPS+TF+Huber+Log+GN', TrainingConfig(decoder_type='transflower', loss_type='huber', prediction_mode='raw', use_log_transform=True, gps_norm_type='graph_norm', mc_epochs=MC_EPOCHS)),
+    ('C2+spe+zinb', 'C2+SPE+ZINB: MC GPS+TF+ZINB+SPE', TrainingConfig(decoder_type='transflower', loss_type='zinb', prediction_mode='normalized', use_dest_sampling=True, include_zero_pairs=True, zero_pair_ratio=0.5, pe_type='spe', mc_epochs=MC_EPOCHS)),
+    # Tier 3 exploratory
+    ('C1+log+spe+gnorm', 'C1+Log+SPE+GN: MC GPS+TF+Huber+Log+SPE+GN', TrainingConfig(decoder_type='transflower', loss_type='huber', prediction_mode='raw', use_log_transform=True, pe_type='spe', gps_norm_type='graph_norm', mc_epochs=MC_EPOCHS)),
 ]
 
 
