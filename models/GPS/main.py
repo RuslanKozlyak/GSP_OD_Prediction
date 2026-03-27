@@ -266,6 +266,11 @@ SINGLE_CITY_RUNS = [
     ('TF1+rle', 'TF1+RLE: TransFlower+CE+RLE (norm)', TrainingConfig(encoder_type='mlp', decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=False, use_rle=True)),
     # GPS + RLE
     ('B7+rle', 'B7+RLE: GPS+TF+CE+RLE (norm)', TrainingConfig(decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=False, use_rle=True)),
+    # LaPE
+    ('B7+lape', 'B7+LaPE: GPS+TF+CE+LaPE (norm)', TrainingConfig(decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=False, pe_type='lape')),
+    # Focal loss
+    ('B7+focal', 'B7+Focal: GPS+TF+Focal (norm)', TrainingConfig(decoder_type='transflower', loss_type='focal', prediction_mode='normalized', use_dest_sampling=False)),
+    ('TF1+focal', 'TF1+Focal: TransFlower+Focal (norm)', TrainingConfig(encoder_type='mlp', decoder_type='transflower', loss_type='focal', prediction_mode='normalized', use_dest_sampling=False)),
 ]
 
 MULTI_CITY_RUNS = [
@@ -304,6 +309,10 @@ MULTI_CITY_RUNS = [
     ('TC1+rle', 'TC1+RLE: MC TransFlower+CE+RLE (norm)', TrainingConfig(encoder_type='mlp', decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=False, use_rle=True, mc_epochs=MC_EPOCHS)),
     # GPS + RLE
     ('C2+rle', 'C2+RLE: MC GPS+TF+CE+RLE (norm)', TrainingConfig(decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=True, include_zero_pairs=False, use_rle=True, mc_epochs=MC_EPOCHS)),
+    # LaPE
+    ('C2+lape', 'C2+LaPE: MC GPS+TF+CE+LaPE (norm)', TrainingConfig(decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=True, include_zero_pairs=False, pe_type='lape', mc_epochs=MC_EPOCHS)),
+    # Focal loss
+    ('C2+focal', 'C2+Focal: MC GPS+TF+Focal (norm)', TrainingConfig(decoder_type='transflower', loss_type='focal', prediction_mode='normalized', use_dest_sampling=False, mc_epochs=MC_EPOCHS)),
 ]
 
 

@@ -60,6 +60,25 @@ def load_area(area_id, data_path=DATA_PATH):
         return None
 
 
+def _compute_lape_pe(ds, out_dim):
+    """Dual LaPE (WeDAN-style): distance-Laplacian + similarity-Laplacian eigenvectors.
+    Returns (N, out_dim) array, with k = out_dim // 2 eigenvectors per Laplacian type.
+    """
+    k = out_dim // 2
+
+    def _eig(A):
+        D = np.diag(A.sum(1))
+        _, V = np.linalg.eigh((D - A).astype(float))
+        # eigh returns eigenvalues sorted ascending; columns of V are eigenvectors
+        pe = V[:, :k].real
+        if pe.shape[1] < k:
+            pe = np.pad(pe, ((0, 0), (0, k - pe.shape[1])))
+        return pe.astype(np.float32)
+
+    sim_A = np.exp(-(ds ** 2) / (2.0 * 10000.0 ** 2))
+    return np.concatenate([_eig(ds), _eig(sim_A)], axis=1)  # (N, 2k)
+
+
 def build_graph(adjacency, nfs, ds, dev=None, pe_type='rwpe'):
     if dev is None:
         dev = device
@@ -88,6 +107,8 @@ def build_graph(adjacency, nfs, ds, dev=None, pe_type='rwpe'):
             if k < PE_WALK_LEN - 1:
                 rk = rk @ rw
         gd.rrwp_edge = torch.cat(feats, dim=-1)
+    elif pe_type == 'lape':
+        gd.pe = torch.FloatTensor(_compute_lape_pe(ds, PE_WALK_LEN)).to(dev)
     else:
         raise ValueError(f"Unknown pe_type: {pe_type}")
     return gd.to(dev)

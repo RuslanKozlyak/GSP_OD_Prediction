@@ -85,6 +85,8 @@ class TrainingConfig:
     rle_out_dim:        int   = 64
     rle_lambda_min:     float = 1.0
     rle_lambda_max:     float = 20000.0
+    # Focal loss
+    focal_gamma:        float = 2.0
 
     def describe(self):
         enc = 'MLP' if self.encoder_type == 'mlp' else 'GPS'
@@ -92,6 +94,7 @@ class TrainingConfig:
                  f"pe={self.pe_type}", f"norm={self.gps_norm_type}"]
         if self.use_log_transform: parts.append("log")
         if self.use_rle: parts.append("RLE")
+        if self.loss_type == 'focal': parts.append(f"γ={self.focal_gamma}")
         parts.append(f"zeros={self.include_zero_pairs} samp={self.use_dest_sampling}")
         return " | ".join(parts)
 
