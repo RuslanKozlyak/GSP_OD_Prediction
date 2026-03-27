@@ -2,7 +2,7 @@ import os
 import csv
 import warnings
 from dataclasses import dataclass, field, replace, asdict
-from typing import Optional
+from typing import Optional, Literal
 from datetime import datetime
 from pathlib import Path
 
@@ -62,31 +62,51 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 @dataclass
 class TrainingConfig:
-    decoder_type:       str   = 'transflower'
-    loss_type:          str   = 'huber'
-    prediction_mode:    str   = 'raw'
-    pe_type:            str   = 'rwpe'
-    gps_norm_type:      str   = 'batch_norm'
+    # fmt: off
+    # ── Architecture ──────────────────────────────────────────────────────────
+    encoder_type:       Literal['gps', 'mlp']                               = 'gps'
+    decoder_type:       Literal['bilinear', 'transflower']                  = 'transflower'
+    pe_type:            Literal['rwpe', 'spe', 'rrwp', 'lape']              = 'rwpe'
+    gps_norm_type:      Literal['batch_norm', 'graph_norm', 'granola']      = 'batch_norm'
+    # ── Loss ──────────────────────────────────────────────────────────────────
+    loss_type:          Literal['huber', 'ce', 'multitask', 'zinb', 'focal'] = 'huber'
+    prediction_mode:    Literal['raw', 'normalized']                        = 'raw'
     use_log_transform:  bool  = False
+    focal_gamma:        float = 2.0   # used only when loss_type='focal'
+    # ── Destination sampling ──────────────────────────────────────────────────
     use_dest_sampling:  bool  = True
     n_dest_sample:      int   = N_DEST_SAMPLE
     include_zero_pairs: bool  = True
     zero_pair_ratio:    float = 0.3
+    # ── Training schedule ─────────────────────────────────────────────────────
     epochs:             int   = EPOCHS
     learning_rate:      float = LEARNING_RATE
     patience:           int   = PATIENCE
     mc_epochs:          int   = MC_EPOCHS
-    mc_val_cpc_sample:  int   = 512
-    # Encoder type: 'gps' (GNN) or 'mlp' (simple MLP, TransFlower-style)
-    encoder_type:       str   = 'gps'
-    # Relative Location Encoder (RLE)
+    # ── RLE (Relative Location Encoder) ───────────────────────────────────────
     use_rle:            bool  = False
     rle_freq:           int   = 16
     rle_out_dim:        int   = 64
     rle_lambda_min:     float = 1.0
     rle_lambda_max:     float = 20000.0
-    # Focal loss
-    focal_gamma:        float = 2.0
+    # fmt: on
+
+    def __post_init__(self):
+        _valid = {
+            'encoder_type':    ('gps', 'mlp'),
+            'decoder_type':    ('bilinear', 'transflower'),
+            'pe_type':         ('rwpe', 'spe', 'rrwp', 'lape'),
+            'gps_norm_type':   ('batch_norm', 'graph_norm', 'granola'),
+            'loss_type':       ('huber', 'ce', 'multitask', 'zinb', 'focal'),
+            'prediction_mode': ('raw', 'normalized'),
+        }
+        for attr, choices in _valid.items():
+            val = getattr(self, attr)
+            if val not in choices:
+                raise ValueError(
+                    f"TrainingConfig.{attr}={val!r} is invalid. "
+                    f"Valid options: {choices}"
+                )
 
     def describe(self):
         enc = 'MLP' if self.encoder_type == 'mlp' else 'GPS'
@@ -128,8 +148,24 @@ def save_metrics_to_csv(run_id, run_name, config, metrics_full, metrics_nz,
     print(f"  -> Metrics saved to {METRICS_CSV}")
 
 
-def save_model_weights(run_id, model):
+def save_model_weights(run_id, model, config=None):
     ensure_dirs()
     path = WEIGHTS_DIR / f"{run_id}.pt"
     torch.save(model.state_dict(), path)
     print(f"  -> Weights saved to {path}")
+    if config is not None:
+        import json
+        cfg_path = WEIGHTS_DIR / f"{run_id}.json"
+        with open(cfg_path, 'w') as f:
+            json.dump(asdict(config), f, indent=2)
+        print(f"  -> Config  saved to {cfg_path}")
+
+
+def load_model_config(run_id):
+    """Load TrainingConfig saved alongside model weights. Returns None if not found."""
+    import json
+    cfg_path = WEIGHTS_DIR / f"{run_id}.json"
+    if not cfg_path.exists():
+        return None
+    with open(cfg_path) as f:
+        return TrainingConfig(**json.load(f))

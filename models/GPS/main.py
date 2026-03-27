@@ -182,7 +182,7 @@ def _train_loop(run_id, run_name, config, model, city_datas,
 
     # Save
     save_metrics_to_csv(run_id, run_name, config, mf, mnz, mt, n_params, epoch, status)
-    save_model_weights(run_id, model)
+    save_model_weights(run_id, model, config)
 
     return {
         'name': run_name, 'model': model, 'config': config, 'history': history,
