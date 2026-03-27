@@ -53,7 +53,7 @@ def compute_loss_for_city(model, cd, config, origin_batch_indices=None):
         else:
             tv = tr
         tt = torch.FloatTensor(tv).to(device)
-        sc = model.decode_row(ne, oi, dt, cd['distance_matrix'])
+        sc = model.decode_row(ne, oi, dt, cd['distance_matrix'], coords=cd.get('coords_tensor'))
 
         if lt == 'huber':
             pr = F.softmax(sc, dim=0) if pm == 'normalized' else F.relu(sc)

@@ -261,6 +261,11 @@ SINGLE_CITY_RUNS = [
     ('B7+sz50+log', 'B7+sz50+Log: GPS+TF+CE+sz50+Log', TrainingConfig(decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=True, n_dest_sample=128, include_zero_pairs=True, zero_pair_ratio=0.5, use_log_transform=True)),
     # Tier 3 exploratory
     ('B7+sz30+spe', 'B7+sz30+SPE: GPS+TF+CE+sz30+SPE', TrainingConfig(decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=True, n_dest_sample=128, include_zero_pairs=True, zero_pair_ratio=0.3, pe_type='spe')),
+    # TransFlower (MLP encoder, no graph)
+    ('TF1', 'TF1: TransFlower+CE (norm)', TrainingConfig(encoder_type='mlp', decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=False)),
+    ('TF1+rle', 'TF1+RLE: TransFlower+CE+RLE (norm)', TrainingConfig(encoder_type='mlp', decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=False, use_rle=True)),
+    # GPS + RLE
+    ('B7+rle', 'B7+RLE: GPS+TF+CE+RLE (norm)', TrainingConfig(decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=False, use_rle=True)),
 ]
 
 MULTI_CITY_RUNS = [
@@ -294,6 +299,11 @@ MULTI_CITY_RUNS = [
     ('C2+spe+zinb', 'C2+SPE+ZINB: MC GPS+TF+ZINB+SPE', TrainingConfig(decoder_type='transflower', loss_type='zinb', prediction_mode='normalized', use_dest_sampling=True, include_zero_pairs=True, zero_pair_ratio=0.5, pe_type='spe', mc_epochs=MC_EPOCHS)),
     # Tier 3 exploratory
     ('C1+log+spe+gnorm', 'C1+Log+SPE+GN: MC GPS+TF+Huber+Log+SPE+GN', TrainingConfig(decoder_type='transflower', loss_type='huber', prediction_mode='raw', use_log_transform=True, pe_type='spe', gps_norm_type='graph_norm', mc_epochs=MC_EPOCHS)),
+    # TransFlower (MLP encoder, no graph)
+    ('TC1', 'TC1: MC TransFlower+CE (norm)', TrainingConfig(encoder_type='mlp', decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=False, mc_epochs=MC_EPOCHS)),
+    ('TC1+rle', 'TC1+RLE: MC TransFlower+CE+RLE (norm)', TrainingConfig(encoder_type='mlp', decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=False, use_rle=True, mc_epochs=MC_EPOCHS)),
+    # GPS + RLE
+    ('C2+rle', 'C2+RLE: MC GPS+TF+CE+RLE (norm)', TrainingConfig(decoder_type='transflower', loss_type='ce', prediction_mode='normalized', use_dest_sampling=True, include_zero_pairs=False, use_rle=True, mc_epochs=MC_EPOCHS)),
 ]
 
 
