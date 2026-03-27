@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from .config import HUBER_DELTA, LAMBDA_MAIN, LAMBDA_SUB, NORMALIZE_MULTITASK, device
+from .config import device
 from .data_load import interpolate_huber_weights
 
 
@@ -61,7 +61,8 @@ def compute_loss_for_city(model, cd, config, origin_batch_indices=None):
                 interpolate_huber_weights(rf, cd['huber_flow_grid'], cd['huber_weight_table'])
             ).to(device)
             df = torch.abs(pr - tt)
-            h = torch.where(df <= HUBER_DELTA, 0.5 * df ** 2, HUBER_DELTA * df - 0.5 * HUBER_DELTA ** 2)
+            hd = config.huber_delta
+            h = torch.where(df <= hd, 0.5 * df ** 2, hd * df - 0.5 * hd ** 2)
             rl = (w * h).mean()
         elif lt == 'ce':
             p = F.softmax(sc, dim=0)
@@ -107,7 +108,7 @@ def compute_loss_for_city(model, cd, config, origin_batch_indices=None):
             ti_ = torch.FloatTensor(inf_).to(device)
         ol = F.mse_loss(po, to_)
         il = F.mse_loss(pi_, ti_)
-        if NORMALIZE_MULTITASK:
+        if config.normalize_multitask:
             nzf = od[od > 0].astype(float)
             tva = nzf / (od.sum() + 1e-8) if pm == 'normalized' else nzf
             dm = (torch.FloatTensor(tva).to(device) ** 2).mean() + 1e-8
@@ -116,5 +117,5 @@ def compute_loss_for_city(model, cd, config, origin_batch_indices=None):
             ml = ml / dm
             ol = ol / do_
             il = il / di_
-        return LAMBDA_MAIN * ml + (LAMBDA_SUB / 2) * (ol + il)
+        return config.lambda_main * ml + (config.lambda_sub / 2) * (ol + il)
     return ml

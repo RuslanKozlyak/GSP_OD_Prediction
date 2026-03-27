@@ -34,7 +34,7 @@ TF_DROPOUT = 0.1
 
 # ─── Training ─────────────────────────────────────────────────────────────────
 EPOCHS = 50
-LEARNING_RATE = 1e-3
+LEARNING_RATE = 3e-4
 PATIENCE = 30
 ORIGIN_BATCH_SIZE = 32
 DEST_BATCH_SIZE = 256
@@ -42,12 +42,8 @@ N_DEST_SAMPLE = 128
 MC_EPOCHS = 30
 
 # ─── Loss ─────────────────────────────────────────────────────────────────────
-HUBER_DELTA = 1.0
 HUBER_KDE_BW = 2.0
 HUBER_MIN_PROB = 1e-4
-LAMBDA_MAIN = 0.5
-LAMBDA_SUB = 0.5
-NORMALIZE_MULTITASK = True
 
 # ─── Features ─────────────────────────────────────────────────────────────────
 USE_LU_FEATURES = False
@@ -67,12 +63,16 @@ class TrainingConfig:
     encoder_type:       Literal['gps', 'mlp']                               = 'gps'
     decoder_type:       Literal['bilinear', 'transflower']                  = 'transflower'
     pe_type:            Literal['rwpe', 'spe', 'rrwp', 'lape']              = 'rwpe'
-    gps_norm_type:      Literal['batch_norm', 'graph_norm', 'granola']      = 'batch_norm'
+    gps_norm_type:      Literal['batch_norm', 'graph_norm']                 = 'batch_norm'
     # ── Loss ──────────────────────────────────────────────────────────────────
     loss_type:          Literal['huber', 'ce', 'multitask', 'zinb', 'focal'] = 'huber'
     prediction_mode:    Literal['raw', 'normalized']                        = 'raw'
     use_log_transform:  bool  = False
     focal_gamma:        float = 2.0   # used only when loss_type='focal'
+    huber_delta:        float = 1.0
+    lambda_main:        float = 0.5
+    lambda_sub:         float = 0.5
+    normalize_multitask: bool = True
     # ── Destination sampling ──────────────────────────────────────────────────
     use_dest_sampling:  bool  = True
     n_dest_sample:      int   = N_DEST_SAMPLE
@@ -96,7 +96,7 @@ class TrainingConfig:
             'encoder_type':    ('gps', 'mlp'),
             'decoder_type':    ('bilinear', 'transflower'),
             'pe_type':         ('rwpe', 'spe', 'rrwp', 'lape'),
-            'gps_norm_type':   ('batch_norm', 'graph_norm', 'granola'),
+            'gps_norm_type':   ('batch_norm', 'graph_norm'),
             'loss_type':       ('huber', 'ce', 'multitask', 'zinb', 'focal'),
             'prediction_mode': ('raw', 'normalized'),
         }
@@ -131,10 +131,15 @@ def save_metrics_to_csv(run_id, run_name, config, metrics_full, metrics_nz,
     row = {
         'timestamp': datetime.now().isoformat(),
         'run_id': run_id, 'name': run_name, 'status': status,
+        'encoder_type': config.encoder_type,
         'decoder': config.decoder_type, 'loss_type': config.loss_type,
         'prediction_mode': config.prediction_mode,
         'pe_type': config.pe_type, 'gps_norm_type': config.gps_norm_type,
         'use_log_transform': config.use_log_transform,
+        'use_dest_sampling': config.use_dest_sampling,
+        'include_zero_pairs': config.include_zero_pairs,
+        'zero_pair_ratio': config.zero_pair_ratio,
+        'use_rle': config.use_rle,
         'n_params': n_params, 'epochs_trained': epochs_trained,
         'CPC_full': metrics_full['CPC'], 'CPC_nz': metrics_nz['CPC'],
         'CPC_test': metrics_test['CPC'],
