@@ -34,18 +34,6 @@ class GraphNormLayer(nn.Module):
         return self.gamma * xs / (v[batch].sqrt() + 1e-5) + self.beta
 
 
-class GRANOLANorm(nn.Module):
-    def __init__(self, hd):
-        super().__init__()
-        self.bn = nn.LayerNorm(hd)
-        self.pg = Sequential(Linear(hd, hd), ReLU(), Linear(hd, hd * 2))
-
-    def forward(self, x, batch=None):
-        xn = self.bn(x)
-        p = self.pg(x.detach())
-        g, b = p.chunk(2, dim=-1)
-        return (1.0 + g) * xn + b
-
 
 class GPSEncoder(nn.Module):
     def __init__(self, idim, hd, ped, ed, nl, nh=4, do=0.1, pe_type='rwpe', norm_type='batch_norm'):
@@ -72,8 +60,8 @@ class GPSEncoder(nn.Module):
                 GPSConv(hd, GINEConv(gmlp), heads=nh, attn_type='multihead',
                         norm=gn, attn_kwargs={'dropout': do})
             )
-        if norm_type in ('graph_norm', 'granola'):
-            NC = GraphNormLayer if norm_type == 'graph_norm' else GRANOLANorm
+        if norm_type == 'graph_norm':
+            NC = GraphNormLayer
             self.extra_norms = ModuleList([NC(hd) for _ in range(nl)])
         else:
             self.extra_norms = None
@@ -100,7 +88,7 @@ class BilinearDecoder(nn.Module):
         super().__init__()
         self.W = nn.Parameter(torch.randn(hd, hd) * 0.01)
 
-    def forward(self, oe, de, d=None):
+    def forward(self, oe, de, d=None, extra=None):
         return (oe * (de @ self.W.T)).sum(-1)
 
 

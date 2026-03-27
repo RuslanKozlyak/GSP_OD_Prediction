@@ -2,7 +2,7 @@ import os
 import csv
 import warnings
 from dataclasses import dataclass, field, replace, asdict
-from typing import Optional
+from typing import Optional, Literal
 from datetime import datetime
 from pathlib import Path
 
@@ -34,7 +34,7 @@ TF_DROPOUT = 0.1
 
 # ─── Training ─────────────────────────────────────────────────────────────────
 EPOCHS = 50
-LEARNING_RATE = 1e-3
+LEARNING_RATE = 3e-4
 PATIENCE = 30
 ORIGIN_BATCH_SIZE = 32
 DEST_BATCH_SIZE = 256
@@ -42,12 +42,8 @@ N_DEST_SAMPLE = 128
 MC_EPOCHS = 30
 
 # ─── Loss ─────────────────────────────────────────────────────────────────────
-HUBER_DELTA = 1.0
 HUBER_KDE_BW = 2.0
 HUBER_MIN_PROB = 1e-4
-LAMBDA_MAIN = 0.5
-LAMBDA_SUB = 0.5
-NORMALIZE_MULTITASK = True
 
 # ─── Features ─────────────────────────────────────────────────────────────────
 USE_LU_FEATURES = False
@@ -62,31 +58,55 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 @dataclass
 class TrainingConfig:
-    decoder_type:       str   = 'transflower'
-    loss_type:          str   = 'huber'
-    prediction_mode:    str   = 'raw'
-    pe_type:            str   = 'rwpe'
-    gps_norm_type:      str   = 'batch_norm'
+    # fmt: off
+    # ── Architecture ──────────────────────────────────────────────────────────
+    encoder_type:       Literal['gps', 'mlp']                               = 'gps'
+    decoder_type:       Literal['bilinear', 'transflower']                  = 'transflower'
+    pe_type:            Literal['rwpe', 'spe', 'rrwp', 'lape']              = 'rwpe'
+    gps_norm_type:      Literal['batch_norm', 'graph_norm']                 = 'batch_norm'
+    # ── Loss ──────────────────────────────────────────────────────────────────
+    loss_type:          Literal['huber', 'ce', 'multitask', 'zinb', 'focal'] = 'huber'
+    prediction_mode:    Literal['raw', 'normalized']                        = 'raw'
     use_log_transform:  bool  = False
+    focal_gamma:        float = 2.0   # used only when loss_type='focal'
+    huber_delta:        float = 1.0
+    lambda_main:        float = 0.5
+    lambda_sub:         float = 0.5
+    normalize_multitask: bool = True
+    # ── Destination sampling ──────────────────────────────────────────────────
     use_dest_sampling:  bool  = True
     n_dest_sample:      int   = N_DEST_SAMPLE
     include_zero_pairs: bool  = True
     zero_pair_ratio:    float = 0.3
+    # ── Training schedule ─────────────────────────────────────────────────────
     epochs:             int   = EPOCHS
     learning_rate:      float = LEARNING_RATE
     patience:           int   = PATIENCE
     mc_epochs:          int   = MC_EPOCHS
-    mc_val_cpc_sample:  int   = 512
-    # Encoder type: 'gps' (GNN) or 'mlp' (simple MLP, TransFlower-style)
-    encoder_type:       str   = 'gps'
-    # Relative Location Encoder (RLE)
+    # ── RLE (Relative Location Encoder) ───────────────────────────────────────
     use_rle:            bool  = False
     rle_freq:           int   = 16
     rle_out_dim:        int   = 64
     rle_lambda_min:     float = 1.0
     rle_lambda_max:     float = 20000.0
-    # Focal loss
-    focal_gamma:        float = 2.0
+    # fmt: on
+
+    def __post_init__(self):
+        _valid = {
+            'encoder_type':    ('gps', 'mlp'),
+            'decoder_type':    ('bilinear', 'transflower'),
+            'pe_type':         ('rwpe', 'spe', 'rrwp', 'lape'),
+            'gps_norm_type':   ('batch_norm', 'graph_norm'),
+            'loss_type':       ('huber', 'ce', 'multitask', 'zinb', 'focal'),
+            'prediction_mode': ('raw', 'normalized'),
+        }
+        for attr, choices in _valid.items():
+            val = getattr(self, attr)
+            if val not in choices:
+                raise ValueError(
+                    f"TrainingConfig.{attr}={val!r} is invalid. "
+                    f"Valid options: {choices}"
+                )
 
     def describe(self):
         enc = 'MLP' if self.encoder_type == 'mlp' else 'GPS'
@@ -111,10 +131,15 @@ def save_metrics_to_csv(run_id, run_name, config, metrics_full, metrics_nz,
     row = {
         'timestamp': datetime.now().isoformat(),
         'run_id': run_id, 'name': run_name, 'status': status,
+        'encoder_type': config.encoder_type,
         'decoder': config.decoder_type, 'loss_type': config.loss_type,
         'prediction_mode': config.prediction_mode,
         'pe_type': config.pe_type, 'gps_norm_type': config.gps_norm_type,
         'use_log_transform': config.use_log_transform,
+        'use_dest_sampling': config.use_dest_sampling,
+        'include_zero_pairs': config.include_zero_pairs,
+        'zero_pair_ratio': config.zero_pair_ratio,
+        'use_rle': config.use_rle,
         'n_params': n_params, 'epochs_trained': epochs_trained,
         'CPC_full': metrics_full['CPC'], 'CPC_nz': metrics_nz['CPC'],
         'CPC_test': metrics_test['CPC'],
@@ -128,8 +153,24 @@ def save_metrics_to_csv(run_id, run_name, config, metrics_full, metrics_nz,
     print(f"  -> Metrics saved to {METRICS_CSV}")
 
 
-def save_model_weights(run_id, model):
+def save_model_weights(run_id, model, config=None):
     ensure_dirs()
     path = WEIGHTS_DIR / f"{run_id}.pt"
     torch.save(model.state_dict(), path)
     print(f"  -> Weights saved to {path}")
+    if config is not None:
+        import json
+        cfg_path = WEIGHTS_DIR / f"{run_id}.json"
+        with open(cfg_path, 'w') as f:
+            json.dump(asdict(config), f, indent=2)
+        print(f"  -> Config  saved to {cfg_path}")
+
+
+def load_model_config(run_id):
+    """Load TrainingConfig saved alongside model weights. Returns None if not found."""
+    import json
+    cfg_path = WEIGHTS_DIR / f"{run_id}.json"
+    if not cfg_path.exists():
+        return None
+    with open(cfg_path) as f:
+        return TrainingConfig(**json.load(f))
