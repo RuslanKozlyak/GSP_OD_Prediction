@@ -37,7 +37,7 @@ def predict_full_matrix(model, cd, config, dbs=DEST_BATCH_SIZE):
             for bs in range(0, nn_, dbs):
                 be = min(bs + dbs, nn_)
                 di = torch.LongTensor(np.arange(bs, be)).to(device)
-                row[bs:be] = model.decode_row(ne, oi, di, cd['distance_matrix']).cpu().numpy()
+                row[bs:be] = model.decode_row(ne, oi, di, cd['distance_matrix'], coords=cd.get('coords_tensor')).cpu().numpy()
             if config.loss_type == 'zinb':
                 row = np.log1p(np.exp(row))
             elif pm == 'normalized':

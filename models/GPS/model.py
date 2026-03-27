@@ -122,17 +122,28 @@ class TransFlowerDecoder(nn.Module):
         return self.ph(self.tf(fe.unsqueeze(0)).squeeze(0)).squeeze(-1)
 
 
+class MLPEncoder(nn.Module):
+    def __init__(self, idim, hd):
+        super().__init__()
+        self.net = Sequential(Linear(idim, hd), ReLU(), Linear(hd, hd))
+
+    def forward(self, x):
+        return self.net(x)
+
+
 class GPSODModel(nn.Module):
     def __init__(self, idim, hd, ped, ed, gl, gh, gdo,
-                 dt='bilinear', th=4, tl=2, tdo=0.1, pe_type='rwpe', nt='batch_norm'):
+                 dt='bilinear', th=4, tl=2, tdo=0.1, pe_type='rwpe', nt='batch_norm', rle=None):
         super().__init__()
         self.encoder = GPSEncoder(idim, hd, ped, ed, gl, gh, gdo, pe_type=pe_type, norm_type=nt)
         self.decoder_type = dt
         self.hidden_dim = hd
+        self.rle = rle
+        rle_dim = rle.out_dim if rle else 0
         if dt == 'bilinear':
             self.decoder = BilinearDecoder(hd)
         elif dt == 'transflower':
-            self.decoder = TransFlowerDecoder(hd, th, tl, tdo)
+            self.decoder = TransFlowerDecoder(hd, th, tl, tdo, extra_dim=rle_dim)
         else:
             raise ValueError(dt)
         self.outflow_head = Linear(hd, 1)
@@ -141,9 +152,45 @@ class GPSODModel(nn.Module):
     def encode(self, gd):
         return self.encoder(gd)
 
-    def decode_row(self, ne, oi, di, dm):
+    def decode_row(self, ne, oi, di, dm, coords=None):
         D = di.size(0)
-        return self.decoder(ne[oi].unsqueeze(0).expand(D, -1), ne[di], dm[oi, di].unsqueeze(-1))
+        oe = ne[oi].unsqueeze(0).expand(D, -1)
+        de = ne[di]
+        dist = dm[oi, di].unsqueeze(-1)
+        extra = None
+        if self.rle is not None and coords is not None:
+            rel = coords[oi].unsqueeze(0).expand(D, -1) - coords[di]
+            extra = self.rle(rel)
+        return self.decoder(oe, de, dist, extra)
+
+    def predict_node_flows(self, ne):
+        return self.outflow_head(ne).squeeze(-1), self.inflow_head(ne).squeeze(-1)
+
+
+class TransFlowerODModel(nn.Module):
+    """TransFlower: MLP encoder (no graph) + TransFlowerDecoder + optional RLE."""
+    def __init__(self, idim, hd, nh=4, nl=2, do=0.1, rle=None):
+        super().__init__()
+        self.encoder = MLPEncoder(idim, hd)
+        self.rle = rle
+        rle_dim = rle.out_dim if rle else 0
+        self.decoder = TransFlowerDecoder(hd, nh, nl, do, extra_dim=rle_dim)
+        self.outflow_head = Linear(hd, 1)
+        self.inflow_head = Linear(hd, 1)
+
+    def encode(self, gd):
+        return self.encoder(gd.x)
+
+    def decode_row(self, ne, oi, di, dm, coords=None):
+        D = di.size(0)
+        oe = ne[oi].unsqueeze(0).expand(D, -1)
+        de = ne[di]
+        dist = dm[oi, di].unsqueeze(-1)
+        extra = None
+        if self.rle is not None and coords is not None:
+            rel = coords[oi].unsqueeze(0).expand(D, -1) - coords[di]
+            extra = self.rle(rel)
+        return self.decoder(oe, de, dist, extra)
 
     def predict_node_flows(self, ne):
         return self.outflow_head(ne).squeeze(-1), self.inflow_head(ne).squeeze(-1)
@@ -154,8 +201,24 @@ def make_model(config, input_dim=None, edge_dim=None, graph_data_ref=None):
         input_dim = graph_data_ref.x.size(-1)
     if edge_dim is None and graph_data_ref is not None:
         edge_dim = graph_data_ref.edge_attr.size(-1)
-    assert input_dim and edge_dim
-    return GPSODModel(
-        input_dim, HIDDEN_DIM, PE_DIM, edge_dim, GPS_LAYERS, GPS_HEADS, GPS_DROPOUT,
-        config.decoder_type, TF_HEADS, TF_LAYERS, TF_DROPOUT, config.pe_type, config.gps_norm_type
-    ).to(device)
+
+    rle = None
+    if config.use_rle:
+        from .rle import RelativeLocationEncoder
+        rle = RelativeLocationEncoder(
+            freq=config.rle_freq, out_dim=config.rle_out_dim,
+            lambda_min=config.rle_lambda_min, lambda_max=config.rle_lambda_max,
+        )
+
+    if config.encoder_type == 'mlp':
+        assert input_dim is not None
+        return TransFlowerODModel(
+            input_dim, HIDDEN_DIM, TF_HEADS, TF_LAYERS, TF_DROPOUT, rle=rle
+        ).to(device)
+    else:  # 'gps'
+        assert input_dim and edge_dim
+        return GPSODModel(
+            input_dim, HIDDEN_DIM, PE_DIM, edge_dim, GPS_LAYERS, GPS_HEADS, GPS_DROPOUT,
+            config.decoder_type, TF_HEADS, TF_LAYERS, TF_DROPOUT,
+            config.pe_type, config.gps_norm_type, rle=rle,
+        ).to(device)
