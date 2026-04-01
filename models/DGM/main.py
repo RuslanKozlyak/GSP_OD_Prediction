@@ -33,16 +33,20 @@ def train(x_train, y_train, xs_valid, ys_valid,
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    feat_scaler = MinMaxScaler((-1, 1)).fit(x_train)
-    _y_log = np.log1p(y_train)
+    # Filter zero OD pairs — avoids mode collapse on sparse matrices
+    nz = y_train > 0
+    x_nz, y_nz = x_train[nz], y_train[nz]
+
+    feat_scaler = MinMaxScaler((-1, 1)).fit(x_nz)
+    _y_log = np.log1p(y_nz)
     od_scaler = OD_normer(_y_log.min(), _y_log.max())
 
     ds = TensorDataset(
-        torch.FloatTensor(feat_scaler.transform(x_train)),
-        torch.FloatTensor(od_scaler.normalize(np.log1p(y_train))),
+        torch.FloatTensor(feat_scaler.transform(x_nz)),
+        torch.FloatTensor(od_scaler.normalize(_y_log)),
     )
     dl = DataLoader(ds, batch_size=batch_size, shuffle=True)
-    del ds; gc.collect()
+    del ds, x_nz, y_nz, _y_log; gc.collect()
 
     net = DeepGravity().to(device)
     optimizer = torch.optim.Adam(net.parameters(), lr=3e-4)
@@ -65,9 +69,12 @@ def train(x_train, y_train, xs_valid, ys_valid,
         with torch.no_grad():
             vls = []
             for xv, yv in zip(xs_valid, ys_valid):
-                xv_t = torch.FloatTensor(feat_scaler.transform(xv)).to(device)
+                nz_v = yv > 0
+                if not nz_v.any():
+                    continue
+                xv_t = torch.FloatTensor(feat_scaler.transform(xv[nz_v])).to(device)
                 yh = net(xv_t).squeeze().cpu().numpy()
-                vls.append(((yh - od_scaler.normalize(np.log1p(yv))) ** 2).mean())
+                vls.append(((yh - od_scaler.normalize(np.log1p(yv[nz_v]))) ** 2).mean())
             vl = float(np.mean(vls))
 
         pbar.set_postfix(loss=f'{np.mean(ep_losses):.4g}', val=f'{vl:.4g}', pat=best_pat)
