@@ -15,13 +15,14 @@ class DeepGravity(nn.Module):
             [nn.Linear(hiddim, hiddim) for i in range(layers)]
         )
         self.linear_out = nn.Linear(hiddim, 1)
+        self.ln = nn.LayerNorm(hiddim)
 
     def forward(self, input):
         input = self.linear_in(input)
         x = input
         for layer in self.linears:
             x = torch.relu(layer(x)) + x
-        x = torch.tanh(self.linear_out(x))
+        x = torch.tanh(self.linear_out(self.ln(x)))
         return x
     
 

@@ -42,6 +42,16 @@ def train(x_train, y_train, xs_valid, ys_valid,
     dl = DataLoader(ds, batch_size=batch_size, shuffle=True)
     del ds, x_nz, y_nz_log; gc.collect()
 
+    # Pre-compute validation tensors once (avoid per-city alloc + GPU round-trip every epoch)
+    _vx = [xv[yv > 0] for xv, yv in zip(xs_valid, ys_valid) if (yv > 0).any()]
+    _vy = [np.log1p(yv[yv > 0]) for xv, yv in zip(xs_valid, ys_valid) if (yv > 0).any()]
+    if _vx:
+        xv_all_t = torch.FloatTensor(np.concatenate(_vx)).to(device)
+        yv_log_all = np.concatenate(_vy)
+    else:
+        xv_all_t = None
+    del _vx, _vy
+
     net = GRAVITY().to(device)
     optimizer = torch.optim.Adam(net.parameters(), lr=1e-4)
 
@@ -61,14 +71,11 @@ def train(x_train, y_train, xs_valid, ys_valid,
 
         net.eval()
         with torch.no_grad():
-            vls = []
-            for xv, yv in zip(xs_valid, ys_valid):
-                nz_v = yv > 0
-                if not nz_v.any():
-                    continue
-                yh = net(torch.FloatTensor(xv[nz_v]).to(device)).squeeze().cpu().numpy()
-                vls.append(((np.log1p(yh) - np.log1p(yv[nz_v])) ** 2).mean())
-            vl = float(np.mean(vls))
+            if xv_all_t is not None:
+                yh_all = net(xv_all_t).squeeze().cpu().numpy()
+                vl = float(((np.log1p(yh_all) - yv_log_all) ** 2).mean())
+            else:
+                vl = np.inf
 
         pbar.set_postfix(loss=f'{np.mean(ep_losses):.4g}', val=f'{vl:.4g}', pat=best_pat)
 
