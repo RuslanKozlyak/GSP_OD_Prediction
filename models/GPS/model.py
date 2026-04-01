@@ -146,9 +146,12 @@ class GPSODModel(nn.Module):
         de = ne[di]
         dist = dm[oi, di].unsqueeze(-1)
         extra = None
-        if self.rle is not None and coords is not None:
-            rel = coords[oi].unsqueeze(0).expand(D, -1) - coords[di]
-            extra = self.rle(rel)
+        if self.rle is not None:
+            if coords is not None:
+                rel = coords[oi].unsqueeze(0).expand(D, -1) - coords[di]
+                extra = self.rle(rel)
+            else:
+                extra = torch.zeros(D, self.rle.out_dim, device=ne.device)
         return self.decoder(oe, de, dist, extra)
 
     def predict_node_flows(self, ne):
@@ -175,9 +178,12 @@ class TransFlowerODModel(nn.Module):
         de = ne[di]
         dist = dm[oi, di].unsqueeze(-1)
         extra = None
-        if self.rle is not None and coords is not None:
-            rel = coords[oi].unsqueeze(0).expand(D, -1) - coords[di]
-            extra = self.rle(rel)
+        if self.rle is not None:
+            if coords is not None:
+                rel = coords[oi].unsqueeze(0).expand(D, -1) - coords[di]
+                extra = self.rle(rel)
+            else:
+                extra = torch.zeros(D, self.rle.out_dim, device=ne.device)
         return self.decoder(oe, de, dist, extra)
 
     def predict_node_flows(self, ne):
