@@ -62,6 +62,7 @@ def train(x_train, y_train, xs_valid, ys_valid,
             optimizer.zero_grad()
             loss = torch.mean((net(xb).squeeze() - yb) ** 2)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
             optimizer.step()
             ep_losses.append(loss.item())
 
