@@ -31,12 +31,16 @@ def train(x_train, y_train, xs_valid, ys_valid,
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+    # Filter zero OD pairs + log-space targets
+    nz = y_train > 0
+    x_nz, y_nz_log = x_train[nz], np.log1p(y_train[nz])
+
     ds = TensorDataset(
-        torch.FloatTensor(x_train),
-        torch.FloatTensor(y_train),
+        torch.FloatTensor(x_nz),
+        torch.FloatTensor(y_nz_log),
     )
     dl = DataLoader(ds, batch_size=batch_size, shuffle=True)
-    del ds; gc.collect()
+    del ds, x_nz, y_nz_log; gc.collect()
 
     net = GRAVITY().to(device)
     optimizer = torch.optim.Adam(net.parameters(), lr=1e-4)
@@ -50,7 +54,7 @@ def train(x_train, y_train, xs_valid, ys_valid,
         for xb, yb in dl:
             xb, yb = xb.to(device), yb.to(device)
             optimizer.zero_grad()
-            loss = torch.mean((net(xb).squeeze() - yb) ** 2)
+            loss = torch.mean((torch.log1p(net(xb).squeeze()) - yb) ** 2)
             loss.backward()
             optimizer.step()
             ep_losses.append(loss.item())
@@ -59,8 +63,11 @@ def train(x_train, y_train, xs_valid, ys_valid,
         with torch.no_grad():
             vls = []
             for xv, yv in zip(xs_valid, ys_valid):
-                yh = net(torch.FloatTensor(xv).to(device)).squeeze().cpu().numpy()
-                vls.append(((yh - yv) ** 2).mean())
+                nz_v = yv > 0
+                if not nz_v.any():
+                    continue
+                yh = net(torch.FloatTensor(xv[nz_v]).to(device)).squeeze().cpu().numpy()
+                vls.append(((np.log1p(yh) - np.log1p(yv[nz_v])) ** 2).mean())
             vl = float(np.mean(vls))
 
         pbar.set_postfix(loss=f'{np.mean(ep_losses):.4g}', val=f'{vl:.4g}', pat=best_pat)
