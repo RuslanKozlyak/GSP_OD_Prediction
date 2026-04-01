@@ -146,6 +146,19 @@ def prepare_single_city_data(area_id=None, pe_type='rwpe', data_path=DATA_PATH, 
     if area_id is None:
         area_id = SINGLE_CITY_ID
 
+    # Auto-generate coords.npy from shapefile if missing
+    cp = os.path.join(data_path, area_id, "coords.npy")
+    if not os.path.exists(cp):
+        sf = os.path.join(SHP_PATH, area_id, f"{area_id}.shp")
+        if os.path.exists(sf):
+            try:
+                import geopandas as gpd
+                gdf = gpd.read_file(sf).to_crs("EPSG:3857")
+                c = gdf.geometry.centroid
+                np.save(cp, np.column_stack([c.x.values, c.y.values]))
+            except Exception:
+                pass
+
     data = load_area(area_id, data_path)
     assert data is not None, f"Failed to load area {area_id}"
     node_features_raw, adjacency, distances, od_matrix_raw, coords = data
@@ -245,7 +258,21 @@ def split_multi_city(multi_city_raw, seed=42):
     return mc_city_ids, train_city_ids, val_city_ids, test_city_ids
 
 
-def prepare_city_data(cid, raw, pe_type='rwpe'):
+def prepare_city_data(cid, raw, pe_type='rwpe', data_path=DATA_PATH):
+    # Auto-generate coords.npy from shapefile if missing
+    cp = os.path.join(data_path, cid, "coords.npy")
+    if not os.path.exists(cp):
+        sf = os.path.join(SHP_PATH, cid, f"{cid}.shp")
+        if os.path.exists(sf):
+            try:
+                import geopandas as gpd
+                gdf = gpd.read_file(sf).to_crs("EPSG:3857")
+                c = gdf.geometry.centroid
+                np.save(cp, np.column_stack([c.x.values, c.y.values]))
+                raw['coords'] = np.load(cp)
+            except Exception:
+                pass
+
     nfs = raw['nfeat_scaled']
     ds = raw['dis_scaled']
     od = raw['od']
@@ -279,7 +306,7 @@ def prepare_multi_city_data(city_ids=None, pe_type='rwpe', data_path=DATA_PATH, 
 
     city_data_dict = {}
     for cid in mc_city_ids:
-        city_data_dict[cid] = prepare_city_data(cid, multi_city_raw[cid], pe_type)
+        city_data_dict[cid] = prepare_city_data(cid, multi_city_raw[cid], pe_type, data_path)
         print(f"  {cid}: N={city_data_dict[cid]['num_nodes']}")
 
     return city_data_dict, train_city_ids, val_city_ids, test_city_ids
