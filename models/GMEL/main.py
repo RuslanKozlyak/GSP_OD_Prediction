@@ -25,6 +25,8 @@ def train(train_areas, val_areas, data_path,
         (gmel_net, gbrt, nfeat_scaler, dis_scaler)
     """
     import os, sys
+    sys.modules.pop('model', None)    # prevent collision when run after another model
+    sys.modules.pop('data_load', None)
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from model import GMEL
     from data_load import build_graph, get_scalers
