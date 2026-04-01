@@ -33,13 +33,13 @@ TF_LAYERS = 2
 TF_DROPOUT = 0.1
 
 # ─── Training ─────────────────────────────────────────────────────────────────
-EPOCHS = 50
+EPOCHS = 200
 LEARNING_RATE = 3e-4
 PATIENCE = 30
 ORIGIN_BATCH_SIZE = 32
 DEST_BATCH_SIZE = 256
 N_DEST_SAMPLE = 128
-MC_EPOCHS = 30
+MC_EPOCHS = 200
 
 # ─── Loss ─────────────────────────────────────────────────────────────────────
 HUBER_KDE_BW = 2.0
@@ -53,10 +53,7 @@ USE_JOBS_FEATURES = False
 NAN_BATCH_THRESHOLD = 0.5
 
 # ─── Device ───────────────────────────────────────────────────────────────────
-if torch.cuda.is_available():
-    device = torch.device('cuda:1' if torch.cuda.device_count() > 1 else 'cuda:0')
-else:
-    device = torch.device('cpu')
+device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')  # НЕ МЕНЯТЬ CUDA:1
 
 
 def cleanup_gpu():
