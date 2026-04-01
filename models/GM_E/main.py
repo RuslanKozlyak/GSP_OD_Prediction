@@ -24,6 +24,7 @@ def train(x_train, y_train, xs_valid, ys_valid,
         predict: callable(x: np.ndarray) -> np.ndarray
     """
     import os, sys
+    sys.modules.pop('model', None)  # prevent collision when run after another model
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from model import GRAVITY
 

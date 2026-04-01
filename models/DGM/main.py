@@ -26,6 +26,7 @@ def train(x_train, y_train, xs_valid, ys_valid,
         predict: callable(x: np.ndarray) -> np.ndarray
     """
     import os, sys
+    sys.modules.pop('model', None)  # prevent collision when run after another model
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from model import DeepGravity, OD_normer
 
@@ -33,11 +34,12 @@ def train(x_train, y_train, xs_valid, ys_valid,
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     feat_scaler = MinMaxScaler((-1, 1)).fit(x_train)
-    od_scaler = OD_normer(y_train.min(), y_train.max())
+    _y_log = np.log1p(y_train)
+    od_scaler = OD_normer(_y_log.min(), _y_log.max())
 
     ds = TensorDataset(
         torch.FloatTensor(feat_scaler.transform(x_train)),
-        torch.FloatTensor(od_scaler.normalize(y_train)),
+        torch.FloatTensor(od_scaler.normalize(np.log1p(y_train))),
     )
     dl = DataLoader(ds, batch_size=batch_size, shuffle=True)
     del ds; gc.collect()
@@ -65,7 +67,7 @@ def train(x_train, y_train, xs_valid, ys_valid,
             for xv, yv in zip(xs_valid, ys_valid):
                 xv_t = torch.FloatTensor(feat_scaler.transform(xv)).to(device)
                 yh = net(xv_t).squeeze().cpu().numpy()
-                vls.append(((yh - od_scaler.normalize(yv)) ** 2).mean())
+                vls.append(((yh - od_scaler.normalize(np.log1p(yv))) ** 2).mean())
             vl = float(np.mean(vls))
 
         pbar.set_postfix(loss=f'{np.mean(ep_losses):.4g}', val=f'{vl:.4g}', pat=best_pat)
@@ -84,9 +86,10 @@ def train(x_train, y_train, xs_valid, ys_valid,
     def predict(x):
         _net.eval()
         with torch.no_grad():
-            return _os.renormalize(
+            y_log = _os.renormalize(
                 _net(torch.FloatTensor(_fs.transform(x)).to(device)).squeeze().cpu().numpy()
             )
+            return np.expm1(np.maximum(y_log, 0.0))
 
     return predict
 
