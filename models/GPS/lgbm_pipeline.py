@@ -44,10 +44,10 @@ def train_lgbm_from_model(run_id, city_data, donor_model, donor_name):
     params = {
         'objective': 'regression', 'metric': 'mae', 'learning_rate': 0.05,
         'num_leaves': 63, 'max_depth': 8, 'subsample': 0.8,
-        'colsample_bytree': 0.8, 'verbose': -1, 'seed': 42,
+        'colsample_bytree': 0.8, 'verbose': 1, 'seed': 42,
     }
     lgbm_model = lgb.train(
-        params, lgb.Dataset(X_train, y_train), num_boost_round=1000,
+        params, lgb.Dataset(X_train, y_train), num_boost_round=3000,
         valid_sets=[lgb.Dataset(X_val, y_val)],
         callbacks=[lgb.early_stopping(30), lgb.log_evaluation(100)],
     )
