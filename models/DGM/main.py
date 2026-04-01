@@ -1,101 +1,116 @@
 import time
+import gc
 
-from sklearn.preprocessing import MinMaxScaler
-from data_load import load_data
-from metrics import *
-from model import *
-
+import numpy as np
+import torch
 from torch.utils.data import DataLoader, TensorDataset
+from sklearn.preprocessing import MinMaxScaler
+from tqdm.auto import tqdm
 
-from pprint import pprint
 
+def train(x_train, y_train, xs_valid, ys_valid,
+          device=None, batch_size=50_000, max_epochs=10000, patience=100):
+    """Train DeepGravity on pre-built feature arrays.
 
-print("\n  **Loading data...")
-xtrain, ytrain, xvalid, yvalid, xtest, ytest = load_data()
-odmin_, odmax_ = ytrain.min(), ytrain.max()
+    Args:
+        x_train: np.ndarray (N, F) — concatenated pair features for training
+        y_train: np.ndarray (N,)   — OD values for training
+        xs_valid: list of np.ndarray — per-city validation features
+        ys_valid: list of np.ndarray — per-city validation OD values
+        device: torch.device (defaults to cuda if available)
+        batch_size: DataLoader mini-batch size
+        max_epochs: max training epochs
+        patience: early-stopping patience
 
-feat_scaler = MinMaxScaler((-1, 1)).fit(xtrain)
-od_scaler = OD_normer(ytrain.min(), ytrain.max())
+    Returns:
+        predict: callable(x: np.ndarray) -> np.ndarray
+    """
+    import os, sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from model import DeepGravity, OD_normer
 
-deepgravity = DeepGravity()
-deepgravity = deepgravity.cuda()
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-xtrain = torch.FloatTensor(feat_scaler.transform(xtrain))
-ytrain = torch.FloatTensor(od_scaler.normalize(ytrain))
+    feat_scaler = MinMaxScaler((-1, 1)).fit(x_train)
+    od_scaler = OD_normer(y_train.min(), y_train.max())
 
-ds = TensorDataset(xtrain, ytrain)
-dl = DataLoader(ds, batch_size=1000000, shuffle=True)
+    ds = TensorDataset(
+        torch.FloatTensor(feat_scaler.transform(x_train)),
+        torch.FloatTensor(od_scaler.normalize(y_train)),
+    )
+    dl = DataLoader(ds, batch_size=batch_size, shuffle=True)
+    del ds; gc.collect()
 
-optimizer = torch.optim.Adam(deepgravity.parameters(), lr=3e-4)
+    net = DeepGravity().to(device)
+    optimizer = torch.optim.Adam(net.parameters(), lr=3e-4)
 
-print('\n  **Start fitting...')
-start = time.time()
+    best_vl = np.inf
+    best_pat = patience
+    pbar = tqdm(range(max_epochs), desc='DGM', unit='ep')
+    for ep in pbar:
+        net.train()
+        ep_losses = []
+        for xb, yb in dl:
+            xb, yb = xb.to(device), yb.to(device)
+            optimizer.zero_grad()
+            loss = torch.mean((net(xb).squeeze() - yb) ** 2)
+            loss.backward()
+            optimizer.step()
+            ep_losses.append(loss.item())
 
-best_valid_loss = np.inf
-valid_flag = 100
-for i in range(10000):
-    print(f"Epoch {i+1}:", end=" | ")
-    deepgravity.train()
+        net.eval()
+        with torch.no_grad():
+            vls = []
+            for xv, yv in zip(xs_valid, ys_valid):
+                xv_t = torch.FloatTensor(feat_scaler.transform(xv)).to(device)
+                yh = net(xv_t).squeeze().cpu().numpy()
+                vls.append(((yh - od_scaler.normalize(yv)) ** 2).mean())
+            vl = float(np.mean(vls))
 
-    loss_epoch = []
-    for xbatch, ybatch in dl:
-        xbatch, ybatch = xbatch.cuda(), ybatch.cuda()
-        optimizer.zero_grad()
+        pbar.set_postfix(loss=f'{np.mean(ep_losses):.4g}', val=f'{vl:.4g}', pat=best_pat)
 
-        yhat = deepgravity(xbatch).squeeze()
-        loss = torch.mean((yhat-ybatch)**2)
-        loss.backward()
-        optimizer.step()
-        loss_value = loss.item()
-        loss_epoch.append(loss_value)
-    loss_value = np.mean(loss_epoch)
-    print(f"train loss={loss_value:.7g}", end=" | ")
-
-    with torch.no_grad():
-        valid_losses = []
-        for xvalid_one, yvalid_one in zip(xvalid, yvalid):
-            xvalid_one = feat_scaler.transform(xvalid_one)
-            yvalid_one = od_scaler.normalize(yvalid_one)
-            xvalid_one = torch.FloatTensor(feat_scaler.transform(xvalid_one)).cuda()
-            yvalid_one = torch.FloatTensor(od_scaler.normalize(yvalid_one)).cuda()
-            deepgravity.eval()
-            yhat = deepgravity(xvalid_one).squeeze()
-            yhat = yhat.cpu().detach().numpy()
-            valid_loss = (yhat-yvalid_one.cpu().numpy())**2
-            valid_losses.append(valid_loss)
-        valid_loss = np.concatenate(valid_losses).mean()
-        print(f"valid loss={valid_loss:.7g}")
-        if valid_loss < best_valid_loss:
-            best_valid_loss = valid_loss
-            valid_flag = 100
+        if vl < best_vl:
+            best_vl = vl
+            best_pat = patience
         else:
-            valid_flag -= 1
-            if valid_flag == 0:
-                print('Early stopping!')
+            best_pat -= 1
+            if best_pat == 0:
                 break
 
-print('Complete!', end=" ")
-print('Consume ', time.time()-start, ' seconds!')
-print("-"*50)
+    # Capture in closure so callers can safely del their local references
+    _net, _fs, _os = net, feat_scaler, od_scaler
 
-print("\n  **Evaluating...")
-with torch.no_grad():
+    def predict(x):
+        _net.eval()
+        with torch.no_grad():
+            return _os.renormalize(
+                _net(torch.FloatTensor(_fs.transform(x)).to(device)).squeeze().cpu().numpy()
+            )
+
+    return predict
+
+
+if __name__ == '__main__':
+    import os, sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from data_load import load_data
+    from metrics import cal_od_metrics, average_listed_metrics
+    from pprint import pprint
+
+    print("\n  **Loading data...")
+    xtrain, ytrain, xvalid, yvalid, xtest, ytest = load_data()
+
+    device_ = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    predict = train(xtrain, ytrain, xvalid, yvalid, device=device_)
+
+    print("\n  **Evaluating...")
     metrics_all = []
     for x_one, y_one in zip(xtest, ytest):
-        x_one = feat_scaler.transform(x_one)
-        x_one = torch.FloatTensor(x_one).cuda()
-        deepgravity.eval()
-        y_one_hat = deepgravity(x_one).squeeze()
-        y_one_hat = y_one_hat.cpu().detach().numpy()
+        n = int(np.sqrt(y_one.shape[0]))
+        y_hat = predict(x_one).reshape(n, n)
+        y_one = y_one.reshape(n, n)
+        y_hat[y_hat < 0] = 0
+        metrics_all.append(cal_od_metrics(y_hat, y_one))
 
-        y_one_hat = od_scaler.renormalize(y_one_hat)
-
-        y_one_hat = y_one_hat.reshape([int(np.sqrt(y_one.shape[0])), int(np.sqrt(y_one.shape[0]))])
-        y_one = y_one.reshape([int(np.sqrt(y_one.shape[0])), int(np.sqrt(y_one.shape[0]))])
-        y_one_hat[y_one_hat < 0] = 0
-
-        metrics = cal_od_metrics(y_one_hat, y_one)
-        metrics_all.append(metrics)
-
-    avg_metrics = average_listed_metrics(metrics_all)
-    pprint(avg_metrics)
+    pprint(average_listed_metrics(metrics_all))

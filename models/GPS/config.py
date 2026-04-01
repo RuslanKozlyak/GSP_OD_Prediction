@@ -53,7 +53,15 @@ USE_JOBS_FEATURES = False
 NAN_BATCH_THRESHOLD = 0.5
 
 # ─── Device ───────────────────────────────────────────────────────────────────
-device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu') # НЕ МЕНЯТЬ CUDA:1
+device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')  # НЕ МЕНЯТЬ CUDA:1
+
+
+def cleanup_gpu():
+    """Free GPU memory between model runs."""
+    import gc
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 @dataclass

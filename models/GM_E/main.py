@@ -1,81 +1,106 @@
 import time
+import gc
 
-from data_load import load_data
-from metrics import *
-from model import *
-
+import numpy as np
 import torch
-
-from pprint import pprint
-
-
-print("\n  **Loading data...")
-xtrain, ytrain, xvalid, yvalid, xtest, ytest = load_data()
-
-gravity = GRAVITY()
-gravity = gravity.cuda()
-
-print('\n  **Start fitting...')
-start = time.time()
-
-xtrain = torch.FloatTensor(xtrain).cuda()
-ytrain = torch.FloatTensor(ytrain).cuda()
-
-optimizer = torch.optim.Adam(gravity.parameters(), lr=1e-4)
+from torch.utils.data import DataLoader, TensorDataset
+from tqdm.auto import tqdm
 
 
-best_valid_loss = np.inf
-valid_flag = 100
-for i in range(10000):
-    print(f"Epoch {i+1}:", end=" | ")
-    gravity.train()
+def train(x_train, y_train, xs_valid, ys_valid,
+          device=None, batch_size=50_000, max_epochs=10000, patience=100):
+    """Train GRAVITY (GM_E) on pre-built feature arrays.
 
-    optimizer.zero_grad()
+    Args:
+        x_train: np.ndarray (N, F) — pair features (pop + distance)
+        y_train: np.ndarray (N,)   — OD values
+        xs_valid: list of np.ndarray — per-city validation features
+        ys_valid: list of np.ndarray — per-city validation OD values
+        device: torch.device
+        batch_size: DataLoader mini-batch size
+        max_epochs / patience: training schedule
 
-    yhat = gravity(xtrain).squeeze()
-    loss = torch.mean((yhat-ytrain)**2)
-    loss.backward()
-    optimizer.step()
-    loss_value = loss.item()
-    print(f"train loss={loss_value:.7g}", end=" | ")
+    Returns:
+        predict: callable(x: np.ndarray) -> np.ndarray
+    """
+    import os, sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from model import GRAVITY
 
-    valid_losses = []
-    for xvalid_one, yvalid_one in zip(xvalid, yvalid):
-        xvalid_one = torch.FloatTensor(xvalid_one).cuda()
-        yvalid_one = torch.FloatTensor(yvalid_one).cuda()
-        gravity.eval()
-        yhat = gravity(xvalid_one).squeeze()
-        yhat = yhat.cpu().detach().numpy()
-        valid_loss = (yhat-yvalid_one.cpu().numpy())**2
-        valid_losses.append(valid_loss)
-    valid_loss = np.concatenate(valid_losses).mean()
-    print(f"valid loss={valid_loss:.7g}")
-    if valid_loss < best_valid_loss:
-        best_valid_loss = valid_loss
-        valid_flag = 100
-    else:
-        valid_flag -= 1
-        if valid_flag == 0:
-            print('Early stopping!')
-            break
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-print('Complete!', end=" ")
-print('Consume ', time.time()-start, ' seconds!')
-print("-"*50)
+    ds = TensorDataset(
+        torch.FloatTensor(x_train),
+        torch.FloatTensor(y_train),
+    )
+    dl = DataLoader(ds, batch_size=batch_size, shuffle=True)
+    del ds; gc.collect()
 
-print("\n  **Evaluating...")
-metrics_all = []
-for x_one, y_one in zip(xtest, ytest):
-    x_one = torch.FloatTensor(x_one).cuda()
-    gravity.eval()
-    y_one_hat = gravity(x_one).squeeze()
-    y_one_hat = y_one_hat.cpu().detach().numpy()
+    net = GRAVITY().to(device)
+    optimizer = torch.optim.Adam(net.parameters(), lr=1e-4)
 
-    y_one_hat = y_one_hat.reshape([int(np.sqrt(y_one.shape[0])), int(np.sqrt(y_one.shape[0]))])
-    y_one = y_one.reshape([int(np.sqrt(y_one.shape[0])), int(np.sqrt(y_one.shape[0]))])
+    best_vl = np.inf
+    best_pat = patience
+    pbar = tqdm(range(max_epochs), desc='GM_E', unit='ep')
+    for ep in pbar:
+        net.train()
+        ep_losses = []
+        for xb, yb in dl:
+            xb, yb = xb.to(device), yb.to(device)
+            optimizer.zero_grad()
+            loss = torch.mean((net(xb).squeeze() - yb) ** 2)
+            loss.backward()
+            optimizer.step()
+            ep_losses.append(loss.item())
 
-    metrics = cal_od_metrics(y_one_hat, y_one)
-    metrics_all.append(metrics)
+        net.eval()
+        with torch.no_grad():
+            vls = []
+            for xv, yv in zip(xs_valid, ys_valid):
+                yh = net(torch.FloatTensor(xv).to(device)).squeeze().cpu().numpy()
+                vls.append(((yh - yv) ** 2).mean())
+            vl = float(np.mean(vls))
 
-avg_metrics = average_listed_metrics(metrics_all)
-pprint(avg_metrics)
+        pbar.set_postfix(loss=f'{np.mean(ep_losses):.4g}', val=f'{vl:.4g}', pat=best_pat)
+
+        if vl < best_vl:
+            best_vl = vl
+            best_pat = patience
+        else:
+            best_pat -= 1
+            if best_pat == 0:
+                break
+
+    _net = net
+
+    def predict(x):
+        _net.eval()
+        with torch.no_grad():
+            return _net(torch.FloatTensor(x).to(device)).squeeze().cpu().numpy()
+
+    return predict
+
+
+if __name__ == '__main__':
+    import os, sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from data_load import load_data
+    from metrics import cal_od_metrics, average_listed_metrics
+    from pprint import pprint
+
+    print("\n  **Loading data...")
+    xtrain, ytrain, xvalid, yvalid, xtest, ytest = load_data()
+
+    device_ = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    predict = train(xtrain, ytrain, xvalid, yvalid, device=device_)
+
+    print("\n  **Evaluating...")
+    metrics_all = []
+    for x_one, y_one in zip(xtest, ytest):
+        n = int(np.sqrt(y_one.shape[0]))
+        y_hat = predict(x_one).reshape(n, n)
+        y_one = y_one.reshape(n, n)
+        metrics_all.append(cal_od_metrics(y_hat, y_one))
+
+    pprint(average_listed_metrics(metrics_all))
