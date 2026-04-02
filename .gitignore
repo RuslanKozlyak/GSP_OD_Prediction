@@ -14,7 +14,9 @@ __pycache__/
 # Results (regenerable)
 results/weights/
 results/metrics.csv
-
+results/old_weights/
+results/old_metrics.csv
+data/
 # Temp files
 notebook_code_cells.txt
 *.tmp
