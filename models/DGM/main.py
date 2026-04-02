@@ -9,7 +9,7 @@ from tqdm.auto import tqdm
 
 
 def train(x_train, y_train, xs_valid, ys_valid,
-          device=None, batch_size=50_000, max_epochs=10000, patience=100):
+          device=None, batch_size=50_000, max_epochs=300, patience=100):
     """Train DeepGravity on pre-built feature arrays.
 
     Args:

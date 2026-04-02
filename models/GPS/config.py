@@ -69,11 +69,11 @@ class TrainingConfig:
     # fmt: off
     # ── Architecture ──────────────────────────────────────────────────────────
     encoder_type:       Literal['gps', 'mlp']                               = 'gps'
-    decoder_type:       Literal['bilinear', 'transflower']                  = 'transflower'
+    decoder_type:       Literal['bilinear', 'transflower','lgbm']                  = 'transflower'
     pe_type:            Literal['rwpe', 'spe', 'rrwp', 'lape']              = 'rwpe'
     gps_norm_type:      Literal['batch_norm', 'graph_norm']                 = 'batch_norm'
     # ── Loss ──────────────────────────────────────────────────────────────────
-    loss_type:          Literal['huber', 'ce', 'multitask', 'zinb', 'focal'] = 'huber'
+    loss_type:          Literal['huber', 'ce', 'multitask', 'zinb', 'focal', 'mae'] = 'huber'
     prediction_mode:    Literal['raw', 'normalized']                        = 'raw'
     use_log_transform:  bool  = False
     focal_gamma:        float = 2.0   # used only when loss_type='focal'
@@ -102,10 +102,10 @@ class TrainingConfig:
     def __post_init__(self):
         _valid = {
             'encoder_type':    ('gps', 'mlp'),
-            'decoder_type':    ('bilinear', 'transflower'),
+            'decoder_type':    ('bilinear', 'transflower','lgbm'),
             'pe_type':         ('rwpe', 'spe', 'rrwp', 'lape'),
             'gps_norm_type':   ('batch_norm', 'graph_norm'),
-            'loss_type':       ('huber', 'ce', 'multitask', 'zinb', 'focal'),
+            'loss_type':       ('huber', 'ce', 'multitask', 'zinb', 'focal', 'mae'),
             'prediction_mode': ('raw', 'normalized'),
         }
         for attr, choices in _valid.items():
