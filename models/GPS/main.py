@@ -201,6 +201,7 @@ def train_single_city(run_id, run_name, config, city_data=None, area_id=None, da
         if data_path is not None:
             kwargs['data_path'] = data_path
         city_data = prepare_single_city_data(pe_type=config.pe_type, **kwargs)
+
     model = make_model(config, graph_data_ref=city_data['graph_data'])
     cid = city_data['city_id']
     return _train_loop(run_id, run_name, config, model, {cid: city_data}, is_multi=False)

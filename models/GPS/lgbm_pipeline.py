@@ -50,11 +50,8 @@ def save_lgbm_model(run_id, lgbm_model, donor_id):
     print(f"  Saved: {WEIGHTS_DIR / run_id}.lgbm + _meta.json")
 
 
-def load_lgbm_results(run_id, city_data=None):
-    """Load a saved LGBM model and evaluate. Returns metrics dict or None.
-
-    city_data is optional — if not provided (or pe_type doesn't match the donor model),
-    the correct city data is loaded automatically using the donor model's pe_type.
+def load_lgbm_results(run_id, city_data):
+    """Load a saved LGBM model and evaluate on city_data. Returns metrics dict or None.
 
     Requires:
         {run_id}.lgbm          — saved LightGBM booster
@@ -62,8 +59,7 @@ def load_lgbm_results(run_id, city_data=None):
         {donor_id}.pt          — GPS encoder weights
         {donor_id}.json        — GPS encoder config
     """
-    from .config import load_model_config, SINGLE_CITY_ID
-    from .data_load import prepare_single_city_data
+    from .config import load_model_config
     from .model import make_model
 
     lgbm_path = WEIGHTS_DIR / f"{run_id}.lgbm"
@@ -86,12 +82,7 @@ def load_lgbm_results(run_id, city_data=None):
         print(f"  [SKIP] {run_id}: GPS donor '{donor_id}' weights/config not found")
         return None
 
-    # Always load city_data with the donor model's pe_type so PE features match training
-    pe = donor_cfg.pe_type
-    if city_data is None:
-        city_data = prepare_single_city_data(area_id=SINGLE_CITY_ID, pe_type=pe)
-
-    print(f"  Loading {run_id} (donor: {donor_id}, pe_type={pe}) ...")
+    print(f"  Loading {run_id} (donor: {donor_id}) ...")
     try:
         # Load GPS encoder
         gps_model = make_model(donor_cfg, graph_data_ref=city_data["graph_data"])
