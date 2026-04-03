@@ -65,13 +65,14 @@ def compute_loss_for_city(model, cd, config, origin_batch_indices=None):
             h = torch.where(df <= hd, 0.5 * df ** 2, hd * df - 0.5 * hd ** 2)
             rl = (w * h).mean()
         elif lt == 'ce':
-            p = F.softmax(sc, dim=0)
+            log_p = F.log_softmax(sc, dim=0)
             ct = torch.FloatTensor(rf / (of[oi] + 1e-8)).to(device)
-            rl = -torch.sum(ct * torch.log(p + 1e-10))
+            rl = -torch.sum(ct * log_p)
         elif lt == 'focal':
-            p = F.softmax(sc, dim=0)
+            log_p = F.log_softmax(sc, dim=0)
+            p = log_p.exp()
             ct = torch.FloatTensor(rf / (of[oi] + 1e-8)).to(device)
-            rl = -torch.sum(ct * (1.0 - p).pow(config.focal_gamma) * torch.log(p + 1e-10))
+            rl = -torch.sum(ct * (1.0 - p).pow(config.focal_gamma) * log_p)
         elif lt == 'multitask':
             pr = F.softmax(sc, dim=0) if pm == 'normalized' else F.relu(sc)
             rl = F.mse_loss(pr, tt)
