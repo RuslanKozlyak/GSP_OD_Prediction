@@ -17,6 +17,7 @@ results/metrics.csv
 results/old_weights/
 results/old_metrics.csv
 data/
+data_lu/
 # Temp files
 notebook_code_cells.txt
 *.tmp

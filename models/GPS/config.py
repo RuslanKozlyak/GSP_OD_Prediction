@@ -12,7 +12,7 @@ warnings.filterwarnings('ignore')
 
 # ─── Paths (relative to project root) ────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-DATA_PATH = str(PROJECT_ROOT / "data")
+DATA_PATH = str(PROJECT_ROOT / "data_lu/data")
 SHP_PATH = str(PROJECT_ROOT / "assets" / "Boundaries_Regions_within_Areas")
 RESULTS_DIR = PROJECT_ROOT / "results"
 WEIGHTS_DIR = RESULTS_DIR / "weights"
@@ -22,7 +22,7 @@ SINGLE_CITY_ID = "48201"
 MULTI_CITY_IDS = ["17031","48201","04013","06073","06059","36047","12086","48113","06065","36081"]
 
 # ─── Architecture ─────────────────────────────────────────────────────────────
-HIDDEN_DIM = 64
+HIDDEN_DIM = 128
 PE_DIM = 8
 PE_WALK_LEN = 20
 GPS_HEADS = 4
@@ -46,8 +46,8 @@ HUBER_KDE_BW = 2.0
 HUBER_MIN_PROB = 1e-4
 
 # ─── Features ─────────────────────────────────────────────────────────────────
-USE_LU_FEATURES = False
-USE_JOBS_FEATURES = False
+USE_LU_FEATURES = True
+USE_JOBS_FEATURES = True
 
 # ─── NaN protection ──────────────────────────────────────────────────────────
 NAN_BATCH_THRESHOLD = 0.5
