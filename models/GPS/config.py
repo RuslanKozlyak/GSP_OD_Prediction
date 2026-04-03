@@ -69,8 +69,8 @@ class TrainingConfig:
     # fmt: off
     # ── Architecture ──────────────────────────────────────────────────────────
     encoder_type:       Literal['gps', 'mlp']                               = 'gps'
-    decoder_type:       Literal['bilinear', 'transflower','lgbm']                  = 'transflower'
-    pe_type:            Literal['rwpe', 'spe', 'rrwp', 'lape']              = 'rwpe'
+    decoder_type:       Literal['bilinear', 'transflower','lgbm']           = 'transflower'
+    pe_type:            Optional[Literal['rwpe', 'spe', 'rrwp', 'lape']]    = 'rwpe'
     gps_norm_type:      Literal['batch_norm', 'graph_norm']                 = 'batch_norm'
     # ── Loss ──────────────────────────────────────────────────────────────────
     loss_type:          Literal['huber', 'ce', 'multitask', 'zinb', 'focal', 'mae'] = 'huber'
@@ -103,7 +103,7 @@ class TrainingConfig:
         _valid = {
             'encoder_type':    ('gps', 'mlp'),
             'decoder_type':    ('bilinear', 'transflower','lgbm'),
-            'pe_type':         ('rwpe', 'spe', 'rrwp', 'lape'),
+            'pe_type':         ('rwpe', 'spe', 'rrwp', 'lape', None),
             'gps_norm_type':   ('batch_norm', 'graph_norm'),
             'loss_type':       ('huber', 'ce', 'multitask', 'zinb', 'focal', 'mae'),
             'prediction_mode': ('raw', 'normalized'),
@@ -118,8 +118,9 @@ class TrainingConfig:
 
     def describe(self):
         enc = 'MLP' if self.encoder_type == 'mlp' else 'GPS'
+        pe_name = 'none' if self.pe_type is None else self.pe_type
         parts = [f"{enc}+{self.decoder_type}+{self.loss_type}+{self.prediction_mode}",
-                 f"pe={self.pe_type}", f"norm={self.gps_norm_type}"]
+                 f"pe={pe_name}", f"norm={self.gps_norm_type}"]
         if self.use_log_transform: parts.append("log")
         if self.use_rle: parts.append("RLE")
         if self.loss_type == 'focal': parts.append(f"γ={self.focal_gamma}")

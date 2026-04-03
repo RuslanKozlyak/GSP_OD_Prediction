@@ -39,18 +39,29 @@ class GPSEncoder(nn.Module):
     def __init__(self, idim, hd, ped, ed, nl, nh=4, do=0.1, pe_type='rwpe', norm_type='batch_norm'):
         super().__init__()
         self.pe_type = pe_type
+        self.use_pe = pe_type is not None
         self.norm_type = norm_type
-        npd = hd - ped
+        npd = hd - ped if self.use_pe else hd
         self.node_proj = Sequential(Linear(idim, npd), ReLU(), Linear(npd, npd))
-        pid = PE_WALK_LEN
-        if pe_type == 'spe':
-            self.pe_abs_proj = Sequential(Linear(pid, ped), ReLU(), Linear(ped, ped))
-            self.pe_norm = BatchNorm1d(pid)
+        if self.use_pe:
+            pid = PE_WALK_LEN
+            if pe_type == 'spe':
+                self.pe_abs_proj = Sequential(Linear(pid, ped), ReLU(), Linear(ped, ped))
+                self.pe_norm = BatchNorm1d(pid)
+                self.pe_proj = None
+            else:
+                self.pe_norm = BatchNorm1d(pid)
+                self.pe_proj = Linear(pid, ped)
+                self.pe_abs_proj = None
+            if pe_type == 'rrwp':
+                self.rrwp_proj = Sequential(Linear(PE_WALK_LEN, hd), ReLU(), Linear(hd, nh))
+            else:
+                self.rrwp_proj = None
         else:
-            self.pe_norm = BatchNorm1d(pid)
-            self.pe_proj = Linear(pid, ped)
-        if pe_type == 'rrwp':
-            self.rrwp_proj = Sequential(Linear(PE_WALK_LEN, hd), ReLU(), Linear(hd, nh))
+            self.pe_abs_proj = None
+            self.pe_norm = None
+            self.pe_proj = None
+            self.rrwp_proj = None
         self.edge_proj = Sequential(Linear(ed, hd), ReLU(), Linear(hd, hd))
         self.gps_layers = ModuleList()
         for _ in range(nl):
@@ -68,12 +79,15 @@ class GPSEncoder(nn.Module):
 
     def forward(self, gd):
         ne = self.node_proj(gd.x)
-        pr = gd.pe
-        if self.pe_type == 'spe':
-            pe = self.pe_abs_proj(torch.abs(self.pe_norm(pr)))
+        if self.use_pe:
+            pr = gd.pe
+            if self.pe_type == 'spe':
+                pe = self.pe_abs_proj(torch.abs(self.pe_norm(pr)))
+            else:
+                pe = self.pe_proj(self.pe_norm(pr))
+            h = torch.cat([ne, pe], dim=-1)
         else:
-            pe = self.pe_proj(self.pe_norm(pr))
-        h = torch.cat([ne, pe], dim=-1)
+            h = ne
         ee = self.edge_proj(gd.edge_attr)
         batch = torch.zeros(gd.x.size(0), dtype=torch.long, device=gd.x.device)
         for i, l in enumerate(self.gps_layers):

@@ -9,6 +9,8 @@ from models.GPS.model import make_model
 
 from .config import DATA_PATH, MULTI_CITY_IDS, SINGLE_CITY_ID, cleanup_gpu
 
+_PE_TYPE_UNSET = object()
+
 
 class GPSBenchmarkLoader:
     def __init__(self, single_city_id=SINGLE_CITY_ID, multi_city_ids=None, data_path=DATA_PATH):
@@ -77,7 +79,7 @@ class GPSBenchmarkLoader:
                 del model
             cleanup_gpu()
 
-    def load_lgbm_results(self, run_id, city_data=None, area_id=None, pe_type=None):
+    def load_lgbm_results(self, run_id, city_data=None, area_id=None, pe_type=_PE_TYPE_UNSET):
         from models.GPS.config import load_model_config
 
         if city_data is None:
@@ -88,7 +90,9 @@ class GPSBenchmarkLoader:
             if donor_id is None and run_id.endswith("_lgbm"):
                 donor_id = run_id[:-5]
             donor_cfg = load_model_config(donor_id) if donor_id else None
-            effective_pe_type = pe_type or (donor_cfg.pe_type if donor_cfg is not None else "rwpe")
+            effective_pe_type = pe_type if pe_type is not _PE_TYPE_UNSET else (
+                donor_cfg.pe_type if donor_cfg is not None else "rwpe"
+            )
             city_data = self.get_single_city_data(pe_type=effective_pe_type, area_id=area_id)
         return load_saved_lgbm_results(run_id, city_data)
 

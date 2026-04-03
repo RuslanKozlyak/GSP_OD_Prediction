@@ -89,6 +89,8 @@ def build_graph(adjacency, nfs, ds, dev=None, pe_type='rwpe'):
         edge_attr=torch.FloatTensor(ds[ri, ci]).unsqueeze(-1),
         num_nodes=nfs.shape[0],
     )
+    if pe_type is None:
+        return gd.to(dev)
     if pe_type == 'rwpe':
         gd = T.AddRandomWalkPE(walk_length=PE_WALK_LEN, attr_name='pe')(gd)
     elif pe_type == 'spe':
