@@ -27,6 +27,9 @@ class GmelGpsConfig:
     lr:           float          = 3e-4
     # ── GBRT decoder ──────────────────────────────────────────────────────────
     n_estimators: int            = 20
+    # ── LGBM decoder ──────────────────────────────────────────────────────────
+    lgbm_n_estimators: int       = 1000
+    lgbm_num_leaves:   int       = 63
     # ── Fields required by GPS save_metrics_to_csv (duck-type compatibility) ──
     encoder_type:       str            = 'gmel_gps'
     decoder_type:       str            = 'gbrt'
@@ -39,6 +42,13 @@ class GmelGpsConfig:
     include_zero_pairs: bool           = False
     zero_pair_ratio:    float          = 0.0
     use_rle:            bool           = False
+
+    def __post_init__(self):
+        if self.decoder_type not in ('gbrt', 'lgbm'):
+            raise ValueError(
+                f"GmelGpsConfig.decoder_type={self.decoder_type!r} is invalid. "
+                f"Valid options: ('gbrt', 'lgbm')"
+            )
 
     def describe(self):
         pe_name = 'none' if self.pe_type is None else self.pe_type

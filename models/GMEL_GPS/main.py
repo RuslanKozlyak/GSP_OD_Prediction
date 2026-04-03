@@ -17,12 +17,12 @@ from models.GPS.metrics import compute_metrics
 
 # ─── Inference helper ────────────────────────────────────────────────────────
 
-def predict_gmel_gps(model, gbrt, city_data, dev=None):
-    """Run GPS encoders then GBRT for full N×N OD prediction.
+def predict_gmel_gps(model, decoder, city_data, dev=None):
+    """Run GPS encoders then decoder (GBRT or LGBM) for full N×N OD prediction.
 
     Args:
         model:     trained GMEL_GPS instance
-        gbrt:      trained GradientBoostingRegressor
+        decoder:   trained GradientBoostingRegressor or lgb.Booster
         city_data: dict from prepare_single_city_data (needs 'graph_data',
                    'distances_scaled', 'num_nodes')
         dev:       torch.device (defaults to model's device)
@@ -36,14 +36,14 @@ def predict_gmel_gps(model, gbrt, city_data, dev=None):
     with torch.no_grad():
         _, _, _, h_in, h_out = model(city_data['graph_data'])
     n = h_in.shape[0]
-    h_in_np  = h_in.cpu().numpy()   # (N, hd)
-    h_out_np = h_out.cpu().numpy()  # (N, hd)
-    # Build all N² feature vectors: [h_in[i] ‖ h_out[j] ‖ dis[i,j]]
-    h_o  = h_in_np.reshape(n, 1, -1).repeat(n, axis=1)   # (N, N, hd)
-    h_d  = h_out_np.reshape(1, n, -1).repeat(n, axis=0)  # (N, N, hd)
-    dis  = city_data['distances_scaled'].reshape(n, n, 1) # (N, N, 1)
+    h_in_np  = h_in.cpu().numpy()   # (N, hd) — destination attractiveness
+    h_out_np = h_out.cpu().numpy()  # (N, hd) — origin generation
+    # Build all N² feature vectors: [h_out[i] ‖ h_in[j] ‖ dis[i,j]]
+    h_o  = h_out_np.reshape(n, 1, -1).repeat(n, axis=1)   # (N, N, hd) — origin generation
+    h_d  = h_in_np.reshape(1, n, -1).repeat(n, axis=0)    # (N, N, hd) — dest attractiveness
+    dis  = city_data['distances_scaled'].reshape(n, n, 1)  # (N, N, 1)
     feat = np.concatenate([h_o, h_d, dis], axis=2).reshape(-1, h_in_np.shape[1] * 2 + 1)
-    pred = gbrt.predict(feat).reshape(n, n)
+    pred = decoder.predict(feat).reshape(n, n)
     pred[pred < 0] = 0
     return pred
 
@@ -58,15 +58,16 @@ def train(run_id, run_name, config, city_data):
           + MSE(flow_out.squeeze(1), od_train.sum(1))
           + MSE(flow,                od_train)       ← (N,1) vs (N,N) broadcast
 
-    Phase 2 — GBRT fitted on frozen GPS embeddings:
-        features[i,j] = [h_in[i] ‖ h_out[j] ‖ distance[i,j]]   (N², 2·hd+1)
-        targets       = od_train.ravel()
+    Phase 2 — decoder (GBRT or LGBM) fitted on frozen GPS embeddings:
+        features[i,j] = [h_out[i] ‖ h_in[j] ‖ distance[i,j]]   (N², 2·hd+1)
+        targets       = od_train.ravel() (nonzero only if include_zero_pairs=False)
 
     Saves:
-        results/weights/{run_id}.pt          — GMEL_GPS state_dict
-        results/weights/{run_id}.json        — GmelGpsConfig serialised
-        results/weights/{run_id}_gbrt.joblib — GBRT model
-        results/metrics.csv                  — appended row
+        results/weights/{run_id}.pt               — GMEL_GPS state_dict
+        results/weights/{run_id}.json             — GmelGpsConfig serialised
+        results/weights/{run_id}_gbrt.joblib      — GBRT model (decoder_type='gbrt')
+        results/weights/{run_id}_lgbm.lgbm        — LGBM model (decoder_type='lgbm')
+        results/metrics.csv                       — appended row
 
     Args:
         run_id:    unique identifier string
@@ -166,37 +167,69 @@ def train(run_id, run_name, config, city_data):
     if best_state:
         model.load_state_dict(best_state)
 
-    # ── Phase 2: GBRT on frozen GPS embeddings ────────────────────────────────
+    # ── Phase 2: fit decoder on frozen GPS embeddings ────────────────────────
     print('  GMEL_GPS: extracting embeddings...')
     model.eval()
     with torch.no_grad():
         _, _, _, h_in, h_out = model(gd)
-        h_in_np  = h_in.cpu().numpy()
-        h_out_np = h_out.cpu().numpy()
+        h_in_np  = h_in.cpu().numpy()   # (N, hd) — destination attractiveness
+        h_out_np = h_out.cpu().numpy()  # (N, hd) — origin generation
 
     n = h_in_np.shape[0]
-    h_o  = h_in_np.reshape(n, 1, -1).repeat(n, axis=1)
-    h_d  = h_out_np.reshape(1, n, -1).repeat(n, axis=0)
+    h_o  = h_out_np.reshape(n, 1, -1).repeat(n, axis=1)   # origin generation
+    h_d  = h_in_np.reshape(1, n, -1).repeat(n, axis=0)    # dest attractiveness
     feat = np.concatenate([h_o, h_d, dis.reshape(n, n, 1)], axis=2)
     feat = feat.reshape(-1, h_in_np.shape[1] * 2 + 1)
 
-    print(f'  GMEL_GPS: fitting GBRT on {feat.shape[0]:,} pairs ...')
-    gbrt = GradientBoostingRegressor(
-        n_estimators=config.n_estimators,
-        min_samples_split=2,
-        min_samples_leaf=2,
-        max_depth=None,
-    )
-    gbrt.fit(feat, od_train.reshape(-1))
-    print('  GMEL_GPS: GBRT fitted.')
+    y_all = od_train.reshape(-1)
+    if config.include_zero_pairs:
+        X_fit, y_fit = feat, y_all
+        print(f'  GMEL_GPS: fitting {config.decoder_type.upper()} on '
+              f'{X_fit.shape[0]:,} pairs (all) ...')
+    else:
+        nz_mask = y_all > 0
+        X_fit, y_fit = feat[nz_mask], y_all[nz_mask]
+        print(f'  GMEL_GPS: fitting {config.decoder_type.upper()} on '
+              f'{X_fit.shape[0]:,} nonzero pairs ...')
 
-    # Save GBRT
-    gbrt_path = WEIGHTS_DIR / f"{run_id}_gbrt.joblib"
-    joblib.dump(gbrt, str(gbrt_path))
-    print(f"  -> GBRT saved to {gbrt_path}")
+    if config.decoder_type == 'lgbm':
+        import lightgbm as lgb
+        val_flat  = (od_np * val_mask).reshape(-1)
+        val_nz    = val_flat > 0
+        X_val_fit = feat[val_nz]
+        y_val_fit = val_flat[val_nz]
+        lgbm_params = {
+            'objective': 'regression', 'metric': 'mae', 'learning_rate': 0.05,
+            'num_leaves': config.lgbm_num_leaves, 'max_depth': 8,
+            'subsample': 0.8, 'colsample_bytree': 0.8, 'verbose': -1, 'seed': 42,
+        }
+        decoder = lgb.train(
+            lgbm_params,
+            lgb.Dataset(X_fit, y_fit),
+            num_boost_round=config.lgbm_n_estimators,
+            valid_sets=[lgb.Dataset(X_val_fit, y_val_fit)],
+            callbacks=[lgb.early_stopping(50), lgb.log_evaluation(100)],
+        )
+        decoder_path = WEIGHTS_DIR / f"{run_id}_lgbm.lgbm"
+        decoder.save_model(str(decoder_path))
+        print(f'  GMEL_GPS: LGBM fitted. -> {decoder_path}')
+        gbrt = None
+
+    else:  # 'gbrt'
+        decoder = GradientBoostingRegressor(
+            n_estimators=config.n_estimators,
+            min_samples_split=2,
+            min_samples_leaf=2,
+            max_depth=None,
+        )
+        decoder.fit(X_fit, y_fit)
+        decoder_path = WEIGHTS_DIR / f"{run_id}_gbrt.joblib"
+        joblib.dump(decoder, str(decoder_path))
+        print(f'  GMEL_GPS: GBRT fitted. -> {decoder_path}')
+        gbrt = decoder
 
     # ── Evaluation ───────────────────────────────────────────────────────────
-    pred  = predict_gmel_gps(model, gbrt, city_data, device)
+    pred  = predict_gmel_gps(model, decoder, city_data, device)
     nz    = od_np > 0
 
     mf  = compute_metrics(pred.ravel(),        od_np.ravel())
@@ -215,7 +248,8 @@ def train(run_id, run_name, config, city_data):
     return {
         'name':               run_name,
         'model':              model,
-        'gbrt':               gbrt,
+        'gbrt':               gbrt,      # GradientBoostingRegressor or None (lgbm mode)
+        'decoder':            decoder,   # always set; use this for predict_gmel_gps()
         'config':             config,
         'history':            history,
         'metrics_full':       mf,
