@@ -96,6 +96,61 @@ class GPSBenchmarkLoader:
             city_data = self.get_single_city_data(pe_type=effective_pe_type, area_id=area_id)
         return load_saved_lgbm_results(run_id, city_data)
 
+    def load_gmel_gps_results(self, run_id, city_data=None, area_id=None):
+        """Load a pre-trained GMEL_GPS model + GBRT and evaluate on one city."""
+        import json
+        from models.GMEL_GPS.model import GMEL_GPS
+        from models.GMEL_GPS.config import GmelGpsConfig
+        from models.GMEL_GPS.main import predict_gmel_gps
+
+        weight_path = WEIGHTS_DIR / f"{run_id}.pt"
+        gbrt_path   = WEIGHTS_DIR / f"{run_id}_gbrt.joblib"
+        cfg_path    = WEIGHTS_DIR / f"{run_id}.json"
+
+        if not weight_path.exists() or not gbrt_path.exists():
+            print(f"  [SKIP] {run_id}: weights or GBRT not found")
+            return None
+
+        with open(cfg_path) as f:
+            cfg = GmelGpsConfig(**json.load(f))
+
+        if city_data is None:
+            city_data = self.get_single_city_data(
+                pe_type=cfg.pe_type, area_id=area_id
+            )
+
+        print(f"  Loading {run_id} (pe_type={cfg.pe_type}) ...")
+        model = None
+        try:
+            gd = city_data['graph_data']
+            model = GMEL_GPS(
+                input_dim  = gd.x.shape[1],
+                edge_dim   = gd.edge_attr.shape[1],
+                hidden_dim = cfg.hidden_dim,
+                pe_dim     = cfg.pe_dim,
+                n_layers   = cfg.n_layers,
+                n_heads    = cfg.n_heads,
+                dropout    = cfg.dropout,
+                pe_type    = cfg.pe_type,
+                norm_type  = cfg.gps_norm_type,
+            ).to(device)
+            model.load_state_dict(
+                torch.load(str(weight_path), map_location=device)
+            )
+            import joblib
+            gbrt = joblib.load(str(gbrt_path))
+            pred = predict_gmel_gps(model, gbrt, city_data, device)
+            metrics = cal_od_metrics(pred, city_data['od_matrix_np'])
+            print(f"  {run_id}: CPC={metrics['CPC']:.4f}  MAE={metrics['MAE']:.4f}")
+            return metrics
+        except Exception as exc:
+            print(f"  ERROR loading {run_id}: {exc}")
+            return None
+        finally:
+            if model is not None:
+                del model
+            cleanup_gpu()
+
     def load_multi_city_gps_results(self, run_id, city_ids=None):
         from models.GPS.config import load_model_config
 

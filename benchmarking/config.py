@@ -94,3 +94,19 @@ def trained_gps_run_ids(run_ids):
 
 def trained_lgbm_run_ids(run_ids):
     return [f"{run_id}_lgbm" for run_id in run_ids if (WEIGHTS_DIR / f"{run_id}_lgbm.lgbm").exists()]
+
+
+GMEL_GPS_BENCHMARK_IDS = [
+    "GMEL_GPS_rwpe",
+    "GMEL_GPS_lape",
+    "GMEL_GPS_nope",
+    "GMEL_GPS_rwpe_gn",
+]
+
+
+def trained_gmel_gps_run_ids():
+    return [
+        rid for rid in GMEL_GPS_BENCHMARK_IDS
+        if (WEIGHTS_DIR / f"{rid}.pt").exists()
+        and (WEIGHTS_DIR / f"{rid}_gbrt.joblib").exists()
+    ]

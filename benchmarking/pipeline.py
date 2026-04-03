@@ -29,6 +29,7 @@ def run_single_city_benchmark(
     data_path,
     baseline_models=None,
     gps_loader=None,
+    gmel_gps_run_ids=None,
 ):
     gps_loader = gps_loader or GPSBenchmarkLoader(single_city_id=single_city_id, data_path=data_path)
     baseline_models = list(BASELINE_MODELS if baseline_models is None else baseline_models)
@@ -55,6 +56,15 @@ def run_single_city_benchmark(
             print(f"  ERROR {run_id}: {exc}")
         finally:
             cleanup_gpu()
+
+    if gmel_gps_run_ids:
+        print("\n[Our Model - GMEL_GPS variants]")
+        for run_id in gmel_gps_run_ids:
+            metrics = gps_loader.load_gmel_gps_results(run_id, area_id=single_city_id)
+            if metrics:
+                results[run_id] = metrics
+                model_types[run_id] = "Ours (GMEL_GPS)"
+        cleanup_gpu()
 
     print("\n[Baseline - TransFlower orig (paper)]")
     try:
