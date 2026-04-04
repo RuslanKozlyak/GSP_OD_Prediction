@@ -47,5 +47,8 @@ class GMEL_GPS(nn.Module):
         h_out = self.gps_out(graph_data)          # (N, hidden_dim)
         flow_in  = self.linear_in(h_in)           # (N, 1)
         flow_out = self.linear_out(h_out)          # (N, 1)
-        flow     = self.bilinear(h_in, h_out)      # (N, 1)
+        w = self.bilinear.weight.squeeze(0)
+        flow = (h_out @ w) @ h_in.transpose(0, 1)
+        if self.bilinear.bias is not None:
+            flow = flow + self.bilinear.bias.view(1, 1)
         return flow_in, flow_out, flow, h_in, h_out

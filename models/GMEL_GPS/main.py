@@ -5,6 +5,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.preprocessing import MinMaxScaler
 from tqdm.auto import tqdm
 
 from .model import GMEL_GPS
@@ -13,6 +14,56 @@ from models.GPS.config import (
     save_model_weights, save_metrics_to_csv,
 )
 from models.shared.metrics import compute_metrics
+
+
+def _masked_mse(pred, target, mask):
+    """Compute MSE only on observed entries to avoid supervising held-out pairs as zero."""
+    if mask is None:
+        return F.mse_loss(pred, target)
+    if mask.sum().item() == 0:
+        return pred.new_tensor(0.0)
+    return F.mse_loss(pred[mask], target[mask])
+
+
+def _scale_masked_matrix(od_matrix, fit_mask, apply_mask):
+    """Fit scaler on train pairs, then fill only the requested mask with scaled values."""
+    fit_values = od_matrix[fit_mask].reshape(-1, 1)
+    if fit_values.size == 0:
+        fit_values = od_matrix.reshape(-1, 1)
+    scaler = MinMaxScaler().fit(fit_values)
+    scaled = np.zeros_like(od_matrix, dtype=np.float32)
+    if apply_mask.any():
+        scaled[apply_mask] = scaler.transform(
+            od_matrix[apply_mask].reshape(-1, 1)
+        ).reshape(-1)
+    return scaled, scaler
+
+
+def _build_decoder_training_set(feat, od_matrix, train_mask, include_zero_pairs, zero_pair_ratio):
+    """Fit the tree decoder on train positives, optionally mixing in true zeros only."""
+    train_idx = np.flatnonzero(train_mask.reshape(-1))
+    y_flat = od_matrix.reshape(-1)
+
+    if train_idx.size == 0:
+        return feat, y_flat
+
+    if not include_zero_pairs:
+        return feat[train_idx], y_flat[train_idx]
+
+    zero_idx = np.flatnonzero(y_flat == 0)
+    if zero_idx.size == 0:
+        return feat[train_idx], y_flat[train_idx]
+
+    zero_ratio = float(np.clip(zero_pair_ratio, 0.0, 0.95))
+    n_zero = int(round(train_idx.size * zero_ratio / max(1e-8, 1.0 - zero_ratio)))
+    n_zero = min(n_zero, zero_idx.size)
+    if n_zero <= 0:
+        return feat[train_idx], y_flat[train_idx]
+
+    rng = np.random.default_rng(42)
+    sampled_zero_idx = rng.choice(zero_idx, size=n_zero, replace=False)
+    fit_idx = np.concatenate([train_idx, sampled_zero_idx])
+    return feat[fit_idx], y_flat[fit_idx]
 
 
 # ─── Inference helper ────────────────────────────────────────────────────────
@@ -52,28 +103,22 @@ def train(run_id, run_name, config, city_data):
     gd = city_data['graph_data']
     od_train = city_data['od_matrix_train'].astype(float)
     od_np = city_data['od_matrix_np'].astype(float)
+    train_mask = city_data['train_mask']
     val_mask = city_data['val_mask']
     test_mask = city_data['test_mask']
     dis = city_data['distances_scaled']
 
-    od_t = torch.FloatTensor(od_train).to(device)
-    od_val_t = torch.FloatTensor(od_np * val_mask).to(device)
+    od_train_scaled, _ = _scale_masked_matrix(od_np, train_mask, train_mask)
+    od_val_scaled, _ = _scale_masked_matrix(od_np, train_mask, val_mask)
+    od_t = torch.FloatTensor(od_train_scaled).to(device)
+    od_val_t = torch.FloatTensor(od_val_scaled).to(device)
+    train_mask_t = torch.BoolTensor(train_mask).to(device)
+    val_mask_t = torch.BoolTensor(val_mask).to(device)
 
     # ── Build model ──────────────────────────────────────────────────────────
-    hidden_dim = 64
-    pe_dim = 8
-    n_layers = 3
-    n_heads = 4
-    dropout = 0.1
-
     model = GMEL_GPS(
         input_dim=gd.x.shape[1],
         edge_dim=gd.edge_attr.shape[1],
-        hidden_dim=hidden_dim,
-        pe_dim=pe_dim,
-        n_layers=n_layers,
-        n_heads=n_heads,
-        dropout=dropout,
         pe_type=config.pe_type,
         norm_type=config.gps_norm_type,
     ).to(device)
@@ -82,8 +127,8 @@ def train(run_id, run_name, config, city_data):
     print(f"\n{'='*70}\n  {run_name}\n  {config.describe()}\n{'='*70}")
     print(f"  Params: {n_params:,}")
 
-    max_epochs = 300
-    patience_limit = 20
+    max_epochs = config.epochs
+    patience_limit = config.patience
     lr = config.learning_rate
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
@@ -106,7 +151,7 @@ def train(run_id, run_name, config, city_data):
         flow_in, flow_out, flow, _, _ = model(gd)
         loss = (F.mse_loss(flow_in.squeeze(1), od_t.sum(0))
                 + F.mse_loss(flow_out.squeeze(1), od_t.sum(1))
-                + F.mse_loss(flow, od_t))
+                + _masked_mse(flow, od_t, train_mask_t))
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
@@ -116,7 +161,7 @@ def train(run_id, run_name, config, city_data):
             vfi, vfo, vf, _, _ = model(gd)
             val_loss = (F.mse_loss(vfi.squeeze(1), od_val_t.sum(0))
                         + F.mse_loss(vfo.squeeze(1), od_val_t.sum(1))
-                        + F.mse_loss(vf, od_val_t)).item()
+                        + _masked_mse(vf, od_val_t, val_mask_t)).item()
 
         history['train_loss'].append(loss.item())
         history['val_loss'].append(val_loss)
@@ -157,16 +202,16 @@ def train(run_id, run_name, config, city_data):
     feat = np.concatenate([h_o, h_d, dis.reshape(n, n, 1)], axis=2)
     feat = feat.reshape(-1, h_in_np.shape[1] * 2 + 1)
 
-    y_all = od_train.reshape(-1)
-    if config.include_zero_pairs:
-        X_fit, y_fit = feat, y_all
-        print(f'  GMEL_GPS: fitting {config.decoder_type.upper()} on '
-              f'{X_fit.shape[0]:,} pairs (all) ...')
-    else:
-        nz_mask = y_all > 0
-        X_fit, y_fit = feat[nz_mask], y_all[nz_mask]
-        print(f'  GMEL_GPS: fitting {config.decoder_type.upper()} on '
-              f'{X_fit.shape[0]:,} nonzero pairs ...')
+    X_fit, y_fit = _build_decoder_training_set(
+        feat,
+        od_np,
+        train_mask,
+        include_zero_pairs=config.include_zero_pairs,
+        zero_pair_ratio=config.zero_pair_ratio,
+    )
+    fit_label = 'train pairs + sampled zeros' if config.include_zero_pairs else 'train nonzero pairs'
+    print(f'  GMEL_GPS: fitting {config.decoder_type.upper()} on '
+          f'{X_fit.shape[0]:,} {fit_label} ...')
 
     if config.decoder_type == 'lgbm':
         import lightgbm as lgb

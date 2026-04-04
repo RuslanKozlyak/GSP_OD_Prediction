@@ -106,10 +106,12 @@ class GPSBenchmarkLoader:
 
         weight_path = WEIGHTS_DIR / f"{run_id}.pt"
         gbrt_path   = WEIGHTS_DIR / f"{run_id}_gbrt.joblib"
+        lgbm_path   = WEIGHTS_DIR / f"{run_id}_lgbm.lgbm"
         cfg_path    = WEIGHTS_DIR / f"{run_id}.json"
 
-        if not weight_path.exists() or not gbrt_path.exists():
-            print(f"  [SKIP] {run_id}: weights or GBRT not found")
+        decoder_path = lgbm_path if lgbm_path.exists() else gbrt_path
+        if not weight_path.exists() or not decoder_path.exists():
+            print(f"  [SKIP] {run_id}: weights or decoder not found")
             return None
 
         with open(cfg_path) as f:
@@ -130,20 +132,19 @@ class GPSBenchmarkLoader:
             model = GMEL_GPS(
                 input_dim  = gd.x.shape[1],
                 edge_dim   = gd.edge_attr.shape[1],
-                hidden_dim = cfg.hidden_dim,
-                pe_dim     = cfg.pe_dim,
-                n_layers   = cfg.n_layers,
-                n_heads    = cfg.n_heads,
-                dropout    = cfg.dropout,
                 pe_type    = cfg.pe_type,
                 norm_type  = cfg.gps_norm_type,
             ).to(device)
             model.load_state_dict(
                 torch.load(str(weight_path), map_location=device)
             )
-            import joblib
-            gbrt = joblib.load(str(gbrt_path))
-            pred = predict_gmel_gps(model, gbrt, city_data, device)
+            if cfg.decoder_type == 'lgbm' and lgbm_path.exists():
+                import lightgbm as lgb
+                decoder = lgb.Booster(model_file=str(lgbm_path))
+            else:
+                import joblib
+                decoder = joblib.load(str(gbrt_path))
+            pred = predict_gmel_gps(model, decoder, city_data, device)
             metrics = cal_od_metrics(pred, city_data['od_matrix_np'])
             print(f"  {run_id}: CPC={metrics['CPC']:.4f}  MAE={metrics['MAE']:.4f}")
             return metrics
