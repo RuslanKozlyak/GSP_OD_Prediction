@@ -73,6 +73,9 @@ class GMEL(nn.Module):
         h_out = self.gat_out(graph_data, nfeat)
         flow_out = self.linear_out(h_out)
 
-        flow = self.bilinear(h_in, h_out)
+        w = self.bilinear.weight.squeeze(0)
+        flow = (h_out @ w) @ h_in.transpose(0, 1)
+        if self.bilinear.bias is not None:
+            flow = flow + self.bilinear.bias.view(1, 1)
 
         return flow_in, flow_out, flow, h_in, h_out

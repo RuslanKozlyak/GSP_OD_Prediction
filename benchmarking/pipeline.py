@@ -14,7 +14,7 @@ from .runners import run_diffusion_model, run_flat_model, run_graph_model
 def _run_baseline_model(model_name, train_areas, valid_areas, test_areas, data_path):
     if model_name in ("RF", "SVR", "GBRT", "DGM", "GM_E", "GM_P"):
         return run_flat_model(model_name, train_areas, valid_areas, test_areas, data_path)
-    if model_name in ("GMEL", "NetGAN"):
+    if model_name in ("GMEL", "GMEL_GBRT", "GMEL_LGBM", "NetGAN"):
         return run_graph_model(model_name, train_areas, valid_areas, test_areas, data_path)
     if model_name in ("DiffODGen", "WeDAN"):
         return run_diffusion_model(model_name, train_areas, valid_areas, test_areas, data_path)

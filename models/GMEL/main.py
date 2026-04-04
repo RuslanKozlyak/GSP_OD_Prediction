@@ -8,10 +8,67 @@ from sklearn.preprocessing import MinMaxScaler
 from tqdm.auto import tqdm
 
 
+def _masked_mse(pred, target, mask=None):
+    if mask is None:
+        return torch.mean((pred - target) ** 2)
+    if mask.sum().item() == 0:
+        return pred.new_tensor(0.0)
+    return torch.mean((pred[mask] - target[mask]) ** 2)
+
+
+def _pair_embeddings_to_features(h_in, h_out, dis):
+    h = np.concatenate([h_in, h_out], axis=1)
+    n = h.shape[0]
+    h_o = h.reshape(n, 1, h.shape[1]).repeat(n, axis=1)
+    h_d = h.reshape(1, n, h.shape[1]).repeat(n, axis=0)
+    return np.concatenate([h_o, h_d, dis.reshape(n, n, 1)], axis=2).reshape(-1, h.shape[1] * 2 + 1)
+
+
+def _transform_masked_matrix(matrix, scaler, mask):
+    scaled = np.zeros_like(matrix, dtype=np.float32)
+    if mask is not None and mask.any():
+        scaled[mask] = scaler.transform(matrix[mask].reshape(-1, 1)).reshape(-1)
+    return scaled
+
+
+def _fit_decoder(decoder_type, x_train, y_train, x_val=None, y_val=None):
+    if decoder_type == 'lgbm':
+        import lightgbm as lgb
+
+        params = {
+            'objective': 'regression',
+            'metric': 'mae',
+            'learning_rate': 0.05,
+            'num_leaves': 63,
+            'max_depth': 8,
+            'subsample': 0.8,
+            'colsample_bytree': 0.8,
+            'verbose': -1,
+            'seed': 42,
+        }
+        train_set = lgb.Dataset(x_train, y_train)
+        if x_val is not None and len(x_val) > 0:
+            valid_set = lgb.Dataset(x_val, y_val, reference=train_set)
+            return lgb.train(
+                params,
+                train_set,
+                num_boost_round=1000,
+                valid_sets=[valid_set],
+                callbacks=[lgb.early_stopping(50), lgb.log_evaluation(100)],
+            )
+        return lgb.train(params, train_set, num_boost_round=1000)
+
+    decoder = GradientBoostingRegressor(
+        n_estimators=20, min_samples_split=2, min_samples_leaf=2, max_depth=None
+    )
+    decoder.fit(x_train, y_train)
+    return decoder
+
+
 def train(train_areas, val_areas, data_path,
           device=None, nfeat_scaler=None, dis_scaler=None, od_scaler=None,
-          max_epochs=1000, patience=10, single_city_data=None):
-    """Train GMEL (PyG GAT encoder + GBRT decoder).
+          max_epochs=1000, patience=10, single_city_data=None, decoder_type='gbrt'):
+    """Train GMEL (PyG GAT encoder + tree decoder).
 
     Args:
         train_areas: list of area IDs for training
@@ -25,7 +82,7 @@ def train(train_areas, val_areas, data_path,
             honest train/val masking inside one city
 
     Returns:
-        (gmel_net, gbrt, nfeat_scaler, dis_scaler)
+        (gmel_net, decoder, nfeat_scaler, dis_scaler)
     """
     import os, sys
     sys.modules.pop('model', None)    # prevent collision when run after another model
@@ -81,14 +138,15 @@ def train(train_areas, val_areas, data_path,
         adj = single_city_data['adj']
         dis = single_city_data['dis']
         od_train = single_city_data['od_train']
-        train_mask_flat = single_city_data['train_mask'].reshape(-1)
+        train_mask = single_city_data['train_mask']
         nf_s = nfeat_scaler.transform(nf)
-        od_s = od_scaler.transform(od_train.reshape(-1, 1)).reshape(od_train.shape)
+        od_s = _transform_masked_matrix(single_city_data['od'], od_scaler, train_mask)
         train_data_gpu.append((
             torch.FloatTensor(nf_s).to(device),
             build_graph(adj).to(device),
             torch.FloatTensor(od_s).to(device),
-            nf, adj, dis, od_train, train_mask_flat,
+            torch.BoolTensor(train_mask).to(device),
+            nf, adj, dis, od_train, train_mask.reshape(-1),
         ))
     else:
         for nf, adj, dis, od in _iter_areas(train_areas):
@@ -98,6 +156,7 @@ def train(train_areas, val_areas, data_path,
                 torch.FloatTensor(nf_s).to(device),
                 build_graph(adj).to(device),
                 torch.FloatTensor(od_s).to(device),
+                None,
                 nf, adj, dis, od, None,
             ))
 
@@ -107,12 +166,15 @@ def train(train_areas, val_areas, data_path,
         adj = single_city_data['adj']
         dis = single_city_data['dis']
         od_val = single_city_data['od_val']
+        val_mask = single_city_data['val_mask']
         nf_s = nfeat_scaler.transform(nf)
-        od_s = od_scaler.transform(od_val.reshape(-1, 1)).reshape(od_val.shape)
+        od_s = _transform_masked_matrix(single_city_data['od'], od_scaler, val_mask)
         val_data_gpu.append((
             torch.FloatTensor(nf_s).to(device),
             build_graph(adj).to(device),
             torch.FloatTensor(od_s).to(device),
+            torch.BoolTensor(val_mask).to(device),
+            nf, adj, dis, od_val, val_mask.reshape(-1),
         ))
     else:
         for nf, adj, dis, od in _iter_areas(val_areas):
@@ -122,6 +184,8 @@ def train(train_areas, val_areas, data_path,
                 torch.FloatTensor(nf_s).to(device),
                 build_graph(adj).to(device),
                 torch.FloatTensor(od_s).to(device),
+                None,
+                nf, adj, dis, od, None,
             ))
 
     best_vl = np.inf
@@ -131,12 +195,12 @@ def train(train_areas, val_areas, data_path,
     for ep in pbar:
         gmel.train()
         ep_losses = []
-        for nf_t, g, od_t, *_ in train_data_gpu:
+        for nf_t, g, od_t, od_mask_t, *_ in train_data_gpu:
             optimizer.zero_grad()
             flow_in, flow_out, flow, h_in, h_out = gmel(g, nf_t)
             loss = (torch.mean((flow_in  - od_t.sum(0)) ** 2) +
                     torch.mean((flow_out - od_t.sum(1)) ** 2) +
-                    torch.mean((flow     - od_t)        ** 2))
+                    _masked_mse(flow, od_t, od_mask_t))
             loss.backward()
             optimizer.step()
             ep_losses.append(loss.item())
@@ -144,11 +208,11 @@ def train(train_areas, val_areas, data_path,
         gmel.eval()
         with torch.no_grad():
             vls = []
-            for nf_t, g, od_t in val_data_gpu:
+            for nf_t, g, od_t, od_mask_t, *_ in val_data_gpu:
                 flow_in, flow_out, flow, _, _ = gmel(g, nf_t)
                 vl = (torch.mean((flow_in  - od_t.sum(0)) ** 2) +
                       torch.mean((flow_out - od_t.sum(1)) ** 2) +
-                      torch.mean((flow     - od_t)        ** 2)).item()
+                      _masked_mse(flow, od_t, od_mask_t)).item()
                 vls.append(vl)
             vl = float(np.mean(vls))
 
@@ -167,22 +231,14 @@ def train(train_areas, val_areas, data_path,
         gmel.load_state_dict(best_state)
 
     # ── Phase 2: Train GBRT on GAT embeddings ────────────────────────────────
-    print('  GMEL: fitting GBRT on embeddings...')
-    gbrt = GradientBoostingRegressor(
-        n_estimators=20, min_samples_split=2, min_samples_leaf=2, max_depth=None
-    )
+    print(f'  GMEL: fitting {decoder_type.upper()} on embeddings...')
     xtrain_emb, ytrain_emb = [], []
+    xval_emb, yval_emb = [], []
     gmel.eval()
     with torch.no_grad():
-        for nf_t, g, od_t, nf, adj, dis, od, fit_mask in train_data_gpu:
+        for nf_t, g, od_t, _, nf, adj, dis, od, fit_mask in train_data_gpu:
             _, _, _, h_in, h_out = gmel(g, nf_t)
-            h = np.concatenate([h_in.cpu().numpy(), h_out.cpu().numpy()], axis=1)
-            n = h.shape[0]
-            h_o  = h.reshape([n, 1, h.shape[1]]).repeat(n, axis=1)
-            h_d  = h.reshape([1, n, h.shape[1]]).repeat(n, axis=0)
-            feat = np.concatenate(
-                [h_o, h_d, dis.reshape([n, n, 1])], axis=2
-            ).reshape([-1, h.shape[1] * 2 + 1])
+            feat = _pair_embeddings_to_features(h_in.cpu().numpy(), h_out.cpu().numpy(), dis)
             y_flat = od.reshape(-1)
             if fit_mask is not None:
                 xtrain_emb.append(feat[fit_mask])
@@ -190,11 +246,26 @@ def train(train_areas, val_areas, data_path,
             else:
                 xtrain_emb.append(feat)
                 ytrain_emb.append(y_flat)
+        for nf_t, g, od_t, _, nf, adj, dis, od, fit_mask in val_data_gpu:
+            _, _, _, h_in, h_out = gmel(g, nf_t)
+            feat = _pair_embeddings_to_features(h_in.cpu().numpy(), h_out.cpu().numpy(), dis)
+            y_flat = od.reshape(-1)
+            if fit_mask is not None:
+                xval_emb.append(feat[fit_mask])
+                yval_emb.append(y_flat[fit_mask])
+            else:
+                xval_emb.append(feat)
+                yval_emb.append(y_flat)
 
-    gbrt.fit(np.concatenate(xtrain_emb), np.concatenate(ytrain_emb))
-    print('  GMEL: GBRT fitted.')
+    xtrain = np.concatenate(xtrain_emb)
+    ytrain = np.concatenate(ytrain_emb)
+    xval = np.concatenate(xval_emb) if xval_emb else None
+    yval = np.concatenate(yval_emb) if yval_emb else None
 
-    return gmel, gbrt, nfeat_scaler, dis_scaler
+    decoder = _fit_decoder(decoder_type, xtrain, ytrain, xval, yval)
+    print(f'  GMEL: {decoder_type.upper()} fitted.')
+
+    return gmel, decoder, nfeat_scaler, dis_scaler
 
 
 if __name__ == '__main__':
@@ -215,7 +286,7 @@ if __name__ == '__main__':
     single_city_data = prepare_single_city_graph(SINGLE_CITY_ID, data_path=data_path)
 
     device_ = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    gmel, gbrt, nfeat_scaler, dis_scaler = train(
+    gmel, decoder, nfeat_scaler, dis_scaler = train(
         train_areas, val_areas, data_path, device=device_,
         single_city_data=single_city_data,
     )
@@ -230,14 +301,8 @@ if __name__ == '__main__':
         g = build_graph(adj).to(device_)
         with torch.no_grad():
             _, _, _, h_in, h_out = gmel(g, nf_t)
-            h = np.concatenate([h_in.cpu().numpy(), h_out.cpu().numpy()], axis=1)
-            n = h.shape[0]
-            h_o = h.reshape([n, 1, h.shape[1]]).repeat(n, axis=1)
-            h_d = h.reshape([1, n, h.shape[1]]).repeat(n, axis=0)
-            feat = np.concatenate(
-                [h_o, h_d, dis.reshape([n, n, 1])], axis=2
-            ).reshape([-1, h.shape[1] * 2 + 1])
-            od_hat = gbrt.predict(feat).reshape(n, n)
+            feat = _pair_embeddings_to_features(h_in.cpu().numpy(), h_out.cpu().numpy(), dis)
+            od_hat = decoder.predict(feat).reshape(dis.shape[0], dis.shape[1])
             od_hat[od_hat < 0] = 0
         metrics_all.append(cal_od_metrics(od_hat, od))
 

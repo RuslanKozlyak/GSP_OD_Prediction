@@ -10,13 +10,80 @@ import numpy as np
 import torch
 from tqdm.auto import tqdm
 
-from models.shared.metrics import average_listed_metrics, cal_od_metrics
+from models.shared.metrics import average_listed_metrics, cal_od_metrics, compute_metrics
 from models.shared.data_load import (
     construct_flat_features, load_graph_data, get_scalers, build_dgl_graph, build_pyg_graph,
     prepare_single_city_flat, prepare_single_city_graph,
 )
 
 from .config import DATA_PATH, PROJECT_ROOT, SEED, cleanup_gpu, device
+
+
+def _predict_flat_array(model, x):
+    pred = model.predict(x) if hasattr(model, 'predict') else model(x)
+    pred = np.asarray(pred).reshape(-1)
+    pred[pred < 0] = 0
+    return pred
+
+
+def _compute_flat_validation_metrics(model, xs_valid, ys_valid, xs_valid_full, ys_valid_full):
+    cpc_vals = []
+    for x_one, y_one in zip(xs_valid, ys_valid):
+        cpc_vals.append(compute_metrics(_predict_flat_array(model, x_one), y_one)['CPC'])
+
+    cpc_fulls = []
+    for x_one, y_one in zip(xs_valid_full, ys_valid_full):
+        cpc_fulls.append(compute_metrics(_predict_flat_array(model, x_one), y_one)['CPC'])
+
+    return {
+        'CPC_val': float(np.mean(cpc_vals)) if cpc_vals else float('nan'),
+        'CPC_full': float(np.mean(cpc_fulls)) if cpc_fulls else float('nan'),
+    }
+
+
+def _attach_validation_metrics(metrics_all, validation_metrics):
+    for metric in metrics_all:
+        metric.update(validation_metrics)
+    return metrics_all
+
+
+def _predict_gmel_matrix(gmel, decoder, nfeat_scaler, nf, adj, dis, device):
+    nf_t = torch.FloatTensor(nfeat_scaler.transform(nf)).to(device)
+    graph = build_pyg_graph(adj, device)
+    with torch.no_grad():
+        _, _, _, h_in, h_out = gmel(graph, nf_t)
+        h = np.concatenate([h_in.cpu().numpy(), h_out.cpu().numpy()], axis=1)
+        n = h.shape[0]
+        h_o = h.reshape(n, 1, h.shape[1]).repeat(n, axis=1)
+        h_d = h.reshape(1, n, h.shape[1]).repeat(n, axis=0)
+        feat = np.concatenate([h_o, h_d, dis.reshape(n, n, 1)], axis=2)
+        od_hat = decoder.predict(feat.reshape(-1, h.shape[1] * 2 + 1)).reshape(n, n)
+        od_hat[od_hat < 0] = 0
+    return od_hat
+
+
+def _compute_gmel_validation_metrics(gmel, decoder, nfeat_scaler, valid_areas, data_path,
+                                     single_city_data=None, device=device):
+    if single_city_data is not None:
+        pred = _predict_gmel_matrix(
+            gmel, decoder, nfeat_scaler,
+            single_city_data['nfeat'], single_city_data['adj'], single_city_data['dis'],
+            device,
+        )
+        od = single_city_data['od']
+        val_mask = single_city_data['val_mask']
+        return {
+            'CPC_val': compute_metrics(pred[val_mask], od[val_mask])['CPC'],
+            'CPC_full': compute_metrics(pred.ravel(), od.ravel())['CPC'],
+        }
+
+    nf_valid, adj_valid, dis_valid, od_valid = load_graph_data(valid_areas, data_path)
+    cpcs = []
+    for nf, adj, dis, od in zip(nf_valid, adj_valid, dis_valid, od_valid):
+        pred = _predict_gmel_matrix(gmel, decoder, nfeat_scaler, nf, adj, dis, device)
+        cpcs.append(compute_metrics(pred.ravel(), od.ravel())['CPC'])
+    avg_cpc = float(np.mean(cpcs)) if cpcs else float('nan')
+    return {'CPC_val': avg_cpc, 'CPC_full': avg_cpc}
 
 
 def load_model_main(model_name):
@@ -71,6 +138,12 @@ def run_flat_model(model_name, train_areas, valid_areas, test_areas, data_path=D
     else:
         raise ValueError(f"Model {model_name} has no train() function")
 
+    validation_metrics = _compute_flat_validation_metrics(
+        model, xs_valid, ys_valid, xs_valid_full, ys_valid_full
+    )
+    print(f"  Val: CPC_val={validation_metrics['CPC_val']:.4f}  "
+          f"CPC_full={validation_metrics['CPC_full']:.4f}")
+
     del x_train, y_train, xs_valid, ys_valid; gc.collect()
 
     # Evaluate
@@ -86,6 +159,7 @@ def run_flat_model(model_name, train_areas, valid_areas, test_areas, data_path=D
             y_hat[y_hat < 0] = 0
             metrics_all.append(cal_od_metrics(y_hat, y_true))
 
+    metrics_all = _attach_validation_metrics(metrics_all, validation_metrics)
     avg = average_listed_metrics(metrics_all)
     print(f"  CPC={avg['CPC']:.4f}  RMSE={avg['RMSE']:.2f}  MAE={avg['MAE']:.2f}  ({time.time() - t0:.1f}s)")
     del model; gc.collect(); cleanup_gpu()
@@ -93,7 +167,7 @@ def run_flat_model(model_name, train_areas, valid_areas, test_areas, data_path=D
 
 
 def run_graph_model(model_name, train_areas, valid_areas, test_areas, data_path=DATA_PATH):
-    """Train and evaluate a graph-based model (GMEL, NetGAN)."""
+    """Train and evaluate a graph-based model (GMEL variants, NetGAN)."""
     print(f"\n{'=' * 60}\n  Running: {model_name}\n{'=' * 60}")
     t0 = time.time()
     single_city_split = (
@@ -109,44 +183,59 @@ def run_graph_model(model_name, train_areas, valid_areas, test_areas, data_path=
     metrics_all = []
 
     try:
-        if model_name == "GMEL":
+        if model_name in ("GMEL", "GMEL_GBRT", "GMEL_LGBM"):
             module = load_model_main("GMEL")
             single_city_data = None
             if single_city_split:
                 single_city_data = prepare_single_city_graph(train_areas[0], data_path=data_path)
-            gmel, gbrt, nfeat_scaler, dis_scaler = module.train(
+            decoder_type = "lgbm" if model_name == "GMEL_LGBM" else "gbrt"
+            gmel, decoder, nfeat_scaler, dis_scaler = module.train(
                 train_areas, valid_areas, str(data_path),
                 device=device,
                 nfeat_scaler=nfeat_scaler, dis_scaler=dis_scaler, od_scaler=od_scaler,
                 single_city_data=single_city_data,
+                decoder_type=decoder_type,
                 max_epochs=1000, patience=10,
             )
+            validation_metrics = _compute_gmel_validation_metrics(
+                gmel, decoder, nfeat_scaler, valid_areas, data_path,
+                single_city_data=single_city_data, device=device,
+            )
+            print(f"  Val: CPC_val={validation_metrics['CPC_val']:.4f}  "
+                  f"CPC_full={validation_metrics['CPC_full']:.4f}")
             nf_test, adj_test, dis_test, od_test = load_graph_data(test_areas, data_path)
             gmel.eval()
             for nf, adj, dis, od in tqdm(zip(nf_test, adj_test, dis_test, od_test),
                                           total=len(nf_test), desc="GMEL eval"):
-                nf_t = torch.FloatTensor(nfeat_scaler.transform(nf)).to(device)
-                graph = build_pyg_graph(adj, device)
-                with torch.no_grad():
-                    _, _, _, h_in, h_out = gmel(graph, nf_t)
-                    h = np.concatenate([h_in.cpu().numpy(), h_out.cpu().numpy()], axis=1)
-                    n = h.shape[0]
-                    h_o = h.reshape(n, 1, h.shape[1]).repeat(n, axis=1)
-                    h_d = h.reshape(1, n, h.shape[1]).repeat(n, axis=0)
-                    feat = np.concatenate([h_o, h_d, dis.reshape(n, n, 1)], axis=2)
-                    od_hat = gbrt.predict(feat.reshape(-1, h.shape[1] * 2 + 1)).reshape(n, n)
-                    od_hat[od_hat < 0] = 0
+                od_hat = _predict_gmel_matrix(gmel, decoder, nfeat_scaler, nf, adj, dis, device)
                 metrics_all.append(cal_od_metrics(od_hat, od))
-            del gmel, gbrt; gc.collect()
+            metrics_all = _attach_validation_metrics(metrics_all, validation_metrics)
+            del gmel, decoder; gc.collect()
 
         elif model_name == "NetGAN":
             module = load_model_main("NetGAN")
+            single_city_data = None
+            if single_city_split:
+                single_city_data = prepare_single_city_graph(train_areas[0], data_path=data_path)
             trained = module.train(
                 train_areas, valid_areas, str(data_path),
                 device=device,
                 nfeat_scaler=nfeat_scaler, dis_scaler=dis_scaler, od_scaler=od_scaler,
+                single_city_data=single_city_data,
             )
+            if single_city_split:
+                validation_metrics = {'CPC_val': float('nan'), 'CPC_full': float('nan')}
+            else:
+                val_metrics_list = module.evaluate(trained, valid_areas, str(data_path), device=device)
+                val_avg = average_listed_metrics(val_metrics_list) if val_metrics_list else {}
+                validation_metrics = {
+                    'CPC_val': val_avg.get('CPC', float('nan')),
+                    'CPC_full': val_avg.get('CPC', float('nan')),
+                }
+                print(f"  Val: CPC_val={validation_metrics['CPC_val']:.4f}  "
+                      f"CPC_full={validation_metrics['CPC_full']:.4f}")
             metrics_all = module.evaluate(trained, test_areas, str(data_path), device=device)
+            metrics_all = _attach_validation_metrics(metrics_all, validation_metrics)
             del trained; gc.collect()
 
         else:
@@ -191,6 +280,8 @@ def run_diffusion_model(model_name, train_areas, valid_areas, test_areas, data_p
                 break
         if dict_lines:
             avg_metrics = json.loads("\n".join(dict_lines).replace("'", '"'))
+            avg_metrics.setdefault("CPC_val", float('nan'))
+            avg_metrics.setdefault("CPC_full", float('nan'))
             print(f"  CPC={avg_metrics.get('CPC', 'N/A')}  ({time.time() - t0:.1f}s)")
             return [avg_metrics]
     except Exception as exc:

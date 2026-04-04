@@ -9,9 +9,18 @@ from models.shared.metrics import cal_od_metrics, average_listed_metrics
 from models.shared.data_load import load_graph_data, get_scalers, build_dgl_graph
 
 
+def _transform_masked_matrix(matrix, scaler, mask=None):
+    if mask is None:
+        return scaler.transform(matrix.reshape(-1, 1)).reshape(matrix.shape)
+    scaled = np.zeros_like(matrix, dtype=np.float32)
+    if mask.any():
+        scaled[mask] = scaler.transform(matrix[mask].reshape(-1, 1)).reshape(-1)
+    return scaled
+
+
 def train(train_areas, valid_areas, data_path,
           device=None, nfeat_scaler=None, dis_scaler=None, od_scaler=None,
-          n_epochs=2):
+          n_epochs=2, single_city_data=None):
     """Train NetGAN (GAT + Generator + Discriminator).
 
     Args:
@@ -38,11 +47,36 @@ def train(train_areas, valid_areas, data_path,
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # Fit scalers on train data if not provided
-    if nfeat_scaler is None or dis_scaler is None or od_scaler is None:
-        nf_v, _, dis_v, od_v = load_graph_data(train_areas, data_path)
-        nfeat_scaler, dis_scaler, od_scaler = get_scalers(nf_v, dis_v, od_v)
-
-    nf_tr, adj_tr, dis_tr, od_tr = load_graph_data(train_areas, data_path)
+    if single_city_data is not None:
+        train_mask = single_city_data['train_mask']
+        toi = np.where(train_mask.any(1))[0]
+        nf_fit = single_city_data['nfeat'][toi] if toi.size > 0 else single_city_data['nfeat']
+        dis_fit = single_city_data['dis'][train_mask].reshape(-1, 1)
+        if dis_fit.size == 0:
+            dis_fit = single_city_data['dis'].reshape(-1, 1)
+        od_fit = single_city_data['od_train'][train_mask].reshape(-1, 1)
+        if od_fit.size == 0:
+            od_fit = single_city_data['od_train'].reshape(-1, 1)
+        if nfeat_scaler is None:
+            from sklearn.preprocessing import MinMaxScaler
+            nfeat_scaler = MinMaxScaler().fit(nf_fit)
+        if dis_scaler is None:
+            from sklearn.preprocessing import MinMaxScaler
+            dis_scaler = MinMaxScaler().fit(dis_fit)
+        if od_scaler is None:
+            from sklearn.preprocessing import MinMaxScaler
+            od_scaler = MinMaxScaler().fit(od_fit)
+        nf_tr = [single_city_data['nfeat']]
+        adj_tr = [single_city_data['adj']]
+        dis_tr = [single_city_data['dis']]
+        od_tr = [single_city_data['od']]
+        od_masks_tr = [train_mask]
+    else:
+        if nfeat_scaler is None or dis_scaler is None or od_scaler is None:
+            nf_v, _, dis_v, od_v = load_graph_data(train_areas, data_path)
+            nfeat_scaler, dis_scaler, od_scaler = get_scalers(nf_v, dis_v, od_v)
+        nf_tr, adj_tr, dis_tr, od_tr = load_graph_data(train_areas, data_path)
+        od_masks_tr = [None] * len(od_tr)
 
     generator = Generator().to(device)
     discriminator = Discriminator().to(device)
@@ -54,7 +88,7 @@ def train(train_areas, valid_areas, data_path,
     for epoch in range(n_epochs):
         generator.train()
         discriminator.train()
-        for nf, adj, dis, od in zip(nf_tr, adj_tr, dis_tr, od_tr):
+        for nf, adj, dis, od, od_mask in zip(nf_tr, adj_tr, dis_tr, od_tr, od_masks_tr):
             nf_s = nfeat_scaler.transform(nf)
             dis_s = dis_scaler.transform(dis.reshape(-1, 1)).reshape(dis.shape)
 
@@ -75,7 +109,7 @@ def train(train_areas, valid_areas, data_path,
                     batch = [sample_one_random_walk(adjacency, logp) for _ in range(128)]
                     fake_batch = torch.stack(batch).to(device)
 
-                od_s = od_scaler.transform(od.reshape(-1, 1)).reshape(od.shape)
+                od_s = _transform_masked_matrix(od, od_scaler, od_mask)
                 real_batch = torch.FloatTensor(sample_batch_real(od_s)).to(device)
                 loss_d = (torch.mean(discriminator(fake_batch))
                           - torch.mean(discriminator(real_batch))
@@ -115,7 +149,7 @@ def evaluate(trained, test_areas, data_path, device=None):
         g = build_dgl_graph(adj, device)
         with torch.no_grad():
             od_gen, _, _ = generator.generate_OD_net(g, nf_t, dis_t)
-        od_hat = od_scaler.inverse_transform(od_gen.cpu().numpy())
+        od_hat = od_scaler.inverse_transform(od_gen.cpu().numpy().reshape(-1, 1)).reshape(od.shape)
         od_hat[od_hat < 0] = 0
         metrics_all.append(cal_od_metrics(od_hat, od))
 

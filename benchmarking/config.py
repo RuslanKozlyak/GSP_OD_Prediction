@@ -45,6 +45,7 @@ BASELINE_MODELS = [
     "GM_E",
     "GM_P",
     "GMEL",
+    # "GMEL_LGBM",
     # "NetGAN",
     # "DiffODGen",
     # "WeDAN",
@@ -67,6 +68,8 @@ FLAT_SGD_EPOCHS = 5
 FLAT_BATCH_SIZE = 10_000
 RESULT_COLUMNS = [
     "CPC",
+    "CPC_val",
+    "CPC_full",
     "CPC_nonzero",
     "RMSE",
     "MAE",
