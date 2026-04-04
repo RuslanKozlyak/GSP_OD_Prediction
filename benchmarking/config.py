@@ -38,14 +38,14 @@ GPS_MC_BENCHMARK_IDS = [
 ]
 
 BASELINE_MODELS = [
-    "RF",
-    "SVR",
-    "GBRT",
-    "DGM",
-    "GM_E",
-    "GM_P",
+    # "RF",
+    # "SVR",
+    # "GBRT",
+    # "DGM",
+    # "GM_E",
+    # "GM_P",
     "GMEL",
-    # "GMEL_LGBM",
+    "GMEL_LGBM",
     # "NetGAN",
     # "DiffODGen",
     # "WeDAN",

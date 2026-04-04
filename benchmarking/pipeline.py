@@ -66,22 +66,22 @@ def run_single_city_benchmark(
                 model_types[run_id] = "Ours (GMEL_GPS)"
         cleanup_gpu()
 
-    print("\n[Baseline - TransFlower orig (paper)]")
-    try:
-        tf_sc_data = gps_loader.get_single_city_data(pe_type=TRANSFLOWER_ORIG_CONFIG.pe_type, area_id=single_city_id)
-        tf_result = train_single_city(
-            "transflower_orig",
-            "TransFlower Orig (MLP+TF+RLE)",
-            TRANSFLOWER_ORIG_CONFIG,
-            city_data=tf_sc_data,
-        )
-        if tf_result.get("status") == "ok":
-            results["transflower_orig"] = tf_result["metrics_full"]
-            model_types["transflower_orig"] = "Baseline (paper)"
-    except Exception as exc:
-        print(f"  ERROR transflower_orig: {exc}")
-    finally:
-        cleanup_gpu()
+    # print("\n[Baseline - TransFlower orig (paper)]")
+    # try:
+    #     tf_sc_data = gps_loader.get_single_city_data(pe_type=TRANSFLOWER_ORIG_CONFIG.pe_type, area_id=single_city_id)
+    #     tf_result = train_single_city(
+    #         "transflower_orig",
+    #         "TransFlower Orig (MLP+TF+RLE)",
+    #         TRANSFLOWER_ORIG_CONFIG,
+    #         city_data=tf_sc_data,
+    #     )
+    #     if tf_result.get("status") == "ok":
+    #         results["transflower_orig"] = tf_result["metrics_full"]
+    #         model_types["transflower_orig"] = "Baseline (paper)"
+    # except Exception as exc:
+    #     print(f"  ERROR transflower_orig: {exc}")
+    # finally:
+    #     cleanup_gpu()
 
     print("\n[Baselines - classical & graph models]")
     train_areas = [single_city_id]
