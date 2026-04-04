@@ -6,8 +6,10 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm.auto import tqdm
 
+from models.shared.metrics import compute_metrics
 
-def train(x_train, y_train, xs_valid, ys_valid,
+
+def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_full=None,
           device=None, batch_size=50_000, max_epochs=10000, patience=100):
     """Train GRAVITY (GM_P) on pre-built feature arrays.
 
@@ -16,6 +18,8 @@ def train(x_train, y_train, xs_valid, ys_valid,
         y_train: np.ndarray (N,)   — OD values
         xs_valid: list of np.ndarray — per-city validation features
         ys_valid: list of np.ndarray — per-city validation OD values
+        xs_valid_full / ys_valid_full: optional full-matrix view used for
+            CPC_full monitoring
         device: torch.device
         batch_size: DataLoader mini-batch size
         max_epochs / patience: training schedule
@@ -31,6 +35,10 @@ def train(x_train, y_train, xs_valid, ys_valid,
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+    if xs_valid_full is None or ys_valid_full is None:
+        xs_valid_full = xs_valid
+        ys_valid_full = ys_valid
+
     # Normalise distance (col 2) to [0,1] — raw metres cause exp(-69300)≈0 at gamma=0.5
     x_train = x_train.copy()
     dist_max = float(x_train[:, 2].max())
@@ -40,6 +48,7 @@ def train(x_train, y_train, xs_valid, ys_valid,
     for xv in xs_valid:
         if dist_max > 1.0:
             xv[:, 2] /= dist_max
+    xs_valid_full = [xv.copy() for xv in xs_valid_full]
 
     # Filter zero OD pairs + log-space targets
     nz = y_train > 0
@@ -66,9 +75,21 @@ def train(x_train, y_train, xs_valid, ys_valid,
     net = GRAVITY().to(device)
     optimizer = torch.optim.Adam(net.parameters(), lr=1e-3)
 
+    def _predict_np(x_np):
+        preds = []
+        for start in range(0, x_np.shape[0], batch_size):
+            xb_np = x_np[start:start + batch_size].copy()
+            if dist_max > 1.0:
+                xb_np[:, 2] /= dist_max
+            xb = torch.FloatTensor(xb_np).to(device)
+            preds.append(np.atleast_1d(np.abs(net(xb).squeeze().cpu().numpy())))
+        return np.concatenate(preds) if preds else np.empty((0,), dtype=np.float32)
+
     best_vl = np.inf
     best_pat = patience
     best_state = None
+    val_cpc_vals = []
+    val_cpc_fulls = []
     yv_log_all_t = torch.FloatTensor(yv_log_all).to(device) if xv_all_t is not None else None
     pbar = tqdm(range(max_epochs), desc='GM_P', unit='ep')
     for ep in pbar:
@@ -90,7 +111,27 @@ def train(x_train, y_train, xs_valid, ys_valid,
             else:
                 vl = np.inf
 
-        pbar.set_postfix(loss=f'{np.mean(ep_losses):.4g}', val=f'{vl:.4g}', pat=best_pat)
+            vc_vals = []
+            for xv, yv in zip(xs_valid, ys_valid):
+                pred_val = _predict_np(xv)
+                vc_vals.append(compute_metrics(pred_val, yv)['CPC'])
+
+            vcpcs = []
+            for xv_full, yv_full in zip(xs_valid_full, ys_valid_full):
+                pred_full = _predict_np(xv_full)
+                vcpcs.append(compute_metrics(pred_full, yv_full)['CPC'])
+            vc_val = float(np.mean(vc_vals)) if vc_vals else 0.0
+            vc = float(np.mean(vcpcs)) if vcpcs else 0.0
+
+        val_cpc_vals.append(vc_val)
+        val_cpc_fulls.append(vc)
+        pbar.set_postfix(
+            loss=f'{np.mean(ep_losses):.4g}',
+            val=f'{vl:.4g}',
+            CPC_val=f'{vc_val:.4g}',
+            CPC_full=f'{vc:.4g}',
+            pat=best_pat,
+        )
 
         if vl < best_vl:
             best_vl = vl
@@ -111,8 +152,10 @@ def train(x_train, y_train, xs_valid, ys_valid,
         if _dist_max > 1.0:
             x[:, 2] /= _dist_max
         with torch.no_grad():
-            return np.abs(_net(torch.FloatTensor(x).to(device)).squeeze().cpu().numpy())
+            return np.atleast_1d(np.abs(_net(torch.FloatTensor(x).to(device)).squeeze().cpu().numpy()))
 
+    predict.val_cpc_vals = val_cpc_vals
+    predict.val_cpc_fulls = val_cpc_fulls
     return predict
 
 
@@ -126,7 +169,10 @@ if __name__ == '__main__':
 
     device_ = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     predict = train(data['x_train'], data['y_train'],
-                    data['xs_val'], data['ys_val'], device=device_)
+                    data['xs_val'], data['ys_val'],
+                    xs_valid_full=data.get('xs_val_full'),
+                    ys_valid_full=data.get('ys_val_full'),
+                    device=device_)
 
     print("\n  **Evaluating...")
     metrics_all = []

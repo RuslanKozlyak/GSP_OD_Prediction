@@ -13,6 +13,7 @@ from tqdm.auto import tqdm
 from models.shared.metrics import average_listed_metrics, cal_od_metrics
 from models.shared.data_load import (
     construct_flat_features, load_graph_data, get_scalers, build_dgl_graph,
+    prepare_single_city_flat, prepare_single_city_graph,
 )
 
 from .config import DATA_PATH, PROJECT_ROOT, SEED, cleanup_gpu, device
@@ -32,21 +33,39 @@ def run_flat_model(model_name, train_areas, valid_areas, test_areas, data_path=D
     print(f"\n{'=' * 60}\n  Running: {model_name}\n{'=' * 60}")
     t0 = time.time()
     feature_mode = "gravity" if model_name in ("GM_E", "GM_P") else "full"
+    single_city_split = (
+        len(train_areas) == len(valid_areas) == len(test_areas) == 1
+        and train_areas[0] == valid_areas[0] == test_areas[0]
+    )
 
-    # Build features
-    xs_tr, ys_tr = construct_flat_features(train_areas, data_path, feature_mode)
-    x_train = np.concatenate(xs_tr, axis=0)
-    y_train = np.concatenate(ys_tr, axis=0)
-    del xs_tr, ys_tr; gc.collect()
+    if single_city_split:
+        split_data = prepare_single_city_flat(
+            area_id=train_areas[0], data_path=data_path, feature_mode=feature_mode
+        )
+        x_train = split_data['x_train']
+        y_train = split_data['y_train']
+        xs_valid = split_data['xs_val']
+        ys_valid = split_data['ys_val']
+        xs_valid_full = split_data['xs_val_full']
+        ys_valid_full = split_data['ys_val_full']
+        xs_test = split_data['xs_test']
+        ys_test = split_data['ys_test']
+    else:
+        xs_tr, ys_tr = construct_flat_features(train_areas, data_path, feature_mode)
+        x_train = np.concatenate(xs_tr, axis=0)
+        y_train = np.concatenate(ys_tr, axis=0)
+        del xs_tr, ys_tr; gc.collect()
 
-    xs_valid, ys_valid = construct_flat_features(valid_areas, data_path, feature_mode)
-    xs_test, ys_test = construct_flat_features(test_areas, data_path, feature_mode)
+        xs_valid, ys_valid = construct_flat_features(valid_areas, data_path, feature_mode)
+        xs_valid_full, ys_valid_full = xs_valid, ys_valid
+        xs_test, ys_test = construct_flat_features(test_areas, data_path, feature_mode)
 
     # Train
     module = load_model_main(model_name)
     if hasattr(module, 'train'):
         model = module.train(
             x_train, y_train, xs_valid, ys_valid,
+            xs_valid_full=xs_valid_full, ys_valid_full=ys_valid_full,
             device=device, batch_size=10_000, max_epochs=10000, patience=100,
         )
     else:
@@ -77,18 +96,29 @@ def run_graph_model(model_name, train_areas, valid_areas, test_areas, data_path=
     """Train and evaluate a graph-based model (GMEL, NetGAN)."""
     print(f"\n{'=' * 60}\n  Running: {model_name}\n{'=' * 60}")
     t0 = time.time()
+    single_city_split = (
+        len(train_areas) == len(valid_areas) == len(test_areas) == 1
+        and train_areas[0] == valid_areas[0] == test_areas[0]
+    )
 
-    nf_valid, _, dis_valid, od_valid = load_graph_data(valid_areas, data_path)
-    nfeat_scaler, dis_scaler, od_scaler = get_scalers(nf_valid, dis_valid, od_valid)
+    if single_city_split:
+        nfeat_scaler = dis_scaler = od_scaler = None
+    else:
+        nf_train, _, dis_train, od_train = load_graph_data(train_areas, data_path)
+        nfeat_scaler, dis_scaler, od_scaler = get_scalers(nf_train, dis_train, od_train)
     metrics_all = []
 
     try:
         if model_name == "GMEL":
             module = load_model_main("GMEL")
+            single_city_data = None
+            if single_city_split:
+                single_city_data = prepare_single_city_graph(train_areas[0], data_path=data_path)
             gmel, gbrt, nfeat_scaler, dis_scaler = module.train(
                 train_areas, valid_areas, str(data_path),
                 device=device,
                 nfeat_scaler=nfeat_scaler, dis_scaler=dis_scaler, od_scaler=od_scaler,
+                single_city_data=single_city_data,
                 max_epochs=1000, patience=10,
             )
             nf_test, adj_test, dis_test, od_test = load_graph_data(test_areas, data_path)

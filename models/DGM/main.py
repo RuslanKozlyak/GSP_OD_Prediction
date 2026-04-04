@@ -7,8 +7,10 @@ from torch.utils.data import DataLoader, TensorDataset
 from sklearn.preprocessing import MinMaxScaler
 from tqdm.auto import tqdm
 
+from models.shared.metrics import compute_metrics
 
-def train(x_train, y_train, xs_valid, ys_valid,
+
+def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_full=None,
           device=None, batch_size=50_000, max_epochs=300, patience=100):
     """Train DeepGravity on pre-built feature arrays.
 
@@ -17,6 +19,8 @@ def train(x_train, y_train, xs_valid, ys_valid,
         y_train: np.ndarray (N,)   — OD values for training
         xs_valid: list of np.ndarray — per-city validation features
         ys_valid: list of np.ndarray — per-city validation OD values
+        xs_valid_full / ys_valid_full: optional full-matrix view used for
+            CPC_full monitoring
         device: torch.device (defaults to cuda if available)
         batch_size: DataLoader mini-batch size
         max_epochs: max training epochs
@@ -32,6 +36,10 @@ def train(x_train, y_train, xs_valid, ys_valid,
 
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    if xs_valid_full is None or ys_valid_full is None:
+        xs_valid_full = xs_valid
+        ys_valid_full = ys_valid
 
     # Filter zero OD pairs — avoids mode collapse on sparse matrices
     nz = y_train > 0
@@ -51,6 +59,16 @@ def train(x_train, y_train, xs_valid, ys_valid,
     net = DeepGravity(input_dim).to(device)
     optimizer = torch.optim.Adam(net.parameters(), lr=3e-4)
 
+    def _predict_np(x_np):
+        preds = []
+        for start in range(0, x_np.shape[0], batch_size):
+            xb = torch.FloatTensor(
+                feat_scaler.transform(x_np[start:start + batch_size])
+            ).to(device)
+            y_log = od_scaler.renormalize(net(xb).squeeze().cpu().numpy())
+            preds.append(np.atleast_1d(np.expm1(np.maximum(y_log, 0.0))))
+        return np.concatenate(preds) if preds else np.empty((0,), dtype=np.float32)
+
     # Pre-compute validation tensors on GPU (avoid repeated CPU->GPU transfers)
     val_tensors = []
     for xv, yv in zip(xs_valid, ys_valid):
@@ -69,6 +87,8 @@ def train(x_train, y_train, xs_valid, ys_valid,
     best_state = None
     train_losses = []
     val_losses = []
+    val_cpc_vals = []
+    val_cpc_fulls = []
     pbar = tqdm(range(max_epochs), desc='DGM', unit='ep')
     for ep in pbar:
         net.train()
@@ -90,10 +110,30 @@ def train(x_train, y_train, xs_valid, ys_valid,
                 vls.append(((yh - yv_t) ** 2).mean().item())
             vl = float(np.mean(vls)) if vls else np.inf
 
+            vc_vals = []
+            for xv, yv in zip(xs_valid, ys_valid):
+                pred_val = _predict_np(xv)
+                vc_vals.append(compute_metrics(pred_val, yv)['CPC'])
+
+            vcpcs = []
+            for xv_full, yv_full in zip(xs_valid_full, ys_valid_full):
+                pred_full = _predict_np(xv_full)
+                vcpcs.append(compute_metrics(pred_full, yv_full)['CPC'])
+            vc_val = float(np.mean(vc_vals)) if vc_vals else 0.0
+            vc = float(np.mean(vcpcs)) if vcpcs else 0.0
+
         tl = float(np.mean(ep_losses))
         train_losses.append(tl)
         val_losses.append(vl)
-        pbar.set_postfix(loss=f'{tl:.4g}', val=f'{vl:.4g}', pat=best_pat)
+        val_cpc_vals.append(vc_val)
+        val_cpc_fulls.append(vc)
+        pbar.set_postfix(
+            loss=f'{tl:.4g}',
+            val=f'{vl:.4g}',
+            CPC_val=f'{vc_val:.4g}',
+            CPC_full=f'{vc:.4g}',
+            pat=best_pat,
+        )
 
         if vl < best_vl:
             best_vl = vl
@@ -116,10 +156,12 @@ def train(x_train, y_train, xs_valid, ys_valid,
             y_log = _os.renormalize(
                 _net(torch.FloatTensor(_fs.transform(x)).to(device)).squeeze().cpu().numpy()
             )
-            return np.expm1(np.maximum(y_log, 0.0))
+            return np.atleast_1d(np.expm1(np.maximum(y_log, 0.0)))
 
     predict.train_losses = train_losses
     predict.val_losses = val_losses
+    predict.val_cpc_vals = val_cpc_vals
+    predict.val_cpc_fulls = val_cpc_fulls
 
     return predict
 
@@ -135,7 +177,10 @@ if __name__ == '__main__':
 
     device_ = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     predict = train(data['x_train'], data['y_train'],
-                    data['xs_val'], data['ys_val'], device=device_)
+                    data['xs_val'], data['ys_val'],
+                    xs_valid_full=data.get('xs_val_full'),
+                    ys_valid_full=data.get('ys_val_full'),
+                    device=device_)
 
     # Plot loss curves
     fig, ax = plt.subplots(1, 1, figsize=(10, 5))

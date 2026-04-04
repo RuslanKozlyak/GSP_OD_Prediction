@@ -37,9 +37,9 @@ def train(train_areas, valid_areas, data_path,
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # Fit scalers if not provided
+    # Fit scalers on train data if not provided
     if nfeat_scaler is None or dis_scaler is None or od_scaler is None:
-        nf_v, _, dis_v, od_v = load_graph_data(valid_areas, data_path)
+        nf_v, _, dis_v, od_v = load_graph_data(train_areas, data_path)
         nfeat_scaler, dis_scaler, od_scaler = get_scalers(nf_v, dis_v, od_v)
 
     nf_tr, adj_tr, dis_tr, od_tr = load_graph_data(train_areas, data_path)

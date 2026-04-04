@@ -109,6 +109,7 @@ def prepare_single_city_flat(area_id=None, data_path=None, seed=42, feature_mode
     Returns:
         x_train, y_train: concatenated training pair features and targets
         xs_val, ys_val: list of validation arrays (per-area format, single element)
+        xs_val_full, ys_val_full: full-matrix view for full-matrix monitoring
         xs_test, ys_test: list of test arrays (per-area format, single element)
         od_matrix: full OD matrix
         train_mask, val_mask, test_mask: boolean masks
@@ -140,17 +141,45 @@ def prepare_single_city_flat(area_id=None, data_path=None, seed=42, feature_mode
     y_train = y_full[train_flat]
     xs_val = [x_full[val_flat]]
     ys_val = [y_full[val_flat]]
+    xs_val_full = [x_full]
+    ys_val_full = [y_full]
     xs_test = [x_full]  # full matrix for evaluation
     ys_test = [y_full]
 
     return {
         'x_train': x_train, 'y_train': y_train,
         'xs_val': xs_val, 'ys_val': ys_val,
+        'xs_val_full': xs_val_full, 'ys_val_full': ys_val_full,
         'xs_test': xs_test, 'ys_test': ys_test,
+        'x_full': x_full, 'y_full': y_full,
         'od_matrix': od,
         'train_mask': train_mask, 'val_mask': val_mask, 'test_mask': test_mask,
         'n_nodes': n,
         'area_id': area_id,
+    }
+
+
+def prepare_single_city_graph(area_id=None, data_path=None, seed=42):
+    """Prepare raw graph inputs for a single city with 80/10/10 pair masks."""
+    if area_id is None:
+        area_id = SINGLE_CITY_ID
+
+    raw = load_area_raw(area_id, data_path)
+    od = raw["od"].astype(np.float32)
+    train_mask, val_mask, test_mask = _make_single_city_masks(od, seed)
+
+    return {
+        'area_id': area_id,
+        'nfeat': np.concatenate([raw["demos"], raw["pois"]], axis=1).astype(np.float32),
+        'adj': raw["adj"],
+        'dis': raw["dis"].astype(np.float32),
+        'od': od,
+        'od_train': (od * train_mask).astype(np.float32),
+        'od_val': (od * val_mask).astype(np.float32),
+        'od_test': (od * test_mask).astype(np.float32),
+        'train_mask': train_mask,
+        'val_mask': val_mask,
+        'test_mask': test_mask,
     }
 
 
