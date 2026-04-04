@@ -25,11 +25,21 @@ def _masked_mse(pred, target, mask):
     return F.mse_loss(pred[mask], target[mask])
 
 
+def _marginal_mse(pred, target):
+    # Keep marginals as 1D vectors; otherwise (N, 1) vs (N,) broadcasts to (N, N).
+    if pred.dim() == target.dim() + 1 and pred.size(-1) == 1:
+        pred = pred.squeeze(-1)
+    if pred.shape != target.shape:
+        raise ValueError(f"Marginal shape mismatch: pred={tuple(pred.shape)} target={tuple(target.shape)}")
+    return F.mse_loss(pred, target)
+
+
 def _scale_masked_matrix(od_matrix, fit_mask, apply_mask):
     """Fit scaler on train pairs, then fill only the requested mask with scaled values."""
     fit_values = od_matrix[fit_mask].reshape(-1, 1)
     if fit_values.size == 0:
         fit_values = od_matrix.reshape(-1, 1)
+    fit_values = np.concatenate([fit_values, np.zeros((1, 1), dtype=fit_values.dtype)], axis=0)
     scaler = MinMaxScaler().fit(fit_values)
     scaled = np.zeros_like(od_matrix, dtype=np.float32)
     if apply_mask.any():
@@ -138,6 +148,11 @@ def train(run_id, run_name, config, city_data):
     train_mask_t = torch.BoolTensor(train_mask).to(device)
     val_mask_t = torch.BoolTensor(val_mask).to(device)
 
+    # Full-matrix marginals — must come from the complete OD, not the masked version
+    od_full_scaled = od_scaler.transform(od_np.reshape(-1, 1)).reshape(od_np.shape)
+    marginal_in_t = torch.FloatTensor(od_full_scaled.sum(0)).to(device)
+    marginal_out_t = torch.FloatTensor(od_full_scaled.sum(1)).to(device)
+
     # ── Build model ──────────────────────────────────────────────────────────
     model = GMEL_GPS(
         input_dim=gd.x.shape[1],
@@ -149,6 +164,9 @@ def train(run_id, run_name, config, city_data):
     n_params = sum(p.numel() for p in model.parameters())
     print(f"\n{'='*70}\n  {run_name}\n  {config.describe()}\n{'='*70}")
     print(f"  Params: {n_params:,}")
+    if config.loss_type != 'multitask' or config.prediction_mode != 'raw':
+        print("  Note: GMEL_GPS encoder pretraining uses masked MSE on OD+marginals;"
+              " loss_type/prediction_mode are metadata only here.")
 
     max_epochs = config.epochs
     patience_limit = config.patience
@@ -172,8 +190,8 @@ def train(run_id, run_name, config, city_data):
         model.train()
         optimizer.zero_grad()
         flow_in, flow_out, flow, _, _ = model(gd)
-        loss = (F.mse_loss(flow_in.squeeze(1), od_t.sum(0))
-                + F.mse_loss(flow_out.squeeze(1), od_t.sum(1))
+        loss = (_marginal_mse(flow_in, marginal_in_t)
+                + _marginal_mse(flow_out, marginal_out_t)
                 + _masked_mse(flow, od_t, train_mask_t))
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -182,8 +200,8 @@ def train(run_id, run_name, config, city_data):
         model.eval()
         with torch.no_grad():
             vfi, vfo, vf, _, _ = model(gd)
-            val_loss = (F.mse_loss(vfi.squeeze(1), od_val_t.sum(0))
-                        + F.mse_loss(vfo.squeeze(1), od_val_t.sum(1))
+            val_loss = (_marginal_mse(vfi, marginal_in_t)
+                        + _marginal_mse(vfo, marginal_out_t)
                         + _masked_mse(vf, od_val_t, val_mask_t)).item()
 
         history['train_loss'].append(loss.item())

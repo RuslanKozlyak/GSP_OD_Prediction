@@ -18,6 +18,15 @@ def _masked_mse(pred, target, mask=None):
     return torch.mean((pred[mask] - target[mask]) ** 2)
 
 
+def _marginal_mse(pred, target):
+    # Keep marginals as 1D vectors; otherwise (N, 1) vs (N,) broadcasts to (N, N).
+    if pred.dim() == target.dim() + 1 and pred.size(-1) == 1:
+        pred = pred.squeeze(-1)
+    if pred.shape != target.shape:
+        raise ValueError(f"Marginal shape mismatch: pred={tuple(pred.shape)} target={tuple(target.shape)}")
+    return torch.mean((pred - target) ** 2)
+
+
 def _pair_embeddings_to_features(h_in, h_out, dis):
     h = np.concatenate([h_in, h_out], axis=1)
     n = h.shape[0]
@@ -178,6 +187,8 @@ def train(train_areas, val_areas, data_path,
         od_fit = single_city_data['od_train'][train_mask].reshape(-1, 1)
         if od_fit.size == 0:
             od_fit = single_city_data['od_train'].reshape(-1, 1)
+        # Preserve the semantic that scaled zero should inverse-transform back to zero.
+        od_fit = np.concatenate([od_fit, np.zeros((1, 1), dtype=od_fit.dtype)], axis=0)
         nfeat_scaler = MinMaxScaler().fit(nf_fit)
         dis_scaler = MinMaxScaler().fit(dis_fit)
         od_scaler = MinMaxScaler().fit(od_fit)
@@ -192,6 +203,17 @@ def train(train_areas, val_areas, data_path,
     optimizer = torch.optim.Adam(gmel.parameters(), lr=3e-4)
 
     # Pre-load and cache data on GPU (avoid rebuilding graphs every epoch)
+    # Full-matrix marginals for marginal loss (must NOT come from masked matrix)
+    if single_city_data is not None:
+        od_full_s = od_scaler.transform(
+            single_city_data['od'].reshape(-1, 1)
+        ).reshape(single_city_data['od'].shape)
+        marginal_in_t = torch.FloatTensor(od_full_s.sum(0)).to(device)
+        marginal_out_t = torch.FloatTensor(od_full_s.sum(1)).to(device)
+    else:
+        marginal_in_t = None
+        marginal_out_t = None
+
     train_data_gpu = []
     if single_city_data is not None:
         nf = single_city_data['nfeat']
@@ -258,8 +280,12 @@ def train(train_areas, val_areas, data_path,
         for nf_t, g, od_t, od_mask_t, *_ in train_data_gpu:
             optimizer.zero_grad()
             flow_in, flow_out, flow, h_in, h_out = gmel(g, nf_t)
-            loss = (torch.mean((flow_in  - od_t.sum(0)) ** 2) +
-                    torch.mean((flow_out - od_t.sum(1)) ** 2) +
+            # Use full-matrix marginals when available (single-city masked mode);
+            # otherwise od_t is the full scaled matrix so .sum() is correct.
+            m_in = marginal_in_t if marginal_in_t is not None else od_t.sum(0)
+            m_out = marginal_out_t if marginal_out_t is not None else od_t.sum(1)
+            loss = (_marginal_mse(flow_in, m_in) +
+                    _marginal_mse(flow_out, m_out) +
                     _masked_mse(flow, od_t, od_mask_t))
             loss.backward()
             optimizer.step()
@@ -270,8 +296,10 @@ def train(train_areas, val_areas, data_path,
             vls = []
             for nf_t, g, od_t, od_mask_t, *_ in val_data_gpu:
                 flow_in, flow_out, flow, _, _ = gmel(g, nf_t)
-                vl = (torch.mean((flow_in  - od_t.sum(0)) ** 2) +
-                      torch.mean((flow_out - od_t.sum(1)) ** 2) +
+                m_in = marginal_in_t if marginal_in_t is not None else od_t.sum(0)
+                m_out = marginal_out_t if marginal_out_t is not None else od_t.sum(1)
+                vl = (_marginal_mse(flow_in, m_in) +
+                      _marginal_mse(flow_out, m_out) +
                       _masked_mse(flow, od_t, od_mask_t)).item()
                 vls.append(vl)
             vl = float(np.mean(vls))
