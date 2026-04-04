@@ -8,6 +8,7 @@ from sklearn.preprocessing import MinMaxScaler
 from tqdm.auto import tqdm
 
 from models.shared.metrics import cal_od_metrics, compute_metrics
+from models.shared.plotting import save_loss_plot
 
 
 def _masked_mse(pred, target, mask=None):
@@ -136,7 +137,8 @@ def _fit_decoder(decoder_type, x_train, y_train, x_val=None, y_val=None):
 
 def train(train_areas, val_areas, data_path,
           device=None, nfeat_scaler=None, dis_scaler=None, od_scaler=None,
-          max_epochs=1000, patience=10, single_city_data=None, decoder_type='gbrt'):
+          max_epochs=1000, patience=10, single_city_data=None, decoder_type='gbrt',
+          loss_plot_path=None):
     """Train GMEL (PyG GAT encoder + tree decoder).
 
     Args:
@@ -273,6 +275,8 @@ def train(train_areas, val_areas, data_path,
     best_vl = np.inf
     best_pat = patience
     best_state = None
+    train_losses = []
+    val_losses = []
     pbar = tqdm(range(max_epochs), desc='GMEL-GAT', unit='ep')
     for ep in pbar:
         gmel.train()
@@ -304,7 +308,9 @@ def train(train_areas, val_areas, data_path,
                 vls.append(vl)
             vl = float(np.mean(vls))
 
-        pbar.set_postfix(loss=f'{np.mean(ep_losses):.4g}', val=f'{vl:.4g}', pat=best_pat)
+        train_losses.append(float(np.mean(ep_losses)))
+        val_losses.append(vl)
+        pbar.set_postfix(loss=f'{train_losses[-1]:.4g}', val=f'{vl:.4g}', pat=best_pat)
 
         if vl < best_vl:
             best_vl = vl
@@ -317,6 +323,18 @@ def train(train_areas, val_areas, data_path,
 
     if best_state is not None:
         gmel.load_state_dict(best_state)
+
+    saved_plot_path = save_loss_plot(
+        train_losses,
+        val_losses,
+        title="GMEL Encoder Loss",
+        save_path=loss_plot_path,
+    )
+    if saved_plot_path is not None:
+        print(f"  -> Loss plot saved to {saved_plot_path}")
+    gmel.train_losses = train_losses
+    gmel.val_losses = val_losses
+    gmel.loss_plot_path = str(saved_plot_path) if saved_plot_path is not None else None
 
     if single_city_data is not None:
         bilinear_pred = _predict_bilinear_matrix(gmel, val_data_gpu[0][0], val_data_gpu[0][1], od_scaler)

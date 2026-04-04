@@ -4,7 +4,7 @@ import torch
 from dataclasses import replace
 
 from .config import (
-    TrainingConfig, device,
+    TrainingConfig, WEIGHTS_DIR, device,
     ORIGIN_BATCH_SIZE, DEST_BATCH_SIZE, NAN_BATCH_THRESHOLD,
     save_metrics_to_csv, save_model_weights,
 )
@@ -12,6 +12,7 @@ from .model import make_model
 from .loss import compute_loss_for_city
 from .metrics import compute_metrics, evaluate_full_matrix
 from .data_load import prepare_single_city_data, prepare_multi_city_data
+from models.shared.plotting import save_loss_plot
 
 
 # ─── Unified training loop ───────────────────────────────────────────────────
@@ -72,6 +73,7 @@ def _train_loop(run_id, run_name, config, model, city_datas,
 
     epoch = 0
     status = 'ok'
+    loss_plot_path = WEIGHTS_DIR.parent / "loss_plots" / f"{run_id}_loss.png"
     for epoch in range(1, max_epochs + 1):
         model.train()
         t0 = time.time()
@@ -151,6 +153,16 @@ def _train_loop(run_id, run_name, config, model, city_datas,
             print(f"  Early stop @ epoch {epoch}")
             break
 
+    saved_plot_path = save_loss_plot(
+        history['train_loss'],
+        history['val_loss'],
+        title=f"{run_name} Loss",
+        save_path=loss_plot_path,
+    )
+    if saved_plot_path is not None:
+        print(f"  -> Loss plot saved to {saved_plot_path}")
+        model.loss_plot_path = str(saved_plot_path)
+
     if status == 'nan_diverged':
         dummy = {'CPC': 0.0, 'MAE': float('inf'), 'RMSE': float('inf')}
         save_metrics_to_csv(run_id, run_name, config, dummy, dummy, dummy, n_params, epoch, status)
@@ -158,6 +170,7 @@ def _train_loop(run_id, run_name, config, model, city_datas,
             'name': run_name, 'model': model, 'config': config, 'history': history,
             'metrics_full': dummy, 'metrics_nonzero': dummy, 'metrics_test_pairs': dummy,
             'pred_matrix': None, 'status': status,
+            'loss_plot_path': str(saved_plot_path) if saved_plot_path is not None else None,
         }
 
     # Evaluate on last and best weights
@@ -207,6 +220,7 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         'name': run_name, 'model': model, 'config': config, 'history': history,
         'metrics_full': mf, 'metrics_nonzero': mnz, 'metrics_test_pairs': mt,
         'per_city': pc, 'status': status,
+        'loss_plot_path': str(saved_plot_path) if saved_plot_path is not None else None,
     }
 
 

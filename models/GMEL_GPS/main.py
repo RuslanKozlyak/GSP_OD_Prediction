@@ -14,6 +14,7 @@ from models.GPS.config import (
     save_model_weights, save_metrics_to_csv,
 )
 from models.shared.metrics import cal_od_metrics, compute_metrics
+from models.shared.plotting import save_loss_plot
 
 
 def _masked_mse(pred, target, mask):
@@ -183,6 +184,7 @@ def train(run_id, run_name, config, city_data):
     best_state = None
     status = 'ok'
     epoch = 0
+    loss_plot_path = WEIGHTS_DIR.parent / "loss_plots" / f"{run_id}_loss.png"
 
     # ── Phase 1: train GPS encoders ──────────────────────────────────────────
     pbar = tqdm(range(1, max_epochs + 1), desc='GMEL_GPS', unit='ep')
@@ -228,6 +230,16 @@ def train(run_id, run_name, config, city_data):
 
     if best_state:
         model.load_state_dict(best_state)
+
+    saved_plot_path = save_loss_plot(
+        history['train_loss'],
+        history['val_loss'],
+        title=f"{run_name} Loss",
+        save_path=loss_plot_path,
+    )
+    if saved_plot_path is not None:
+        print(f"  -> Loss plot saved to {saved_plot_path}")
+        model.loss_plot_path = str(saved_plot_path)
 
     bilinear_pred = _predict_bilinear_matrix(model, city_data, od_scaler)
     bilinear_mf, bilinear_mnz, bilinear_mt = _print_stage_metrics(
@@ -307,6 +319,7 @@ def train(run_id, run_name, config, city_data):
         'decoder': decoder,
         'config': config,
         'history': history,
+        'loss_plot_path': str(saved_plot_path) if saved_plot_path is not None else None,
         'metrics_bilinear_full': bilinear_mf,
         'metrics_bilinear_nonzero': bilinear_mnz,
         'metrics_bilinear_test_pairs': bilinear_mt,

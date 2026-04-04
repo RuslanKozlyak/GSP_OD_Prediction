@@ -7,10 +7,12 @@ from torch.utils.data import DataLoader, TensorDataset
 from tqdm.auto import tqdm
 
 from models.shared.metrics import compute_metrics
+from models.shared.plotting import save_loss_plot
 
 
 def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_full=None,
-          device=None, batch_size=50_000, max_epochs=10000, patience=100):
+          device=None, batch_size=50_000, max_epochs=10000, patience=100,
+          loss_plot_path=None):
     """Train GRAVITY (GM_E) on pre-built feature arrays.
 
     Args:
@@ -75,6 +77,8 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
     best_vl = np.inf
     best_pat = patience
     best_state = None
+    train_losses = []
+    val_losses = []
     val_cpc_vals = []
     val_cpc_fulls = []
     yv_log_all_t = torch.FloatTensor(yv_log_all).to(device) if xv_all_t is not None else None
@@ -110,10 +114,12 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
             vc_val = float(np.mean(vc_vals)) if vc_vals else 0.0
             vc = float(np.mean(vcpcs)) if vcpcs else 0.0
 
+        train_losses.append(float(np.mean(ep_losses)))
+        val_losses.append(vl)
         val_cpc_vals.append(vc_val)
         val_cpc_fulls.append(vc)
         pbar.set_postfix(
-            loss=f'{np.mean(ep_losses):.4g}',
+            loss=f'{train_losses[-1]:.4g}',
             val=f'{vl:.4g}',
             CPC_val=f'{vc_val:.4g}',
             CPC_full=f'{vc:.4g}',
@@ -131,6 +137,15 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
 
     if best_state is not None:
         net.load_state_dict(best_state)
+
+    saved_plot_path = save_loss_plot(
+        train_losses,
+        val_losses,
+        title="GM_E Training Loss",
+        save_path=loss_plot_path,
+    )
+    if saved_plot_path is not None:
+        print(f"  -> Loss plot saved to {saved_plot_path}")
     _net = net
 
     def predict(x):
@@ -138,6 +153,9 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
         with torch.no_grad():
             return np.atleast_1d(_net(torch.FloatTensor(x).to(device)).squeeze().cpu().numpy())
 
+    predict.train_losses = train_losses
+    predict.val_losses = val_losses
     predict.val_cpc_vals = val_cpc_vals
     predict.val_cpc_fulls = val_cpc_fulls
+    predict.loss_plot_path = str(saved_plot_path) if saved_plot_path is not None else None
     return predict

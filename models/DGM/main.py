@@ -8,10 +8,12 @@ from sklearn.preprocessing import MinMaxScaler
 from tqdm.auto import tqdm
 
 from models.shared.metrics import compute_metrics
+from models.shared.plotting import save_loss_plot
 
 
 def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_full=None,
-          device=None, batch_size=50_000, max_epochs=300, patience=100):
+          device=None, batch_size=50_000, max_epochs=300, patience=100,
+          loss_plot_path=None):
     """Train DeepGravity on pre-built feature arrays.
 
     Args:
@@ -147,6 +149,15 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
     if best_state is not None:
         net.load_state_dict(best_state)
 
+    saved_plot_path = save_loss_plot(
+        train_losses,
+        val_losses,
+        title="DGM Training Loss",
+        save_path=loss_plot_path,
+    )
+    if saved_plot_path is not None:
+        print(f"  -> Loss plot saved to {saved_plot_path}")
+
     # Capture in closure so callers can safely del their local references
     _net, _fs, _os = net, feat_scaler, od_scaler
 
@@ -162,5 +173,6 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
     predict.val_losses = val_losses
     predict.val_cpc_vals = val_cpc_vals
     predict.val_cpc_fulls = val_cpc_fulls
+    predict.loss_plot_path = str(saved_plot_path) if saved_plot_path is not None else None
 
     return predict
