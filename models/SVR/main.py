@@ -1,34 +1,49 @@
 import time
 
+import numpy as np
 from sklearn.svm import SVR
-from data_load import load_data
-from metrics import *
 
-from pprint import pprint
+from models.shared.metrics import cal_od_metrics, average_listed_metrics
 
 
-print("\n  **Loading data...")
-xtrain, ytrain, xvalid, yvalid, xtest, ytest = load_data()
+def train(x_train, y_train, xs_valid=None, ys_valid=None, **kwargs):
+    """Train SVR on flat OD pair features.
 
-svr = SVR(gamma=0.01, C=100)
+    Args:
+        x_train: (N, F) feature array
+        y_train: (N,) target array
 
-print('\n  **Start fitting...')
-start = time.time()
-svr.fit(xtrain, ytrain)
+    Returns:
+        model with .predict(x) method
+    """
+    model = SVR(gamma=0.01, C=100)
+    print('  SVR: fitting...')
+    t0 = time.time()
+    model.fit(x_train, y_train)
+    print(f'  SVR: fitted in {time.time() - t0:.1f}s')
+    return model
 
-print('Complete!', end=" ")
-print('Consume ', time.time()-start, ' seconds!')
-print("-"*50)
 
-print("\n  **Evaluating...")
-metrics_all = []
-for x_one, y_one in zip(xtest, ytest):
-    y_one_hat = svr.predict(x_one)
-    y_one, y_one_hat = y_one.reshape([int(np.sqrt(x_one.shape[0])), 
-                                      int(np.sqrt(x_one.shape[0]))]), y_one_hat.reshape([int(np.sqrt(x_one.shape[0])), 
-                                                                                         int(np.sqrt(x_one.shape[0]))])
-    metrics = cal_od_metrics(y_one_hat, y_one)
-    metrics_all.append(metrics)
+def evaluate(model, xs_test, ys_test):
+    """Evaluate on test data, return list of per-area metric dicts."""
+    metrics_all = []
+    for x_one, y_one in zip(xs_test, ys_test):
+        n = int(np.sqrt(x_one.shape[0]))
+        y_hat = model.predict(x_one).reshape(n, n)
+        y_true = y_one.reshape(n, n)
+        y_hat[y_hat < 0] = 0
+        metrics_all.append(cal_od_metrics(y_hat, y_true))
+    return metrics_all
 
-avg_metrics = average_listed_metrics(metrics_all)
-pprint(avg_metrics)
+
+if __name__ == '__main__':
+    from pprint import pprint
+    from models.shared.data_load import prepare_single_city_flat
+
+    print("\n  **Loading data...")
+    data = prepare_single_city_flat()
+    model = train(data['x_train'], data['y_train'])
+
+    print("\n  **Evaluating...")
+    metrics_all = evaluate(model, data['xs_test'], data['ys_test'])
+    pprint(average_listed_metrics(metrics_all))

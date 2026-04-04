@@ -26,6 +26,25 @@ def _train_loop(run_id, run_name, config, model, city_datas,
     n_params = sum(p.numel() for p in model.parameters())
     print(f"  Params: {n_params:,}")
 
+    # Diagnostic: verify config actually differs between runs
+    import hashlib
+    w_hash = hashlib.md5(
+        b''.join(p.data.cpu().numpy().tobytes() for p in model.parameters())
+    ).hexdigest()[:8]
+    print(f"  [diag] encoder={config.encoder_type} decoder={config.decoder_type} "
+          f"pe={config.pe_type} norm={config.gps_norm_type} loss={config.loss_type}")
+    print(f"  [diag] init_weights_hash={w_hash}")
+    # Check PE data
+    sample_cd = list(city_datas.values())[0]
+    gd = sample_cd.get('graph_data')
+    if gd is not None and hasattr(gd, 'pe') and gd.pe is not None:
+        print(f"  [diag] pe.shape={gd.pe.shape}  pe[:3,:3]={gd.pe[:3,:3].tolist()}")
+    elif gd is not None:
+        print(f"  [diag] pe=None (no positional encoding)")
+    od_train = sample_cd.get('od_matrix_train')
+    if od_train is not None:
+        print(f"  [diag] od_train_hash={hashlib.md5(np.ascontiguousarray(od_train).tobytes()).hexdigest()[:8]}")
+
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5, min_lr=1e-5)
 

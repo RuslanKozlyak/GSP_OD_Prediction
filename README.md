@@ -1,230 +1,150 @@
-# A Large-scale Dataset for Commuting OD Matrix Generation
+# Commuting OD Matrix Generation — GPS Architecture Experiments
 
-This dataset consists of a total count of 3,233 areas around the United States, using counties and metropolitons as area boundaries as well as census tracts and CBGs as region units in the corresponding area, each area including its regional spatial characteristics and commuting OD matrix.
+This repository extends the [Commuting OD Dataset](https://anonymous.4open.science/r/tmp_data-9362/metros.zip) with **GPS-based architecture experiments** for Origin-Destination flow prediction. It combines a GPS-GNN encoder (GPSConv + GINEConv + multi-head attention) with various decoders, positional encodings, loss functions, and normalization strategies.
 
-<img src='assets/framework.png' width='780px'>
-<img src='assets/img.png' width='780px'>
+## Repository Structure
 
-## 1. Data Description
+```
+models/
+  shared/           # Canonical metrics and data loading (used by all models)
+    metrics.py      # CPC, RMSE, MAE, MAPE, SMAPE, JSD, accuracy, etc. (17 metrics)
+    data_load.py    # load_area_raw, construct_flat_features, load_graph_data, split helpers
+  GPS/              # Our GPS-based model
+    model.py        # GPSODModel, TransFlowerODModel, make_model()
+    main.py         # train_single_city(), train_multi_city()
+    config.py       # TrainingConfig dataclass (all experiment parameters)
+    data_load.py    # GPS-specific data prep (PE computation, Huber weights, coords)
+    loss.py         # compute_loss_for_city (CE, Huber, Focal, ZINB, Multitask, MAE)
+    metrics.py      # predict_full_matrix(), evaluate_full_matrix()
+    rle.py          # Relative Location Encoder
+    lgbm_pipeline.py
+  GMEL_GPS/         # GMEL architecture with GPS encoders + GBRT/LGBM decoder
+  RF/               # Random Forest baseline
+  SVR/              # Support Vector Regression baseline
+  GBRT/             # Gradient Boosted Regression Trees baseline
+  DGM/              # DeepGravity Model baseline
+  GM_E/             # Gravity Model (exponential) baseline
+  GM_P/             # Gravity Model (power-law) baseline
+  GMEL/             # Graph Multi-task Embedding Learning baseline
+  NetGAN/           # Network GAN baseline
+  DiffODGen/        # Diffusion-based OD Generation
+  WeDAN/            # WeDAN baseline
+benchmarking/
+  pipeline.py       # run_single_city_benchmark(), run_multi_city_benchmark()
+  runners.py        # Thin dispatcher calling models/<name>/main.py
+  gps_loader.py     # Load pre-trained GPS/LGBM/GMEL_GPS results
+  config.py         # Benchmark IDs, baseline model list, result columns
+  data_utils.py     # Shared data utilities for benchmark
+```
 
-### Regional Spatial Characteristics
+## Notebooks
 
-Each region is characterized by demographics and urban functionalities, derived from American Community Survey (ACS) by the U.S. Census Bureau and the distribution of POIs from OpenStreetMap. Demographics include the population structure of a region based on age, gender, income, education, and other factors, encompassing a total of 97 dimensions. POIs are divided into 36 different categories. The distances between regions are calculated using the planar Euclidean distance between their centroids.
+| Notebook | Purpose |
+|----------|---------|
+| `gps_od.ipynb` | Train GPS models with different module combinations (PE type, decoder, loss, norm) |
+| `lgbm_od.ipynb` | Train LGBM decoder on GPS embeddings |
+| `benchmark.ipynb` | Compare GPS variants vs all baseline models from papers |
 
-| Characteristics of Demographic Part |  
-|   :---    |     
-| Total Population                                        |
-| Male Population                                         |
-| Female Population                                       |
-| Under 5 Years - Total                                   |
-| Under 5 Years - Male                                    |
-| Under 5 Years - Female                                  |
-| 5 to 9 Years - Total                                    |
-| 5 to 9 Years - Male                                     |
-| 5 to 9 Years - Female                                   |
-| 10 to 14 Years - Total                                  |
-| 10 to 14 Years - Male                                   |
-| 10 to 14 Years - Female                                 |
-| 15 to 19 Years - Total                                  |
-| 15 to 19 Years - Male                                   |
-| 15 to 19 Years - Female                                 |
-| 20 to 24 Years - Total                                  |
-| 20 to 24 Years - Male                                   |
-| 20 to 24 Years - Female                                 |
-| 25 to 29 Years - Total                                  |
-| 25 to 29 Years - Male                                   |
-| 25 to 29 Years - Female                                 |
-| 30 to 34 Years - Total                                  |
-| 30 to 34 Years - Male                                   |
-| 30 to 34 Years - Female                                 |
-| 35 to 39 Years - Total                                  |
-| 35 to 39 Years - Male                                   |
-| 35 to 39 Years - Female                                 |
-| 40 to 44 Years - Total                                  |
-| 40 to 44 Years - Male                                   |
-| 40 to 44 Years - Female                                 |
-| 45 to 49 Years - Total                                  |
-| 45 to 49 Years - Male                                   |
-| 45 to 49 Years - Female                                 |
-| 50 to 54 Years - Total                                  |
-| 50 to 54 Years - Male                                   |
-| 50 to 54 Years - Female                                 |
-| 55 to 59 Years - Total                                  |
-| 55 to 59 Years - Male                                   |
-| 55 to 59 Years - Female                                 |
-| 60 to 64 Years - Total                                  |
-| 60 to 64 Years - Male                                   |
-| 60 to 64 Years - Female                                 |
-| 65 to 69 Years - Total                                  |
-| 65 to 69 Years - Male                                   |
-| 65 to 69 Years - Female                                 |
-| 70 to 74 Years - Total                                  |
-| 70 to 74 Years - Male                                   |
-| 70 to 74 Years - Female                                 |
-| 75 to 79 Years - Total                                  |
-| 75 to 79 Years - Male                                   |
-| 75 to 79 Years - Female                                 |
-| 80 to 84 Years - Total                                  |
-| 80 to 84 Years - Male                                   |
-| 80 to 84 Years - Female                                 |
-| 85 Years and Over - Total                               |
-| 85 Years and Over - Male                                |
-| 85 Years and Over - Female                              |
-| Median Age - Total                                      |
-| Median Age - Male                                       |
-| Median Age - Female                                     |
-| Median Earnings (Dollars)                               |
-| Class of Worker - Private Wage and Salary Workers       |
-| Class of Worker - Government Workers                    |
-| Class of Worker - Self-Employed Workers                 |
-| Class of Worker - Unpaid Family Workers                 |
-| Travel Time to Work - Mean Travel Time (Minutes)        |
-| Vehicles Available - No Vehicle Available               |
-| Vehicles Available - 1 Vehicle Available                |
-| Vehicles Available - 2 Vehicles Available               |
-| Vehicles Available - 3 or More Vehicles Available       |
-| Total Households                                        |
-| Average Household Size                                  |
-| Total Families                                          |
-| Average Family Size                                     |
-| Nursery School, Preschool                               |
-| Kindergarten to 12th Grade                              |
-| Kindergarten                                            |
-| Elementary: Grade 1 to Grade 4                          |
-| Elementary: Grade 5 to Grade 8                          |
-| High School: Grade 9 to Grade 12                        |
-| College, Undergraduate                                  |
-| Graduate, Professional School                           |
-| 9th to 12th Grade, No Diploma                           |
-| Associate's Degree                                      |
-| Bachelor's Degree                                       |
-| Bachelor's Degree or Higher                             |
-| Graduate or Professional Degree                         |
-| High School Graduate (Includes Equivalency)             |
-| High School Graduate or Higher                          |
-| Less Than 9th Grade                                     |
-| Less Than High School Graduate                          |
-| Population 25 to 34 Years - Bachelor's Degree or Higher |
-| Population 25 to 34 Years - High School Graduate or Higher |
-| Some College or Associate's Degree                      |
-| Some College, No Degree                                 |
-| Poverty - Male                                          |
-| Poverty - Female                                        |
+## Evaluation Modes
 
+### Single-city
+- City **48201** (Harris County, TX)
+- Nonzero OD pairs split **80/10/10** (train/val/test) with seed=42
+- GPS supports optional `include_zero_pairs` flag for training on zero-flow pairs
 
-| Characteristics of Point-of-interests Part |  
-|   :---    |     
-| finance          |
-| public           |
-| transport        |
-| entertainment    |
-| health           |
-| service          |
-| education        |
-| government       |
-| religion         |
-| accommodation    |
-| food             |
-| cafe             |
-| fast_food        |
-| ice_cream        |
-| pub              |
-| restaurant       |
-| shop_beauty      |
-| shop_clothes     |
-| boutique         |
-| shop_transport   |
-| retail           |
-| commodity        |
-| marketplace      |
-| home-improvement |
-| sport            |
-| public_transport |
-| kindergarten     |
-| office           |
-| recycling        |
-| travel_agency    |
-| tourism          |
-| shop_livelihood  |
-| residential      |
-| dormitory        |
+### Multi-city
+- 10 cities: 17031, 48201, 04013, 06073, 06059, 36047, 12086, 48113, 06065, 36081
+- Cities split **8/1/1** (train/val/test) with seed=42
 
-### Commuting OD Matrices
+All models use identical data splits and the same canonical metrics from `models/shared/metrics.py`.
 
-We construct the OD matrices for all areas using data on commuting patterns from the 2018 Longitudinal Employer-Household Dynamics Origin-Destination Employment Statistics (LODES) dataset. These matrices represent aggregated commuting flows within areas. Each entry in an OD matrix denotes the count of individuals residing in one region and working in another, effectively mapping the commuting patterns of workers across different regions. The LODES dataset is widely used in existing works. In this dataset, the commuting information is aggregated by the cooperation and other kind of work units, which is more reliable and accurate than the individual commuting data. Therefore, in the data collection process, information has been ensured to be representative at a national scale, thus eliminating sampling errors.
+## GPS Model Configuration
 
-## 2. Benchmark Experiments
+All experiment parameters are controlled via `TrainingConfig` in `models/GPS/config.py`:
 
-### Prerequisites
+- **Encoder**: `gps` (GPSConv) or `mlp`
+- **Decoder**: `transflower`, `bilinear`, `lgbm`, `gbrt`
+- **PE type**: `rwpe`, `spe`, `rrwp`, `lape`, or `None`
+- **Loss**: `ce`, `huber`, `focal`, `multitask`, `zinb`, `mae`
+- **Norm**: `batch_norm` or `graph_norm`
+- **RLE**: Relative Location Encoder (optional)
+- **Destination sampling**: with/without zero pairs
 
-To conduct the benchmark experiments, users should first prepare a Python environment containing the necessary libraries. 
+## Metrics
 
-To conduct the experiments, ensure you have the following setup:
+The full metric suite (`cal_od_metrics`) computes 17 metrics:
 
-- **Python Version:** Python 3.8
+| Metric | Description |
+|--------|-------------|
+| CPC | Common Parts Coefficient |
+| RMSE, NRMSE, MAE, MAPE, SMAPE | Standard regression metrics |
+| CPC/RMSE/MAE/MAPE/SMAPE_nonzero | Same metrics on nonzero entries only |
+| accuracy | Fraction of correct zero/nonzero predictions |
+| matrix_COS_similarity | Cosine similarity between flattened matrices |
+| JSD_inflow / JSD_outflow / JSD_ODflow | Jensen-Shannon divergence on flow distributions |
 
-- **Required Libraries:**
-  - `numpy`
-  - `scikit-learn==1.3.0`
-  - `torch==2.1.0+cu118`
-  - `scipy==1.10.1`
-  - `dgl==1.1.2+cu117`
-  - `networkx==3.1`
-  
-Please install or update these libraries to match the specified versions for optimal compatibility.
+## How to Run
 
-### Run Experiments
+### GPS experiments
+```python
+# In gps_od.ipynb — edit SC_CONFIGS dict, then run training cells
+from models.GPS.main import train_single_city
+from models.GPS.config import TrainingConfig
 
-The data of metropolitans can be found at [this link](https://anonymous.4open.science/r/tmp_data-9362/metros.zip).
+config = TrainingConfig(decoder_type='transflower', loss_type='ce', pe_type='rwpe')
+result = train_single_city("my_run", "My Experiment", config)
+```
 
-The code for the benchmark experiments is stored in the `./model/*` directory. Each model-specific folder contains a `main.py` file, which serves as the entry point for executing the benchmark experiment. To run a specific benchmark experiment, simply execute the `main.py` file directly.
+### Baseline models
+```python
+# Each baseline has train() in models/<name>/main.py
+from models.RF.main import train, evaluate
+model = train(x_train, y_train)
+metrics = evaluate(model, xs_test, ys_test)
+```
 
-To run the model, follow these specific steps:
-1. **Navigate to the Project Root Directory:**
-   
-   Use the `cd` command to change into the project's root directory.
-   ```bash
-   cd path_to_this_proj
-   ```
-2. **Execute the Model Script:**
-   
-   Run the `main.py` file located in the WeDAN model directory `./WeDAN` by using the following command:
-   ```bash
-   python WeDAN/main.py
-   ```
-**The experimental results are shown as follows.**
+### Full benchmark
+```python
+# In benchmark.ipynb — runs GPS + all baselines with unified metrics
+from benchmarking.pipeline import run_single_city_benchmark
+results, model_types = run_single_city_benchmark(gps_run_ids, lgbm_run_ids, "48201", data_path)
+```
 
-| Model    | CPC   | RMSE  | NRMSE | inflow | outflow | ODflow |
-|----------|-------|-------|-------|--------|---------|--------|
-| GM-P     | 0.321 | 174.0 | 2.222 | 0.668  | 0.656   | 0.409  |
-| GM-E     | 0.329 | 162.9 | 2.080 | 0.652  | 0.637   | 0.422  |
-| SVR      | 0.420 | 95.4  | 1.218 | 0.417  | 0.555   | 0.410  |
-| RF       | 0.458 | 100.4 | 1.282 | 0.424  | 0.503   | 0.219  |
-| GBRT     | 0.461 | 91.0  | 1.620 | 0.424  | 0.491   | 0.233  |
-| DGM      | 0.431 | 92.9  | 1.186 | 0.469  | 0.561   | 0.230  |
-| GMEL     | 0.440 | 94.3  | 1.204 | 0.445  | 0.355   | 0.207  |
-| NetGAN   | 0.487 | 89.1  | 1.138 | 0.429  | 0.354   | 0.191  |
-| DiffODGen| 0.532 | 74.6  | 0.953 | 0.324  | 0.270   | 0.149  |
-| WeDAN    | 0.593 | 68.6  | 0.876 | 0.291  | 0.269   | 0.147  |
+## Data
 
+The dataset covers 3,233 areas across the United States (counties and metropolitan areas). Each area contains:
 
-### Extra Usage of This Dataset
+| File | Shape | Description |
+|------|-------|-------------|
+| `demos.npy` | (N, 97) | Demographics from American Community Survey |
+| `pois.npy` | (N, 36) | POI category counts from OpenStreetMap |
+| `adj.npy` | (N, N) | Adjacency matrix |
+| `dis.npy` | (N, N) | Euclidean distance matrix |
+| `od.npy` | (N, N) | Commuting OD matrix from LODES 2018 |
 
-To validate your model using this dataset, you can utilize existing scripts for data loading and performance evaluation. Follow these steps to set up and execute your experiments:
+Metropolitan data: [download link](https://anonymous.4open.science/r/tmp_data-9362/metros.zip)
 
-1. **Create a Directory for Your Model**:
-   
-   Prepare a folder to house your model experiments:
-   ```bash
-   mkdir ./name_of_your_model
-   ```
-2. **Write Your Model and Entry Script:**
-    - Develop your own `model.py` to describe your model.
-    - Create a `main.py` to serve as the entry point of your experiment. This script should reuse the existing `data_load.py` and `metrics.py`:
-3. **Execute Your Model:**
-   
-   Navigate to the project root directory and run your model:
-   ```bash
-   cd path_to_this_proj
-   python ./name_of_your_model/main.py
-   ```
+## Prerequisites
+
+- Python 3.8+
+- PyTorch 2.1+
+- PyTorch Geometric
+- DGL
+- scikit-learn, numpy, scipy, pandas
+- lightgbm (for LGBM decoder)
+- tqdm
+
+## Baseline Results (from original paper)
+
+| Model | CPC | RMSE | NRMSE | JSD inflow | JSD outflow | JSD ODflow |
+|-------|-----|------|-------|------------|-------------|------------|
+| GM-P | 0.321 | 174.0 | 2.222 | 0.668 | 0.656 | 0.409 |
+| GM-E | 0.329 | 162.9 | 2.080 | 0.652 | 0.637 | 0.422 |
+| SVR | 0.420 | 95.4 | 1.218 | 0.417 | 0.555 | 0.410 |
+| RF | 0.458 | 100.4 | 1.282 | 0.424 | 0.503 | 0.219 |
+| GBRT | 0.461 | 91.0 | 1.620 | 0.424 | 0.491 | 0.233 |
+| DGM | 0.431 | 92.9 | 1.186 | 0.469 | 0.561 | 0.230 |
+| GMEL | 0.440 | 94.3 | 1.204 | 0.445 | 0.355 | 0.207 |
+| NetGAN | 0.487 | 89.1 | 1.138 | 0.429 | 0.354 | 0.191 |
+| DiffODGen | 0.532 | 74.6 | 0.953 | 0.324 | 0.270 | 0.149 |
+| WeDAN | 0.593 | 68.6 | 0.876 | 0.291 | 0.269 | 0.147 |

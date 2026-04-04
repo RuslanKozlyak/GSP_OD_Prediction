@@ -140,22 +140,23 @@ def train(train_areas, val_areas, data_path,
 
 
 if __name__ == '__main__':
+    from pprint import pprint
+    from models.shared.metrics import cal_od_metrics, average_listed_metrics
+    from models.shared.data_load import (
+        load_graph_data, get_scalers, build_dgl_graph,
+        split_multi_city_ids, SINGLE_CITY_ID, DEFAULT_DATA_PATH,
+    )
     import os, sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from data_load import load_data, get_scalers, build_graph, load_all_areas, split_train_valid_test
-    from metrics import cal_od_metrics, average_listed_metrics
-    from pprint import pprint
+    from data_load import build_graph
 
-    print("\n  **Loading data...")
-    (nf_tr, adj_tr, dis_tr, od_tr,
-     nf_val, adj_val, dis_val, od_val,
-     nf_te, adj_te, dis_te, od_te) = load_data()
+    data_path = str(DEFAULT_DATA_PATH)
+    train_areas = [SINGLE_CITY_ID]
+    val_areas = [SINGLE_CITY_ID]
+    test_areas = [SINGLE_CITY_ID]
 
-    areas = load_all_areas(if_shuffle=True)
-    train_areas, val_areas, test_areas = split_train_valid_test(areas)
-    data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'data')
-
-    nfeat_scaler, dis_scaler, od_scaler = get_scalers(nf_tr, dis_tr, od_tr)
+    nf_val, _, dis_val, od_val = load_graph_data(val_areas, data_path)
+    nfeat_scaler, dis_scaler, od_scaler = get_scalers(nf_val, dis_val, od_val)
 
     device_ = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     gmel, gbrt, nfeat_scaler, dis_scaler = train(
@@ -163,18 +164,20 @@ if __name__ == '__main__':
         nfeat_scaler=nfeat_scaler, dis_scaler=dis_scaler, od_scaler=od_scaler,
     )
 
+    nf_te, adj_te, dis_te, od_te = load_graph_data(test_areas, data_path)
+
     print("\n  **Evaluating...")
     metrics_all = []
     for nf, adj, dis, od in zip(nf_te, adj_te, dis_te, od_te):
         nf_s = nfeat_scaler.transform(nf)
         nf_t = torch.FloatTensor(nf_s).to(device_)
-        g    = build_graph(adj).to(device_)
+        g = build_graph(adj).to(device_)
         with torch.no_grad():
             _, _, _, h_in, h_out = gmel(g, nf_t)
             h = np.concatenate([h_in.cpu().numpy(), h_out.cpu().numpy()], axis=1)
             n = h.shape[0]
-            h_o  = h.reshape([n, 1, h.shape[1]]).repeat(n, axis=1)
-            h_d  = h.reshape([1, n, h.shape[1]]).repeat(n, axis=0)
+            h_o = h.reshape([n, 1, h.shape[1]]).repeat(n, axis=1)
+            h_d = h.reshape([1, n, h.shape[1]]).repeat(n, axis=0)
             feat = np.concatenate(
                 [h_o, h_d, dis.reshape([n, n, 1])], axis=2
             ).reshape([-1, h.shape[1] * 2 + 1])

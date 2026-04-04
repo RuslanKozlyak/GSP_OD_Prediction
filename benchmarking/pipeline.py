@@ -2,7 +2,7 @@ from dataclasses import replace
 
 from models.GPS.config import MC_EPOCHS
 from models.GPS.main import train_multi_city, train_single_city
-from models.GPS.metrics import average_listed_metrics
+from models.shared.metrics import average_listed_metrics
 
 from .config import BASELINE_MODELS, TRANSFLOWER_ORIG_CONFIG, cleanup_gpu
 from .data_utils import split_multi_city_ids

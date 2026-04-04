@@ -112,21 +112,20 @@ def train(x_train, y_train, xs_valid, ys_valid,
 
 
 if __name__ == '__main__':
-    import os, sys
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from data_load import load_data
-    from metrics import cal_od_metrics, average_listed_metrics
     from pprint import pprint
+    from models.shared.metrics import cal_od_metrics, average_listed_metrics
+    from models.shared.data_load import prepare_single_city_flat
 
     print("\n  **Loading data...")
-    xtrain, ytrain, xvalid, yvalid, xtest, ytest = load_data()
+    data = prepare_single_city_flat(feature_mode="gravity")
 
     device_ = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    predict = train(xtrain, ytrain, xvalid, yvalid, device=device_)
+    predict = train(data['x_train'], data['y_train'],
+                    data['xs_val'], data['ys_val'], device=device_)
 
     print("\n  **Evaluating...")
     metrics_all = []
-    for x_one, y_one in zip(xtest, ytest):
+    for x_one, y_one in zip(data['xs_test'], data['ys_test']):
         n = int(np.sqrt(y_one.shape[0]))
         y_hat = predict(x_one).reshape(n, n)
         y_one = y_one.reshape(n, n)

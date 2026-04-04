@@ -4,7 +4,8 @@ import torch
 from models.GPS.config import WEIGHTS_DIR, device
 from models.GPS.data_load import prepare_multi_city_data, prepare_single_city_data
 from models.GPS.lgbm_pipeline import load_lgbm_results as load_saved_lgbm_results
-from models.GPS.metrics import cal_od_metrics, predict_full_matrix
+from models.shared.metrics import cal_od_metrics
+from models.GPS.metrics import predict_full_matrix
 from models.GPS.model import make_model
 
 from .config import DATA_PATH, MULTI_CITY_IDS, SINGLE_CITY_ID, cleanup_gpu
@@ -100,7 +101,7 @@ class GPSBenchmarkLoader:
         """Load a pre-trained GMEL_GPS model + GBRT and evaluate on one city."""
         import json
         from models.GMEL_GPS.model import GMEL_GPS
-        from models.GMEL_GPS.config import GmelGpsConfig
+        from models.GPS.config import TrainingConfig
         from models.GMEL_GPS.main import predict_gmel_gps
 
         weight_path = WEIGHTS_DIR / f"{run_id}.pt"
@@ -112,7 +113,10 @@ class GPSBenchmarkLoader:
             return None
 
         with open(cfg_path) as f:
-            cfg = GmelGpsConfig(**json.load(f))
+            raw = json.load(f)
+        # Filter out fields not in TrainingConfig
+        valid_fields = {f.name for f in __import__('dataclasses').fields(TrainingConfig)}
+        cfg = TrainingConfig(**{k: v for k, v in raw.items() if k in valid_fields})
 
         if city_data is None:
             city_data = self.get_single_city_data(

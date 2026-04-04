@@ -69,7 +69,7 @@ class TrainingConfig:
     # fmt: off
     # ── Architecture ──────────────────────────────────────────────────────────
     encoder_type:       Literal['gps', 'mlp']                               = 'gps'
-    decoder_type:       Literal['bilinear', 'transflower','lgbm']           = 'transflower'
+    decoder_type:       Literal['bilinear', 'transflower', 'lgbm', 'gbrt']  = 'transflower'
     pe_type:            Optional[Literal['rwpe', 'spe', 'rrwp', 'lape']]    = 'rwpe'
     gps_norm_type:      Literal['batch_norm', 'graph_norm']                 = 'batch_norm'
     # ── Loss ──────────────────────────────────────────────────────────────────
@@ -97,12 +97,16 @@ class TrainingConfig:
     rle_out_dim:        int   = 64
     rle_lambda_min:     float = 1.0
     rle_lambda_max:     float = 20000.0
+    # ── GBRT / LGBM decoder (for GMEL_GPS mode) ─────────────────────────────
+    gbrt_n_estimators:  int   = 20
+    lgbm_n_estimators:  int   = 1000
+    lgbm_num_leaves:    int   = 63
     # fmt: on
 
     def __post_init__(self):
         _valid = {
             'encoder_type':    ('gps', 'mlp'),
-            'decoder_type':    ('bilinear', 'transflower','lgbm'),
+            'decoder_type':    ('bilinear', 'transflower', 'lgbm', 'gbrt'),
             'pe_type':         ('rwpe', 'spe', 'rrwp', 'lape', None),
             'gps_norm_type':   ('batch_norm', 'graph_norm'),
             'loss_type':       ('huber', 'ce', 'multitask', 'zinb', 'focal', 'mae'),
@@ -150,9 +154,19 @@ def save_metrics_to_csv(run_id, run_name, config, metrics_full, metrics_nz,
         'zero_pair_ratio': config.zero_pair_ratio,
         'use_rle': config.use_rle,
         'n_params': n_params, 'epochs_trained': epochs_trained,
-        'CPC_full': metrics_full['CPC'], 'CPC_nz': metrics_nz['CPC'],
-        'CPC_test': metrics_test['CPC'],
-        'MAE_full': metrics_full['MAE'], 'RMSE_full': metrics_full['RMSE'],
+        'CPC_full': metrics_full.get('CPC'), 'CPC_nz': metrics_nz.get('CPC'),
+        'CPC_test': metrics_test.get('CPC'),
+        'MAE_full': metrics_full.get('MAE'), 'RMSE_full': metrics_full.get('RMSE'),
+        # Full metric suite from cal_od_metrics
+        'CPC_nonzero': metrics_full.get('CPC_nonzero'),
+        'NRMSE': metrics_full.get('NRMSE'),
+        'MAPE': metrics_full.get('MAPE'),
+        'SMAPE': metrics_full.get('SMAPE'),
+        'accuracy': metrics_full.get('accuracy'),
+        'matrix_COS_similarity': metrics_full.get('matrix_COS_similarity'),
+        'JSD_inflow': metrics_full.get('JSD_inflow'),
+        'JSD_outflow': metrics_full.get('JSD_outflow'),
+        'JSD_ODflow': metrics_full.get('JSD_ODflow'),
     }
     file_exists = METRICS_CSV.exists()
     with open(METRICS_CSV, 'a', newline='') as f:
