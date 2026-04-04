@@ -41,16 +41,3 @@ def evaluate(model, xs_test, ys_test):
         y_hat[y_hat < 0] = 0
         metrics_all.append(cal_od_metrics(y_hat, y_true))
     return metrics_all
-
-
-if __name__ == '__main__':
-    from pprint import pprint
-    from models.shared.data_load import prepare_single_city_flat
-
-    print("\n  **Loading data...")
-    data = prepare_single_city_flat()
-    model = train(data['x_train'], data['y_train'])
-
-    print("\n  **Evaluating...")
-    metrics_all = evaluate(model, data['xs_test'], data['ys_test'])
-    pprint(average_listed_metrics(metrics_all))

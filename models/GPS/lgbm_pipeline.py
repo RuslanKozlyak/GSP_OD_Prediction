@@ -109,6 +109,16 @@ def load_lgbm_results(run_id, city_data):
         pred[ao, ad] = pf.astype(np.float32)
 
         metrics = cal_od_metrics(pred, od)
+        nz = od > 0
+        if np.any(nz):
+            mnz = compute_metrics(pred[nz], od[nz].astype(float))
+            metrics['CPC_nz'] = mnz['CPC']
+        tm = city_data.get('test_mask')
+        if tm is not None and np.any(tm):
+            mt = compute_metrics(pred[tm], od[tm].astype(float))
+            metrics['CPC_test'] = mt['CPC']
+            metrics['MAE_test'] = mt['MAE']
+            metrics['RMSE_test'] = mt['RMSE']
         print(f"  {run_id}: CPC={metrics['CPC']:.4f}  MAE={metrics['MAE']:.4f}")
         return metrics
 

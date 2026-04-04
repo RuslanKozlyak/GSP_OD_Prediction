@@ -154,15 +154,3 @@ def evaluate(trained, test_areas, data_path, device=None):
         metrics_all.append(cal_od_metrics(od_hat, od))
 
     return metrics_all
-
-
-if __name__ == '__main__':
-    from pprint import pprint
-    from models.shared.data_load import SINGLE_CITY_ID, DEFAULT_DATA_PATH
-
-    data_path = str(DEFAULT_DATA_PATH)
-    areas = [SINGLE_CITY_ID]
-
-    trained = train(areas, areas, data_path)
-    metrics_all = evaluate(trained, areas, data_path)
-    pprint(average_listed_metrics(metrics_all))
