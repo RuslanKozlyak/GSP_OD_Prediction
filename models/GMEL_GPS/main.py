@@ -13,7 +13,7 @@ from models.GPS.config import (
     TrainingConfig, WEIGHTS_DIR, device, ensure_dirs,
     save_model_weights, save_metrics_to_csv,
 )
-from models.shared.metrics import compute_metrics
+from models.shared.metrics import cal_od_metrics, compute_metrics
 
 
 def _masked_mse(pred, target, mask):
@@ -66,6 +66,29 @@ def _build_decoder_training_set(feat, od_matrix, train_mask, include_zero_pairs,
     return feat[fit_idx], y_flat[fit_idx]
 
 
+def _predict_bilinear_matrix(model, city_data, od_scaler):
+    model.eval()
+    with torch.no_grad():
+        _, _, flow, _, _ = model(city_data['graph_data'])
+    pred = od_scaler.inverse_transform(flow.detach().cpu().numpy().reshape(-1, 1)).reshape(flow.shape)
+    pred[pred < 0] = 0
+    return pred
+
+
+def _print_stage_metrics(stage_name, pred, od_np, test_mask):
+    nz = od_np > 0
+    mf = cal_od_metrics(pred, od_np)
+    mnz = compute_metrics(pred[nz], od_np[nz]) if np.any(nz) else {'CPC': 0.0, 'MAE': 0.0, 'RMSE': 0.0}
+    mt = compute_metrics(pred[test_mask], od_np[test_mask]) if np.any(test_mask) else {'CPC': 0.0, 'MAE': 0.0, 'RMSE': 0.0}
+    print(f"\n  === {stage_name} ===")
+    print(f"    CPC_full={mf['CPC']:.4f}  CPC_nz={mnz['CPC']:.4f}  "
+          f"CPC_test={mt['CPC']:.4f}  MAE={mf['MAE']:.4f}  RMSE={mf['RMSE']:.4f}")
+    print(f"    Full metrics: {mf}")
+    print(f"    Nonzero metrics: {mnz}")
+    print(f"    Test-pair metrics: {mt}")
+    return mf, mnz, mt
+
+
 # ─── Inference helper ────────────────────────────────────────────────────────
 
 def predict_gmel_gps(model, decoder, city_data, dev=None):
@@ -108,7 +131,7 @@ def train(run_id, run_name, config, city_data):
     test_mask = city_data['test_mask']
     dis = city_data['distances_scaled']
 
-    od_train_scaled, _ = _scale_masked_matrix(od_np, train_mask, train_mask)
+    od_train_scaled, od_scaler = _scale_masked_matrix(od_np, train_mask, train_mask)
     od_val_scaled, _ = _scale_masked_matrix(od_np, train_mask, val_mask)
     od_t = torch.FloatTensor(od_train_scaled).to(device)
     od_val_t = torch.FloatTensor(od_val_scaled).to(device)
@@ -188,6 +211,11 @@ def train(run_id, run_name, config, city_data):
     if best_state:
         model.load_state_dict(best_state)
 
+    bilinear_pred = _predict_bilinear_matrix(model, city_data, od_scaler)
+    bilinear_mf, bilinear_mnz, bilinear_mt = _print_stage_metrics(
+        "Bilinear Head", bilinear_pred, od_np, test_mask
+    )
+
     # ── Phase 2: fit decoder on frozen GPS embeddings ────────────────────────
     print('  GMEL_GPS: extracting embeddings...')
     model.eval()
@@ -249,15 +277,7 @@ def train(run_id, run_name, config, city_data):
 
     # ── Evaluation ───────────────────────────────────────────────────────────
     pred = predict_gmel_gps(model, decoder, city_data, device)
-    nz = od_np > 0
-
-    mf = compute_metrics(pred.ravel(), od_np.ravel())
-    mnz = compute_metrics(pred[nz], od_np[nz])
-    mt = compute_metrics(pred[test_mask], od_np[test_mask])
-
-    print(f"\n  === Evaluation ===")
-    print(f"    CPC_full={mf['CPC']:.4f}  CPC_nz={mnz['CPC']:.4f}  "
-          f"CPC_test={mt['CPC']:.4f}  MAE={mf['MAE']:.4f}")
+    mf, mnz, mt = _print_stage_metrics("Tree Decoder", pred, od_np, test_mask)
 
     save_metrics_to_csv(run_id, run_name, config, mf, mnz, mt,
                         n_params, epoch, status)
@@ -269,6 +289,9 @@ def train(run_id, run_name, config, city_data):
         'decoder': decoder,
         'config': config,
         'history': history,
+        'metrics_bilinear_full': bilinear_mf,
+        'metrics_bilinear_nonzero': bilinear_mnz,
+        'metrics_bilinear_test_pairs': bilinear_mt,
         'metrics_full': mf,
         'metrics_nonzero': mnz,
         'metrics_test_pairs': mt,

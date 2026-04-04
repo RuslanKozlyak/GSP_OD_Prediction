@@ -7,6 +7,8 @@ from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.preprocessing import MinMaxScaler
 from tqdm.auto import tqdm
 
+from models.shared.metrics import cal_od_metrics, compute_metrics
+
 
 def _masked_mse(pred, target, mask=None):
     if mask is None:
@@ -29,6 +31,64 @@ def _transform_masked_matrix(matrix, scaler, mask):
     if mask is not None and mask.any():
         scaled[mask] = scaler.transform(matrix[mask].reshape(-1, 1)).reshape(-1)
     return scaled
+
+
+def _predict_bilinear_matrix(gmel, nf_t, g, od_scaler):
+    gmel.eval()
+    with torch.no_grad():
+        _, _, flow, _, _ = gmel(g, nf_t)
+    pred = od_scaler.inverse_transform(flow.detach().cpu().numpy().reshape(-1, 1)).reshape(flow.shape)
+    pred[pred < 0] = 0
+    return pred
+
+
+def _predict_decoder_matrix(decoder, h_in, h_out, dis):
+    pred = decoder.predict(_pair_embeddings_to_features(h_in, h_out, dis)).reshape(dis.shape[0], dis.shape[1])
+    pred[pred < 0] = 0
+    return pred
+
+
+def _print_stage_metrics(stage_name, pred, od_np, test_mask=None):
+    nz = od_np > 0
+    mf = cal_od_metrics(pred, od_np)
+    mnz = compute_metrics(pred[nz], od_np[nz]) if np.any(nz) else {'CPC': 0.0, 'MAE': 0.0, 'RMSE': 0.0}
+    mt = (
+        compute_metrics(pred[test_mask], od_np[test_mask])
+        if test_mask is not None and np.any(test_mask)
+        else None
+    )
+    print(f"\n  === {stage_name} ===")
+    if mt is not None:
+        print(f"    CPC_full={mf['CPC']:.4f}  CPC_nz={mnz['CPC']:.4f}  "
+              f"CPC_test={mt['CPC']:.4f}  MAE={mf['MAE']:.4f}  RMSE={mf['RMSE']:.4f}")
+    else:
+        print(f"    CPC_full={mf['CPC']:.4f}  CPC_nz={mnz['CPC']:.4f}  "
+              f"MAE={mf['MAE']:.4f}  RMSE={mf['RMSE']:.4f}")
+    print(f"    Full metrics: {mf}")
+    print(f"    Nonzero metrics: {mnz}")
+    if mt is not None:
+        print(f"    Test-pair metrics: {mt}")
+    return mf, mnz, mt
+
+
+def _average_metric_dicts(metrics):
+    if not metrics:
+        return {}
+    keys = metrics[0].keys()
+    return {k: float(np.mean([m[k] for m in metrics])) for k in keys}
+
+
+def _print_averaged_stage_metrics(stage_name, metrics_full, metrics_nonzero):
+    mf = _average_metric_dicts(metrics_full)
+    mnz = _average_metric_dicts(metrics_nonzero)
+    print(f"\n  === {stage_name} ===")
+    print(f"    CPC_full={mf.get('CPC', float('nan')):.4f}  "
+          f"CPC_nz={mnz.get('CPC', float('nan')):.4f}  "
+          f"MAE={mf.get('MAE', float('nan')):.4f}  "
+          f"RMSE={mf.get('RMSE', float('nan')):.4f}")
+    print(f"    Avg full metrics: {mf}")
+    print(f"    Avg nonzero metrics: {mnz}")
+    return mf, mnz
 
 
 def _fit_decoder(decoder_type, x_train, y_train, x_val=None, y_val=None):
@@ -230,6 +290,25 @@ def train(train_areas, val_areas, data_path,
     if best_state is not None:
         gmel.load_state_dict(best_state)
 
+    if single_city_data is not None:
+        bilinear_pred = _predict_bilinear_matrix(gmel, val_data_gpu[0][0], val_data_gpu[0][1], od_scaler)
+        _print_stage_metrics(
+            "Bilinear Head",
+            bilinear_pred,
+            single_city_data['od'],
+            single_city_data['test_mask'],
+        )
+    else:
+        bilinear_metrics_full = []
+        bilinear_metrics_nonzero = []
+        for nf_t, g, _, _, _, _, _, od, _ in val_data_gpu:
+            bilinear_pred = _predict_bilinear_matrix(gmel, nf_t, g, od_scaler)
+            bilinear_metrics_full.append(cal_od_metrics(bilinear_pred, od))
+            nz = od > 0
+            if np.any(nz):
+                bilinear_metrics_nonzero.append(compute_metrics(bilinear_pred[nz], od[nz]))
+        _print_averaged_stage_metrics("Bilinear Head", bilinear_metrics_full, bilinear_metrics_nonzero)
+
     # ── Phase 2: Train GBRT on GAT embeddings ────────────────────────────────
     print(f'  GMEL: fitting {decoder_type.upper()} on embeddings...')
     xtrain_emb, ytrain_emb = [], []
@@ -264,6 +343,40 @@ def train(train_areas, val_areas, data_path,
 
     decoder = _fit_decoder(decoder_type, xtrain, ytrain, xval, yval)
     print(f'  GMEL: {decoder_type.upper()} fitted.')
+
+    if single_city_data is not None:
+        nf_t, g, *_ = val_data_gpu[0]
+        with torch.no_grad():
+            _, _, _, h_in, h_out = gmel(g, nf_t)
+        tree_pred = _predict_decoder_matrix(
+            decoder,
+            h_in.cpu().numpy(),
+            h_out.cpu().numpy(),
+            single_city_data['dis'],
+        )
+        _print_stage_metrics(
+            "Tree Decoder",
+            tree_pred,
+            single_city_data['od'],
+            single_city_data['test_mask'],
+        )
+    else:
+        tree_metrics_full = []
+        tree_metrics_nonzero = []
+        with torch.no_grad():
+            for nf_t, g, _, _, _, _, dis, od, _ in val_data_gpu:
+                _, _, _, h_in, h_out = gmel(g, nf_t)
+                tree_pred = _predict_decoder_matrix(
+                    decoder,
+                    h_in.cpu().numpy(),
+                    h_out.cpu().numpy(),
+                    dis,
+                )
+                tree_metrics_full.append(cal_od_metrics(tree_pred, od))
+                nz = od > 0
+                if np.any(nz):
+                    tree_metrics_nonzero.append(compute_metrics(tree_pred[nz], od[nz]))
+        _print_averaged_stage_metrics("Tree Decoder", tree_metrics_full, tree_metrics_nonzero)
 
     return gmel, decoder, nfeat_scaler, dis_scaler
 
@@ -301,9 +414,12 @@ if __name__ == '__main__':
         g = build_graph(adj).to(device_)
         with torch.no_grad():
             _, _, _, h_in, h_out = gmel(g, nf_t)
-            feat = _pair_embeddings_to_features(h_in.cpu().numpy(), h_out.cpu().numpy(), dis)
-            od_hat = decoder.predict(feat).reshape(dis.shape[0], dis.shape[1])
-            od_hat[od_hat < 0] = 0
+            od_hat = _predict_decoder_matrix(
+                decoder,
+                h_in.cpu().numpy(),
+                h_out.cpu().numpy(),
+                dis,
+            )
         metrics_all.append(cal_od_metrics(od_hat, od))
 
     pprint(average_listed_metrics(metrics_all))
