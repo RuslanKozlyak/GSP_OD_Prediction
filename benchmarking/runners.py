@@ -217,15 +217,15 @@ def run_graph_model(model_name, train_areas, valid_areas, test_areas, data_path=
             single_city_data = None
             if single_city_split:
                 single_city_data = prepare_single_city_graph(train_areas[0], data_path=data_path)
-            decoder_type = "lgbm" if model_name == "GMEL_LGBM" else "gbrt"
-            encoder_patience = 30 if model_name == "GMEL_LGBM" else 10
+            decoder_type = "lgbm"
+            encoder_patience = 100
             gmel, decoder, nfeat_scaler, dis_scaler = module.train(
                 train_areas, valid_areas, str(data_path),
                 device=device,
                 nfeat_scaler=nfeat_scaler, dis_scaler=dis_scaler, od_scaler=od_scaler,
                 single_city_data=single_city_data,
                 decoder_type=decoder_type,
-                max_epochs=1000, patience=encoder_patience,
+                max_epochs=10000, patience=encoder_patience,
             )
             validation_metrics = _compute_gmel_validation_metrics(
                 gmel, decoder, nfeat_scaler, valid_areas, data_path,
