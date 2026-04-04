@@ -7,7 +7,7 @@ from models.GPS.model import GPSEncoder
 class GMEL_GPS(nn.Module):
     """GMEL with GPS encoders instead of GAT.
 
-    Replaces the two DGL-based GAT encoders from GMEL with two independent
+    Replaces the two GAT encoders from GMEL with two independent
     PyG-based GPSEncoder instances (one for inflow, one for outflow),
     while keeping the rest of GMEL's architecture unchanged:
       - linear_in / linear_out  (hidden_dim → 1)

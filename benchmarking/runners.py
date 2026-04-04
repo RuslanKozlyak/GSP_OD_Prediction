@@ -12,7 +12,7 @@ from tqdm.auto import tqdm
 
 from models.shared.metrics import average_listed_metrics, cal_od_metrics
 from models.shared.data_load import (
-    construct_flat_features, load_graph_data, get_scalers, build_dgl_graph,
+    construct_flat_features, load_graph_data, get_scalers, build_dgl_graph, build_pyg_graph,
     prepare_single_city_flat, prepare_single_city_graph,
 )
 
@@ -126,7 +126,7 @@ def run_graph_model(model_name, train_areas, valid_areas, test_areas, data_path=
             for nf, adj, dis, od in tqdm(zip(nf_test, adj_test, dis_test, od_test),
                                           total=len(nf_test), desc="GMEL eval"):
                 nf_t = torch.FloatTensor(nfeat_scaler.transform(nf)).to(device)
-                graph = build_dgl_graph(adj, device)
+                graph = build_pyg_graph(adj, device)
                 with torch.no_grad():
                     _, _, _, h_in, h_out = gmel(graph, nf_t)
                     h = np.concatenate([h_in.cpu().numpy(), h_out.cpu().numpy()], axis=1)

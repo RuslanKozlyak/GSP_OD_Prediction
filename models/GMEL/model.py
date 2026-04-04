@@ -2,40 +2,58 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from dgl.nn.pytorch import GATConv
+from torch_geometric.nn import GATConv
 
 
 class GAT(nn.Module):
-    def __init__(self):
+    def __init__(self, in_dim=131, num_hidden=64, out_dim=64, num_layers=3, num_heads=6):
         super(GAT, self).__init__()
 
-        in_dim = 131
-        num_hidden = 64
-        out_dim = 64
-
-        self.num_layers = 3
-        self.num_heads = 6
-        self.gat_layers = nn.ModuleList()
+        self.num_layers = num_layers
+        self.num_heads = num_heads
         self.activation = F.elu
 
-        self.gat_layers.append(GATConv(in_dim, num_hidden, num_heads=self.num_heads, allow_zero_in_degree=True, activation=self.activation))
+        self.input_layer = GATConv(
+            in_dim,
+            num_hidden,
+            heads=self.num_heads,
+            concat=True,
+            add_self_loops=False,
+        )
+        self.hidden_layers = nn.ModuleList()
 
         for _ in range(1, self.num_layers):
-            self.gat_layers.append(
-                GATConv(num_hidden * self.num_heads, num_hidden, num_heads=self.num_heads, allow_zero_in_degree=True, activation=self.activation))
+            self.hidden_layers.append(
+                GATConv(
+                    num_hidden * self.num_heads,
+                    num_hidden,
+                    heads=self.num_heads,
+                    concat=True,
+                    add_self_loops=False,
+                )
+            )
 
-        self.gat_layers.append(GATConv(num_hidden * self.num_heads, out_dim, num_heads=self.num_heads, allow_zero_in_degree=True, activation=None))
+        self.output_layer = GATConv(
+            num_hidden * self.num_heads,
+            out_dim,
+            heads=self.num_heads,
+            concat=False,
+            add_self_loops=False,
+        )
 
-    def forward(self, g, nfeat):
-        h = nfeat
-        for l in range(self.num_layers):
-            h = self.gat_layers[l](g, h).flatten(1)
-        
-        # output projection
-        embeddings = self.gat_layers[-1](g, h).mean(1)
+    def forward(self, graph_data, nfeat=None):
+        edge_index = graph_data.edge_index if hasattr(graph_data, 'edge_index') else graph_data
+        h = graph_data.x if nfeat is None and hasattr(graph_data, 'x') else nfeat
+        if h is None:
+            raise ValueError("GMEL.GAT.forward expects node features via graph_data.x or nfeat.")
 
+        h = self.activation(self.input_layer(h, edge_index))
+        for layer in self.hidden_layers:
+            h = self.activation(layer(h, edge_index))
+
+        embeddings = self.output_layer(h, edge_index)
         return embeddings
-    
+
 
 class GMEL(nn.Module):
     def __init__(self):
@@ -48,11 +66,11 @@ class GMEL(nn.Module):
         self.linear_out = nn.Linear(64, 1)
         self.bilinear = nn.Bilinear(64, 64, 1)
 
-    def forward(self, g, nfeat):
-        h_in = self.gat_in(g, nfeat)
+    def forward(self, graph_data, nfeat=None):
+        h_in = self.gat_in(graph_data, nfeat)
         flow_in = self.linear_in(h_in)
 
-        h_out = self.gat_out(g, nfeat)
+        h_out = self.gat_out(graph_data, nfeat)
         flow_out = self.linear_out(h_out)
 
         flow = self.bilinear(h_in, h_out)

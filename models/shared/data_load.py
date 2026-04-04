@@ -229,6 +229,21 @@ def build_dgl_graph(adj, dev):
     return graph.to(dev)
 
 
+def build_pyg_graph(adj, dev):
+    """Build a PyG graph from an adjacency matrix."""
+    import torch
+    from torch_geometric.data import Data
+
+    dst, src = adj.nonzero()
+    weights = np.asarray(adj[adj.nonzero()], dtype=np.float32).reshape(-1, 1)
+    graph = Data(
+        edge_index=torch.tensor(np.stack([src, dst]), dtype=torch.long),
+        edge_attr=torch.tensor(weights, dtype=torch.float32),
+        num_nodes=adj.shape[0],
+    )
+    return graph.to(dev)
+
+
 def iter_graph_areas(areas, data_path=None):
     """Yield (nfeat, adj, dis, od) for each area."""
     for area in areas:

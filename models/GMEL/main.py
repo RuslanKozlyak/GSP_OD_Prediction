@@ -11,7 +11,7 @@ from tqdm.auto import tqdm
 def train(train_areas, val_areas, data_path,
           device=None, nfeat_scaler=None, dis_scaler=None, od_scaler=None,
           max_epochs=1000, patience=10, single_city_data=None):
-    """Train GMEL (GAT encoder + GBRT decoder).
+    """Train GMEL (PyG GAT encoder + GBRT decoder).
 
     Args:
         train_areas: list of area IDs for training
@@ -201,7 +201,7 @@ if __name__ == '__main__':
     from pprint import pprint
     from models.shared.metrics import cal_od_metrics, average_listed_metrics
     from models.shared.data_load import (
-        load_graph_data, get_scalers, build_dgl_graph,
+        load_graph_data, get_scalers, build_pyg_graph,
         prepare_single_city_graph, split_multi_city_ids, SINGLE_CITY_ID, DEFAULT_DATA_PATH,
     )
     import os, sys

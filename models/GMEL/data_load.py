@@ -5,7 +5,8 @@ import numpy as np
 
 from sklearn.preprocessing import MinMaxScaler
 
-import torch, dgl
+import torch
+from torch_geometric.data import Data
 
 def load_all_areas(if_shuffle=True):
     areas = os.listdir("data")
@@ -72,7 +73,8 @@ def get_scalers(nfeats, dises, ods):
 def build_graph(adjm):
     dst, src = adjm.nonzero()
     d = adjm[adjm.nonzero()]
-    g = dgl.graph(([], []))
-    g.add_nodes(adjm.shape[0])
-    g.add_edges(src, dst, {'d': torch.tensor(d).float().view(-1, 1)})
-    return g
+    return Data(
+        edge_index=torch.LongTensor(np.stack([src, dst])),
+        edge_attr=torch.tensor(d, dtype=torch.float32).view(-1, 1),
+        num_nodes=adjm.shape[0],
+    )
