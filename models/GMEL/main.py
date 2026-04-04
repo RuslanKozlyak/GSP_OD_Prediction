@@ -58,8 +58,27 @@ def train(train_areas, val_areas, data_path,
     gmel = GMEL().to(device)
     optimizer = torch.optim.Adam(gmel.parameters(), lr=3e-4)
 
-    # Pre-load validation data (small set)
-    val_data = list(_iter_areas(val_areas))
+    # Pre-load and cache data on GPU (avoid rebuilding graphs every epoch)
+    train_data_gpu = []
+    for nf, adj, dis, od in _iter_areas(train_areas):
+        nf_s = nfeat_scaler.transform(nf)
+        od_s = od_scaler.transform(od.reshape(-1, 1)).reshape(od.shape)
+        train_data_gpu.append((
+            torch.FloatTensor(nf_s).to(device),
+            build_graph(adj).to(device),
+            torch.FloatTensor(od_s).to(device),
+            nf, adj, dis, od,  # keep raw for Phase 2
+        ))
+
+    val_data_gpu = []
+    for nf, adj, dis, od in _iter_areas(val_areas):
+        nf_s = nfeat_scaler.transform(nf)
+        od_s = od_scaler.transform(od.reshape(-1, 1)).reshape(od.shape)
+        val_data_gpu.append((
+            torch.FloatTensor(nf_s).to(device),
+            build_graph(adj).to(device),
+            torch.FloatTensor(od_s).to(device),
+        ))
 
     best_vl = np.inf
     best_pat = patience
@@ -67,14 +86,7 @@ def train(train_areas, val_areas, data_path,
     for ep in pbar:
         gmel.train()
         ep_losses = []
-        for nf, adj, dis, od in _iter_areas(train_areas):
-            nf_s  = nfeat_scaler.transform(nf)
-            od_s  = od_scaler.transform(od.reshape(-1, 1)).reshape(od.shape)
-
-            nf_t  = torch.FloatTensor(nf_s).to(device)
-            g     = build_graph(adj).to(device)
-            od_t  = torch.FloatTensor(od_s).to(device)
-
+        for nf_t, g, od_t, *_ in train_data_gpu:
             optimizer.zero_grad()
             flow_in, flow_out, flow, h_in, h_out = gmel(g, nf_t)
             loss = (torch.mean((flow_in  - od_t.sum(0)) ** 2) +
@@ -87,12 +99,7 @@ def train(train_areas, val_areas, data_path,
         gmel.eval()
         with torch.no_grad():
             vls = []
-            for nf, adj, dis, od in val_data:
-                nf_s  = nfeat_scaler.transform(nf)
-                od_s  = od_scaler.transform(od.reshape(-1, 1)).reshape(od.shape)
-                nf_t  = torch.FloatTensor(nf_s).to(device)
-                g     = build_graph(adj).to(device)
-                od_t  = torch.FloatTensor(od_s).to(device)
+            for nf_t, g, od_t in val_data_gpu:
                 flow_in, flow_out, flow, _, _ = gmel(g, nf_t)
                 vl = (torch.mean((flow_in  - od_t.sum(0)) ** 2) +
                       torch.mean((flow_out - od_t.sum(1)) ** 2) +
@@ -118,10 +125,7 @@ def train(train_areas, val_areas, data_path,
     xtrain_emb, ytrain_emb = [], []
     gmel.eval()
     with torch.no_grad():
-        for nf, adj, dis, od in _iter_areas(train_areas):
-            nf_s = nfeat_scaler.transform(nf)
-            nf_t = torch.FloatTensor(nf_s).to(device)
-            g    = build_graph(adj).to(device)
+        for nf_t, g, od_t, nf, adj, dis, od in train_data_gpu:
             _, _, _, h_in, h_out = gmel(g, nf_t)
             h = np.concatenate([h_in.cpu().numpy(), h_out.cpu().numpy()], axis=1)
             n = h.shape[0]

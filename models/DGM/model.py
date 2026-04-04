@@ -4,13 +4,13 @@ import torch.nn.functional as F
 
 
 class DeepGravity(nn.Module):
-    def __init__(self):
+    def __init__(self, input_dim=263):
         super(DeepGravity, self).__init__()
 
         hiddim = 256 # 256
         layers = 15 # 15
 
-        self.linear_in = nn.Linear(263, hiddim)
+        self.linear_in = nn.Linear(input_dim, hiddim)
         self.linears = nn.ModuleList(
             [nn.Linear(hiddim, hiddim) for i in range(layers)]
         )

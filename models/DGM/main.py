@@ -46,13 +46,29 @@ def train(x_train, y_train, xs_valid, ys_valid,
         torch.FloatTensor(od_scaler.normalize(_y_log)),
     )
     dl = DataLoader(ds, batch_size=batch_size, shuffle=True)
+    input_dim = x_train.shape[1]
     del ds, x_nz, y_nz, _y_log; gc.collect()
-
-    net = DeepGravity().to(device)
+    net = DeepGravity(input_dim).to(device)
     optimizer = torch.optim.Adam(net.parameters(), lr=3e-4)
+
+    # Pre-compute validation tensors on GPU (avoid repeated CPU->GPU transfers)
+    val_tensors = []
+    for xv, yv in zip(xs_valid, ys_valid):
+        nz_v = yv > 0
+        if not nz_v.any():
+            continue
+        xv_scaled = feat_scaler.transform(xv[nz_v])
+        yv_target = od_scaler.normalize(np.log1p(yv[nz_v]))
+        val_tensors.append((
+            torch.FloatTensor(xv_scaled).to(device),
+            torch.FloatTensor(yv_target).to(device),
+        ))
 
     best_vl = np.inf
     best_pat = patience
+    best_state = None
+    train_losses = []
+    val_losses = []
     pbar = tqdm(range(max_epochs), desc='DGM', unit='ep')
     for ep in pbar:
         net.train()
@@ -69,24 +85,27 @@ def train(x_train, y_train, xs_valid, ys_valid,
         net.eval()
         with torch.no_grad():
             vls = []
-            for xv, yv in zip(xs_valid, ys_valid):
-                nz_v = yv > 0
-                if not nz_v.any():
-                    continue
-                xv_t = torch.FloatTensor(feat_scaler.transform(xv[nz_v])).to(device)
-                yh = net(xv_t).squeeze().cpu().numpy()
-                vls.append(((yh - od_scaler.normalize(np.log1p(yv[nz_v]))) ** 2).mean())
-            vl = float(np.mean(vls))
+            for xv_t, yv_t in val_tensors:
+                yh = net(xv_t).squeeze()
+                vls.append(((yh - yv_t) ** 2).mean().item())
+            vl = float(np.mean(vls)) if vls else np.inf
 
-        pbar.set_postfix(loss=f'{np.mean(ep_losses):.4g}', val=f'{vl:.4g}', pat=best_pat)
+        tl = float(np.mean(ep_losses))
+        train_losses.append(tl)
+        val_losses.append(vl)
+        pbar.set_postfix(loss=f'{tl:.4g}', val=f'{vl:.4g}', pat=best_pat)
 
         if vl < best_vl:
             best_vl = vl
             best_pat = patience
+            best_state = {k: v.clone() for k, v in net.state_dict().items()}
         else:
             best_pat -= 1
             if best_pat == 0:
                 break
+
+    if best_state is not None:
+        net.load_state_dict(best_state)
 
     # Capture in closure so callers can safely del their local references
     _net, _fs, _os = net, feat_scaler, od_scaler
@@ -99,11 +118,15 @@ def train(x_train, y_train, xs_valid, ys_valid,
             )
             return np.expm1(np.maximum(y_log, 0.0))
 
+    predict.train_losses = train_losses
+    predict.val_losses = val_losses
+
     return predict
 
 
 if __name__ == '__main__':
     from pprint import pprint
+    import matplotlib.pyplot as plt
     from models.shared.metrics import cal_od_metrics, average_listed_metrics
     from models.shared.data_load import prepare_single_city_flat
 
@@ -113,6 +136,20 @@ if __name__ == '__main__':
     device_ = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     predict = train(data['x_train'], data['y_train'],
                     data['xs_val'], data['ys_val'], device=device_)
+
+    # Plot loss curves
+    fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+    ax.plot(predict.train_losses, label='Train Loss')
+    ax.plot(predict.val_losses, label='Val Loss')
+    ax.set_xlabel('Epoch')
+    ax.set_ylabel('MSE Loss')
+    ax.set_title('DeepGravity Training')
+    ax.legend()
+    ax.set_yscale('log')
+    plt.tight_layout()
+    plt.savefig('dgm_loss.png', dpi=150)
+    plt.show()
+    print("  Loss plot saved to dgm_loss.png")
 
     print("\n  **Evaluating...")
     metrics_all = []

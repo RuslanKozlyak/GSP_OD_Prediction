@@ -68,6 +68,8 @@ def train(x_train, y_train, xs_valid, ys_valid,
 
     best_vl = np.inf
     best_pat = patience
+    best_state = None
+    yv_log_all_t = torch.FloatTensor(yv_log_all).to(device) if xv_all_t is not None else None
     pbar = tqdm(range(max_epochs), desc='GM_P', unit='ep')
     for ep in pbar:
         net.train()
@@ -83,8 +85,8 @@ def train(x_train, y_train, xs_valid, ys_valid,
         net.eval()
         with torch.no_grad():
             if xv_all_t is not None:
-                yh_all = net(xv_all_t).squeeze().cpu().numpy()
-                vl = float(((np.log1p(yh_all) - yv_log_all) ** 2).mean())
+                yh_all = net(xv_all_t).squeeze()
+                vl = float(((torch.log1p(yh_all) - yv_log_all_t) ** 2).mean().item())
             else:
                 vl = np.inf
 
@@ -93,11 +95,14 @@ def train(x_train, y_train, xs_valid, ys_valid,
         if vl < best_vl:
             best_vl = vl
             best_pat = patience
+            best_state = {k: v.clone() for k, v in net.state_dict().items()}
         else:
             best_pat -= 1
             if best_pat == 0:
                 break
 
+    if best_state is not None:
+        net.load_state_dict(best_state)
     _net, _dist_max = net, dist_max
 
     def predict(x):
