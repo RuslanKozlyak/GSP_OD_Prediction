@@ -46,11 +46,9 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
     dist_max = float(x_train[:, 2].max())
     if dist_max > 1.0:
         x_train[:, 2] /= dist_max
-    xs_valid = [xv.copy() for xv in xs_valid]
-    for xv in xs_valid:
-        if dist_max > 1.0:
-            xv[:, 2] /= dist_max
-    xs_valid_full = [xv.copy() for xv in xs_valid_full]
+    # Do NOT pre-normalize xs_valid / xs_valid_full here;
+    # _predict_np() handles normalization to avoid double-normalization.
+
 
     # Filter zero OD pairs + log-space targets
     nz = y_train > 0
@@ -64,8 +62,13 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
     del ds, x_nz, y_nz_log; gc.collect()
 
     # Pre-compute validation tensors once (avoid per-city alloc + GPU round-trip every epoch)
-    # xs_valid is already distance-normalized at this point
-    _vx = [xv[yv > 0] for xv, yv in zip(xs_valid, ys_valid) if (yv > 0).any()]
+    def _norm_dist(arr):
+        a = arr.copy()
+        if dist_max > 1.0:
+            a[:, 2] /= dist_max
+        return a
+
+    _vx = [_norm_dist(xv[yv > 0]) for xv, yv in zip(xs_valid, ys_valid) if (yv > 0).any()]
     _vy = [np.log1p(yv[yv > 0]) for xv, yv in zip(xs_valid, ys_valid) if (yv > 0).any()]
     if _vx:
         xv_all_t = torch.FloatTensor(np.concatenate(_vx)).to(device)
@@ -163,11 +166,15 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
 
     def predict(x):
         _net.eval()
-        x = x.copy()
-        if _dist_max > 1.0:
-            x[:, 2] /= _dist_max
+        preds = []
         with torch.no_grad():
-            return np.atleast_1d(np.abs(_net(torch.FloatTensor(x).to(device)).squeeze().cpu().numpy()))
+            for start in range(0, x.shape[0], batch_size):
+                xb_np = x[start:start + batch_size].copy()
+                if _dist_max > 1.0:
+                    xb_np[:, 2] /= _dist_max
+                xb = torch.FloatTensor(xb_np).to(device)
+                preds.append(np.atleast_1d(np.abs(_net(xb).squeeze().cpu().numpy())))
+        return np.concatenate(preds) if preds else np.empty((0,), dtype=np.float32)
 
     predict.train_losses = train_losses
     predict.val_losses = val_losses

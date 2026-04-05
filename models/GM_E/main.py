@@ -150,8 +150,12 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
 
     def predict(x):
         _net.eval()
+        preds = []
         with torch.no_grad():
-            return np.atleast_1d(_net(torch.FloatTensor(x).to(device)).squeeze().cpu().numpy())
+            for start in range(0, x.shape[0], batch_size):
+                xb = torch.FloatTensor(x[start:start + batch_size]).to(device)
+                preds.append(np.atleast_1d(_net(xb).squeeze().cpu().numpy()))
+        return np.maximum(np.concatenate(preds), 0.0) if preds else np.empty((0,), dtype=np.float32)
 
     predict.train_losses = train_losses
     predict.val_losses = val_losses

@@ -17,14 +17,13 @@ def train(x_train, y_train, xs_valid=None, ys_valid=None, **kwargs):
         model with .predict(x) method
     """
     model = RandomForestRegressor(
-        n_estimators=20,
-        oob_score=True,
-        max_depth=None,
-        min_samples_split=2,
-        min_samples_leaf=2,
+        n_estimators=100,
+        max_depth=16,
+        min_samples_split=10,
+        min_samples_leaf=5,
         n_jobs=-1,
     )
-    print('  RF: fitting...')
+    print(f'  RF: fitting on {x_train.shape[0]:,} samples...')
     t0 = time.time()
     model.fit(x_train, y_train)
     print(f'  RF: fitted in {time.time() - t0:.1f}s')
