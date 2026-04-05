@@ -49,6 +49,7 @@ BASELINE_MODELS = [
     # "NetGAN",
     # "DiffODGen",
     # "WeDAN",
+    "TransFlowerOrig",
 ]
 
 SINGLE_CITY_ID = "48201"

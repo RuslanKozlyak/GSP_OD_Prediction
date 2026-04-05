@@ -334,6 +334,85 @@ def run_graph_model(model_name, train_areas, valid_areas, test_areas, data_path=
     return metrics_all
 
 
+def run_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_PATH,
+                         gps_loader=None, city_ids=None):
+    """Train and evaluate TransFlowerOrig via the GPS training infrastructure."""
+    from dataclasses import replace as dc_replace
+    from models.GPS.main import train_single_city, train_multi_city
+    from models.GPS.config import MC_EPOCHS
+    from .config import TRANSFLOWER_ORIG_CONFIG
+    from .gps_loader import GPSBenchmarkLoader
+
+    print(f"\n{'=' * 60}\n  Running: TransFlowerOrig\n{'=' * 60}")
+    t0 = time.time()
+
+    single_city_split = (
+        len(train_areas) == len(valid_areas) == len(test_areas) == 1
+        and train_areas[0] == valid_areas[0] == test_areas[0]
+    )
+
+    if single_city_split:
+        area_id = train_areas[0]
+        gps_loader = gps_loader or GPSBenchmarkLoader(
+            single_city_id=area_id, data_path=data_path,
+        )
+        city_data = gps_loader.get_single_city_data(
+            pe_type=TRANSFLOWER_ORIG_CONFIG.pe_type, area_id=area_id,
+        )
+        result = train_single_city(
+            "transflower_orig",
+            "TransFlower Orig (MLP+TF+RLE)",
+            TRANSFLOWER_ORIG_CONFIG,
+            city_data=city_data,
+        )
+    else:
+        cfg = dc_replace(TRANSFLOWER_ORIG_CONFIG, mc_epochs=MC_EPOCHS)
+        city_ids = city_ids or (train_areas + valid_areas + test_areas)
+        # deduplicate while preserving order
+        seen = set()
+        unique_ids = []
+        for cid in city_ids:
+            if cid not in seen:
+                seen.add(cid)
+                unique_ids.append(cid)
+        city_ids = unique_ids
+
+        gps_loader = gps_loader or GPSBenchmarkLoader(
+            multi_city_ids=city_ids, data_path=data_path,
+        )
+        mc_dict, mc_train_ids, mc_val_ids, _ = gps_loader.get_multi_city_data(
+            pe_type=cfg.pe_type, city_ids=city_ids,
+        )
+        result = train_multi_city(
+            "MC_transflower_orig",
+            "MC TransFlower Orig (MLP+TF+RLE)",
+            cfg,
+            city_data_dict=mc_dict,
+            train_city_ids=mc_train_ids,
+            val_city_ids=mc_val_ids,
+        )
+
+    cleanup_gpu()
+
+    if result.get("status") != "ok":
+        print(f"  TransFlowerOrig FAILED: {result.get('status')}")
+        return []
+
+    mf = result["metrics_full"]
+    # Merge CPC_nz, CPC_test from the GPS result dict
+    mnz = result.get("metrics_nonzero", {})
+    mt = result.get("metrics_test_pairs", {})
+    if mnz:
+        mf['CPC_nz'] = mnz.get('CPC', float('nan'))
+    if mt:
+        mf['CPC_test'] = mt.get('CPC', float('nan'))
+        mf['MAE_test'] = mt.get('MAE', float('nan'))
+        mf['RMSE_test'] = mt.get('RMSE', float('nan'))
+
+    print(f"  CPC={mf.get('CPC', 'N/A'):.4f}  ({time.time() - t0:.1f}s)")
+    return [mf]
+
+
 def run_diffusion_model(model_name, train_areas, valid_areas, test_areas, data_path=DATA_PATH):
     """Run DiffODGen/WeDAN as subprocess (complex dependencies)."""
     del train_areas, valid_areas, test_areas, data_path

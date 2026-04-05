@@ -1,23 +1,25 @@
-from dataclasses import replace
-
-from models.GPS.config import MC_EPOCHS
-from models.GPS.main import train_multi_city, train_single_city
 from models.shared.metrics import average_listed_metrics
 
-from .config import BASELINE_MODELS, TRANSFLOWER_ORIG_CONFIG, cleanup_gpu
+from .config import BASELINE_MODELS, cleanup_gpu
 from .data_utils import split_multi_city_ids
 from .gps_loader import GPSBenchmarkLoader
-from .runners import run_diffusion_model, run_flat_model, run_graph_model
+from .runners import run_diffusion_model, run_flat_model, run_graph_model, run_transflower_orig
 
 
 
-def _run_baseline_model(model_name, train_areas, valid_areas, test_areas, data_path):
+def _run_baseline_model(model_name, train_areas, valid_areas, test_areas, data_path,
+                        gps_loader=None, city_ids=None):
     if model_name in ("RF", "SVR", "GBRT", "DGM", "GM_E", "GM_P"):
         return run_flat_model(model_name, train_areas, valid_areas, test_areas, data_path)
     if model_name in ("GMEL", "GMEL_GBRT", "GMEL_LGBM", "NetGAN"):
         return run_graph_model(model_name, train_areas, valid_areas, test_areas, data_path)
     if model_name in ("DiffODGen", "WeDAN"):
         return run_diffusion_model(model_name, train_areas, valid_areas, test_areas, data_path)
+    if model_name == "TransFlowerOrig":
+        return run_transflower_orig(
+            train_areas, valid_areas, test_areas, data_path,
+            gps_loader=gps_loader, city_ids=city_ids,
+        )
     raise ValueError(f"Unknown model: {model_name}")
 
 
@@ -66,30 +68,16 @@ def run_single_city_benchmark(
                 model_types[run_id] = "Ours (GMEL_GPS)"
         cleanup_gpu()
 
-    # print("\n[Baseline - TransFlower orig (paper)]")
-    # try:
-    #     tf_sc_data = gps_loader.get_single_city_data(pe_type=TRANSFLOWER_ORIG_CONFIG.pe_type, area_id=single_city_id)
-    #     tf_result = train_single_city(
-    #         "transflower_orig",
-    #         "TransFlower Orig (MLP+TF+RLE)",
-    #         TRANSFLOWER_ORIG_CONFIG,
-    #         city_data=tf_sc_data,
-    #     )
-    #     if tf_result.get("status") == "ok":
-    #         results["transflower_orig"] = tf_result["metrics_full"]
-    #         model_types["transflower_orig"] = "Baseline (paper)"
-    # except Exception as exc:
-    #     print(f"  ERROR transflower_orig: {exc}")
-    # finally:
-    #     cleanup_gpu()
-
     print("\n[Baselines - classical & graph models]")
     train_areas = [single_city_id]
     valid_areas = [single_city_id]
     test_areas = [single_city_id]
     for model_name in baseline_models:
         try:
-            metrics_list = _run_baseline_model(model_name, train_areas, valid_areas, test_areas, data_path)
+            metrics_list = _run_baseline_model(
+                model_name, train_areas, valid_areas, test_areas, data_path,
+                gps_loader=gps_loader,
+            )
             if metrics_list:
                 results[model_name] = average_listed_metrics(metrics_list)
                 model_types[model_name] = "Baseline"
@@ -124,33 +112,13 @@ def run_multi_city_benchmark(
             model_types[run_id] = "Ours (GPS)"
     cleanup_gpu()
 
-    print("\n[Baseline - TransFlower orig (paper)]")
-    try:
-        tf_mc_cfg = replace(TRANSFLOWER_ORIG_CONFIG, mc_epochs=MC_EPOCHS)
-        tf_mc_dict, tf_train_ids, tf_val_ids, _ = gps_loader.get_multi_city_data(
-            pe_type=tf_mc_cfg.pe_type,
-            city_ids=city_ids,
-        )
-        tf_mc_result = train_multi_city(
-            "MC_transflower_orig",
-            "MC TransFlower Orig (MLP+TF+RLE)",
-            tf_mc_cfg,
-            city_data_dict=tf_mc_dict,
-            train_city_ids=tf_train_ids,
-            val_city_ids=tf_val_ids,
-        )
-        if tf_mc_result.get("status") == "ok":
-            results["MC_transflower_orig"] = tf_mc_result["metrics_full"]
-            model_types["MC_transflower_orig"] = "Baseline (paper)"
-    except Exception as exc:
-        print(f"  ERROR MC_transflower_orig: {exc}")
-    finally:
-        cleanup_gpu()
-
     print("\n[Baselines - classical & graph models]")
     for model_name in baseline_models:
         try:
-            metrics_list = _run_baseline_model(model_name, mc_train, mc_valid, mc_test, data_path)
+            metrics_list = _run_baseline_model(
+                model_name, mc_train, mc_valid, mc_test, data_path,
+                gps_loader=gps_loader, city_ids=city_ids,
+            )
             if metrics_list:
                 results[model_name] = average_listed_metrics(metrics_list)
                 model_types[model_name] = "Baseline"
