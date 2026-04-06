@@ -1,32 +1,13 @@
 import time
 
 import numpy as np
-from sklearn.svm import LinearSVR
-from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVR
 
 from models.shared.metrics import cal_od_metrics, average_listed_metrics
 
 
-class _ScaledSVR:
-    """LinearSVR with built-in feature scaling and batched prediction."""
-
-    def __init__(self, model, scaler):
-        self._model = model
-        self._scaler = scaler
-
-    def predict(self, x):
-        CHUNK = 200_000
-        parts = []
-        for i in range(0, x.shape[0], CHUNK):
-            parts.append(self._model.predict(self._scaler.transform(x[i:i + CHUNK])))
-        return np.concatenate(parts)
-
-
 def train(x_train, y_train, xs_valid=None, ys_valid=None, **kwargs):
-    """Train LinearSVR on flat OD pair features.
-
-    LinearSVR is O(n) per iteration — feasible for 500k+ samples.
-    sklearn's RBF SVR is O(n²-n³) and infeasible at this scale.
+    """Train SVR on flat OD pair features.
 
     Args:
         x_train: (N, F) feature array
@@ -35,14 +16,12 @@ def train(x_train, y_train, xs_valid=None, ys_valid=None, **kwargs):
     Returns:
         model with .predict(x) method
     """
-    scaler = StandardScaler()
-    x_scaled = scaler.fit_transform(x_train)
-    model = LinearSVR(C=1.0, max_iter=5000, tol=1e-4)
-    print(f'  SVR: fitting LinearSVR on {x_train.shape[0]:,} samples...')
+    model = SVR(gamma=0.01, C=100)
+    print('  SVR: fitting...')
     t0 = time.time()
-    model.fit(x_scaled, y_train)
+    model.fit(x_train, y_train)
     print(f'  SVR: fitted in {time.time() - t0:.1f}s')
-    return _ScaledSVR(model, scaler)
+    return model
 
 
 def evaluate(model, xs_test, ys_test):

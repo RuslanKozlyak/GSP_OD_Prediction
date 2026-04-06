@@ -1,16 +1,13 @@
 import time
 
 import numpy as np
-from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.ensemble import GradientBoostingRegressor
 
 from models.shared.metrics import cal_od_metrics, average_listed_metrics
 
 
 def train(x_train, y_train, xs_valid=None, ys_valid=None, **kwargs):
     """Train GBRT on flat OD pair features.
-
-    Uses HistGradientBoostingRegressor which is O(n) per split (bins features)
-    and handles 500k+ samples efficiently.
 
     Args:
         x_train: (N, F) feature array
@@ -19,21 +16,16 @@ def train(x_train, y_train, xs_valid=None, ys_valid=None, **kwargs):
     Returns:
         model with .predict(x) method
     """
-    model = HistGradientBoostingRegressor(
-        max_iter=200,
-        max_depth=8,
-        learning_rate=0.1,
-        min_samples_leaf=20,
-        max_leaf_nodes=63,
-        early_stopping=True,
-        validation_fraction=0.1,
-        n_iter_no_change=20,
+    model = GradientBoostingRegressor(
+        n_estimators=20,
+        min_samples_split=2,
+        min_samples_leaf=2,
+        max_depth=None,
     )
-    print(f'  GBRT: fitting HistGBRT on {x_train.shape[0]:,} samples...')
+    print('  GBRT: fitting...')
     t0 = time.time()
     model.fit(x_train, y_train)
-    print(f'  GBRT: fitted in {time.time() - t0:.1f}s  '
-          f'(n_iter={model.n_iter_} best_iter={getattr(model, "n_iter_", "?")})')
+    print(f'  GBRT: fitted in {time.time() - t0:.1f}s')
     return model
 
 

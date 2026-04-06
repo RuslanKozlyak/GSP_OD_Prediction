@@ -140,31 +140,8 @@ def run_flat_model(model_name, train_areas, valid_areas, test_areas, data_path=D
         n_nodes = split_data['n_nodes']
     else:
         xs_tr, ys_tr = construct_flat_features(train_areas, data_path, feature_mode)
-        # For tree/SVM models on multi-city: subsample zero-flow pairs per city
-        # to keep training feasible. Neural models handle this internally.
-        is_tree_model = model_name in ("RF", "SVR", "GBRT")
-        if is_tree_model:
-            xs_sub, ys_sub = [], []
-            rng = np.random.RandomState(SEED)
-            for x_city, y_city in zip(xs_tr, ys_tr):
-                nz_idx = np.flatnonzero(y_city > 0)
-                z_idx = np.flatnonzero(y_city == 0)
-                n_zero = min(len(z_idx), len(nz_idx))  # at most 1:1 ratio
-                if n_zero > 0:
-                    z_sample = rng.choice(z_idx, size=n_zero, replace=False)
-                    keep = np.concatenate([nz_idx, z_sample])
-                else:
-                    keep = nz_idx
-                xs_sub.append(x_city[keep])
-                ys_sub.append(y_city[keep])
-            x_train = np.concatenate(xs_sub, axis=0)
-            y_train = np.concatenate(ys_sub, axis=0)
-            print(f"  Multi-city subsampled: {x_train.shape[0]:,} pairs "
-                  f"(from {sum(x.shape[0] for x in xs_tr):,} total)")
-            del xs_sub, ys_sub
-        else:
-            x_train = np.concatenate(xs_tr, axis=0)
-            y_train = np.concatenate(ys_tr, axis=0)
+        x_train = np.concatenate(xs_tr, axis=0)
+        y_train = np.concatenate(ys_tr, axis=0)
         del xs_tr, ys_tr; gc.collect()
 
         xs_valid, ys_valid = construct_flat_features(valid_areas, data_path, feature_mode)
