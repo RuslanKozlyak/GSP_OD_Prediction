@@ -12,7 +12,7 @@ __pycache__/
 .claude/
 
 # Results (regenerable)
-results/weights/
+results
 results/metrics.csv
 results/old_weights/
 results/old_metrics.csv
