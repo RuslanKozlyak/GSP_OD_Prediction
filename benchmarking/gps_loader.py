@@ -8,6 +8,7 @@ from models.shared.metrics import cal_od_metrics, compute_metrics
 from models.GPS.metrics import predict_full_matrix
 from models.GPS.model import make_model
 
+from .artifacts import save_od_artifacts
 from .config import DATA_PATH, MULTI_CITY_IDS, SINGLE_CITY_ID, cleanup_gpu
 from .config import set_global_seed
 
@@ -97,6 +98,13 @@ class GPSBenchmarkLoader:
             with torch.no_grad():
                 pred = predict_full_matrix(model, city_data, effective_cfg)
             pred[pred < 0] = 0
+            save_od_artifacts(
+                run_id,
+                pred,
+                city_data["od_matrix_np"],
+                city_id=city_data.get("city_id", area_id),
+                inference_seed=inference_seed,
+            )
             metrics = cal_od_metrics(pred, city_data["od_matrix_np"])
             _enrich_metrics(metrics, pred, city_data, is_test_city=is_test_city)
             if verbose:
@@ -127,7 +135,17 @@ class GPSBenchmarkLoader:
             city_data = self.get_single_city_data(pe_type=effective_pe_type, area_id=area_id)
         if inference_seed is not None:
             set_global_seed(inference_seed)
-        return load_saved_lgbm_results(run_id, city_data)
+        payload = load_saved_lgbm_results(run_id, city_data, return_payload=True)
+        if payload is None:
+            return None
+        save_od_artifacts(
+            run_id,
+            payload['pred_matrix'],
+            payload['ground_truth_matrix'],
+            city_id=city_data.get("city_id", area_id),
+            inference_seed=inference_seed,
+        )
+        return payload['metrics']
 
     def load_gmel_gps_results(self, run_id, city_data=None, area_id=None, inference_seed=None):
         """Load a pre-trained GMEL_GPS model + GBRT and evaluate on one city."""
@@ -179,6 +197,13 @@ class GPSBenchmarkLoader:
                 import joblib
                 decoder = joblib.load(str(gbrt_path))
             pred = predict_gmel_gps(model, decoder, city_data, device)
+            save_od_artifacts(
+                run_id,
+                pred,
+                city_data['od_matrix_np'],
+                city_id=city_data.get("city_id", area_id),
+                inference_seed=inference_seed,
+            )
             metrics = cal_od_metrics(pred, city_data['od_matrix_np'])
             _enrich_metrics(metrics, pred, city_data)
             print(f"  {run_id}: CPC={metrics['CPC']:.4f}  MAE={metrics['MAE']:.4f}")

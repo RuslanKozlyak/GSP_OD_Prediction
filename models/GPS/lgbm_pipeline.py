@@ -50,8 +50,11 @@ def save_lgbm_model(run_id, lgbm_model, donor_id):
     print(f"  Saved: {WEIGHTS_DIR / run_id}.lgbm + _meta.json")
 
 
-def load_lgbm_results(run_id, city_data):
-    """Load a saved LGBM model and evaluate on city_data. Returns metrics dict or None.
+def load_lgbm_results(run_id, city_data, return_payload=False):
+    """Load a saved LGBM model and evaluate on city_data.
+
+    Returns metrics dict or None by default. When ``return_payload=True``,
+    returns a dict with metrics plus predicted and ground-truth matrices.
 
     Requires:
         {run_id}.lgbm          — saved LightGBM booster
@@ -125,6 +128,12 @@ def load_lgbm_results(run_id, city_data):
                 metrics['MAE_test'] = mt['MAE']
                 metrics['RMSE_test'] = mt['RMSE']
         print(f"  {run_id}: CPC={metrics['CPC']:.4f}  MAE={metrics['MAE']:.4f}")
+        if return_payload:
+            return {
+                'metrics': metrics,
+                'pred_matrix': pred,
+                'ground_truth_matrix': od,
+            }
         return metrics
 
     except Exception as e:

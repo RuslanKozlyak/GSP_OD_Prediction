@@ -18,6 +18,7 @@ from models.shared.data_load import (
     prepare_single_city_flat, prepare_single_city_graph,
 )
 
+from .artifacts import save_od_artifacts
 from .config import (
     DATA_PATH,
     PROJECT_ROOT,
@@ -129,7 +130,7 @@ def _repeat_inference(eval_once, inference_seeds):
     for seed in seeds:
         if seed is not None:
             set_global_seed(seed)
-        metric_runs.append(average_listed_metrics(eval_once()))
+        metric_runs.append(average_listed_metrics(eval_once(seed)))
     return metric_runs
 
 
@@ -173,6 +174,8 @@ def _prepare_flat_payload(train_areas, valid_areas, test_areas, data_path, featu
         'od_matrix': None,
         'test_mask': None,
         'n_nodes': None,
+        'area_id': None,
+        'test_area_ids': list(test_areas),
     }
 
     if single_city_split:
@@ -191,6 +194,8 @@ def _prepare_flat_payload(train_areas, valid_areas, test_areas, data_path, featu
             'od_matrix': split_data['od_matrix'].astype(float),
             'test_mask': split_data['test_mask'],
             'n_nodes': split_data['n_nodes'],
+            'area_id': split_data['area_id'],
+            'test_area_ids': [split_data['area_id']],
         })
         return payload
 
@@ -403,24 +408,41 @@ def infer_flat_model(model_name, train_areas, valid_areas, test_areas, data_path
         print(f"  Val: CPC_val={validation_metrics['CPC_val']:.4f}  "
               f"CPC_full={validation_metrics['CPC_full']:.4f}")
 
-        def evaluate_once():
+        def evaluate_once(inference_seed=None):
             if payload['single_city_split'] and payload['od_matrix'] is not None:
                 x_full = payload['xs_test'][0]
                 pred_flat = _predict_flat_array(model, x_full)
                 pred_matrix = pred_flat.reshape(payload['n_nodes'], payload['n_nodes'])
+                save_od_artifacts(
+                    run_id,
+                    pred_matrix,
+                    payload['od_matrix'],
+                    city_id=payload['area_id'],
+                    inference_seed=inference_seed,
+                    model_name=model_name,
+                )
                 mf = cal_od_metrics(pred_matrix, payload['od_matrix'])
                 _enrich_metrics_with_test(
                     mf, pred_matrix, payload['od_matrix'], payload['test_mask']
                 )
                 metrics_all = [mf]
-            elif hasattr(module, 'evaluate'):
-                metrics_all = module.evaluate(model, payload['xs_test'], payload['ys_test'])
             else:
                 metrics_all = []
-                for x_one, y_one in zip(payload['xs_test'], payload['ys_test']):
+                for area_id, x_one, y_one in zip(
+                    payload['test_area_ids'], payload['xs_test'], payload['ys_test']
+                ):
                     nn = int(np.sqrt(y_one.shape[0]))
                     y_hat = _predict_flat_array(model, x_one).reshape(nn, nn)
-                    metrics_all.append(cal_od_metrics(y_hat, y_one.reshape(nn, nn)))
+                    y_true = y_one.reshape(nn, nn)
+                    save_od_artifacts(
+                        run_id,
+                        y_hat,
+                        y_true,
+                        city_id=area_id,
+                        inference_seed=inference_seed,
+                        model_name=model_name,
+                    )
+                    metrics_all.append(cal_od_metrics(y_hat, y_true))
             return _attach_validation_metrics(metrics_all, validation_metrics)
 
         metric_runs = _repeat_inference(evaluate_once, inference_seeds)
@@ -532,7 +554,7 @@ def infer_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
             print(f"  Val: CPC_val={validation_metrics['CPC_val']:.4f}  "
                   f"CPC_full={validation_metrics['CPC_full']:.4f}")
 
-            def evaluate_once():
+            def evaluate_once(inference_seed=None):
                 if single_city_split and single_city_data is not None:
                     od_hat = _predict_gmel_matrix(
                         gmel, decoder, nfeat_scaler,
@@ -540,6 +562,14 @@ def infer_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
                         single_city_data['dis'], device,
                     )
                     od_full = single_city_data['od'].astype(float)
+                    save_od_artifacts(
+                        run_id,
+                        od_hat,
+                        od_full,
+                        city_id=single_city_data['area_id'],
+                        inference_seed=inference_seed,
+                        model_name=model_name,
+                    )
                     mf = cal_od_metrics(od_hat, od_full)
                     _enrich_metrics_with_test(mf, od_hat, od_full, single_city_data['test_mask'])
                     metrics_all = [mf]
@@ -547,12 +577,20 @@ def infer_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
                     metrics_all = []
                     nf_test, adj_test, dis_test, od_test = load_graph_data(test_areas, data_path)
                     gmel.eval()
-                    for nf, adj, dis, od in tqdm(
-                        zip(nf_test, adj_test, dis_test, od_test),
+                    for area_id, nf, adj, dis, od in tqdm(
+                        zip(test_areas, nf_test, adj_test, dis_test, od_test),
                         total=len(nf_test),
                         desc="GMEL eval",
                     ):
                         od_hat = _predict_gmel_matrix(gmel, decoder, nfeat_scaler, nf, adj, dis, device)
+                        save_od_artifacts(
+                            run_id,
+                            od_hat,
+                            od.astype(float),
+                            city_id=area_id,
+                            inference_seed=inference_seed,
+                            model_name=model_name,
+                        )
                         metrics_all.append(cal_od_metrics(od_hat, od))
                 return _attach_validation_metrics(metrics_all, validation_metrics)
 
@@ -578,7 +616,7 @@ def infer_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
                 print(f"  Val: CPC_val={validation_metrics['CPC_val']:.4f}  "
                       f"CPC_full={validation_metrics['CPC_full']:.4f}")
 
-            def evaluate_once():
+            def evaluate_once(inference_seed=None):
                 if single_city_split and single_city_data is not None:
                     gen = trained['generator']
                     gen.eval()
@@ -596,11 +634,47 @@ def infer_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
                     ).reshape(single_city_data['od'].shape)
                     od_hat[od_hat < 0] = 0
                     od_full = single_city_data['od'].astype(float)
+                    save_od_artifacts(
+                        run_id,
+                        od_hat,
+                        od_full,
+                        city_id=single_city_data['area_id'],
+                        inference_seed=inference_seed,
+                        model_name=model_name,
+                    )
                     mf = cal_od_metrics(od_hat, od_full)
                     _enrich_metrics_with_test(mf, od_hat, od_full, single_city_data['test_mask'])
                     metrics_all = [mf]
                 else:
-                    metrics_all = module.evaluate(trained, test_areas, str(data_path), device=device)
+                    metrics_all = []
+                    nf_test, adj_test, dis_test, od_test = load_graph_data(test_areas, data_path)
+                    gen = trained['generator']
+                    gen.eval()
+                    for area_id, nf, adj, dis, od in zip(
+                        test_areas, nf_test, adj_test, dis_test, od_test
+                    ):
+                        nf_s = trained['nfeat_scaler'].transform(nf)
+                        dis_s = trained['dis_scaler'].transform(
+                            dis.reshape(-1, 1)
+                        ).reshape(dis.shape)
+                        nf_t = torch.FloatTensor(nf_s).to(device)
+                        dis_t = torch.FloatTensor(dis_s).to(device)
+                        g = build_dgl_graph(adj, device)
+                        with torch.no_grad():
+                            od_gen, _, _ = gen.generate_OD_net(g, nf_t, dis_t)
+                        od_hat = trained['od_scaler'].inverse_transform(
+                            od_gen.cpu().numpy().reshape(-1, 1)
+                        ).reshape(od.shape)
+                        od_hat[od_hat < 0] = 0
+                        save_od_artifacts(
+                            run_id,
+                            od_hat,
+                            od.astype(float),
+                            city_id=area_id,
+                            inference_seed=inference_seed,
+                            model_name=model_name,
+                        )
+                        metrics_all.append(cal_od_metrics(od_hat, od))
                 return _attach_validation_metrics(metrics_all, validation_metrics)
 
             metric_runs = _repeat_inference(evaluate_once, inference_seeds)
