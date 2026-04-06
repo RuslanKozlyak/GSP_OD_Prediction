@@ -4,7 +4,7 @@ import random
 import numpy as np
 import torch
 
-from models.GPS.config import TrainingConfig, WEIGHTS_DIR, cleanup_gpu, device
+from models.GPS.config import TrainingConfig, WEIGHTS_CPC_BEST_DIR, WEIGHTS_DIR, cleanup_gpu, device
 from .repeats import single_city_lgbm_run_id, single_city_run_id
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -138,8 +138,8 @@ def has_trained_baseline_artifacts(model_name, run_id):
 
 
 
-def trained_gps_run_ids(run_ids):
-    return [run_id for run_id in run_ids if (WEIGHTS_DIR / f"{run_id}.pt").exists()]
+def trained_gps_run_ids(run_ids, weights_dir=WEIGHTS_DIR):
+    return [run_id for run_id in run_ids if (weights_dir / f"{run_id}.pt").exists()]
 
 
 
@@ -147,11 +147,11 @@ def trained_lgbm_run_ids(run_ids):
     return [f"{run_id}_lgbm" for run_id in run_ids if (WEIGHTS_DIR / f"{run_id}_lgbm.lgbm").exists()]
 
 
-def trained_single_city_gps_run_ids(run_ids, city_ids=None):
+def trained_single_city_gps_run_ids(run_ids, city_ids=None, weights_dir=WEIGHTS_DIR):
     city_ids = list(SINGLE_CITY_IDS if city_ids is None else city_ids)
     return [
         run_id for run_id in run_ids
-        if all((WEIGHTS_DIR / f"{single_city_run_id(run_id, city_id)}.pt").exists() for city_id in city_ids)
+        if all((weights_dir / f"{single_city_run_id(run_id, city_id)}.pt").exists() for city_id in city_ids)
     ]
 
 

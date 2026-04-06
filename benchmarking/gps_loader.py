@@ -67,15 +67,16 @@ class GPSBenchmarkLoader:
         return self._multi_city_cache[key]
 
     def load_gps_results(self, run_id, city_data=None, config=None, area_id=None,
-                         inference_seed=None, verbose=True, is_test_city=True):
+                         inference_seed=None, verbose=True, is_test_city=True,
+                         weights_dir=WEIGHTS_DIR):
         from models.GPS.config import load_model_config
 
-        weight_path = WEIGHTS_DIR / f"{run_id}.pt"
+        weight_path = weights_dir / f"{run_id}.pt"
         if not weight_path.exists():
             print(f"  [SKIP] {run_id}: weights not found at {weight_path}")
             return None
 
-        saved_cfg = load_model_config(run_id)
+        saved_cfg = load_model_config(run_id, weights_dir=weights_dir)
         effective_cfg = saved_cfg if saved_cfg is not None else config
         if effective_cfg is None:
             print(f"  [SKIP] {run_id}: no saved config JSON and no config passed.")
@@ -192,10 +193,10 @@ class GPSBenchmarkLoader:
 
     def load_multi_city_gps_results(self, run_id, city_ids=None, inference_seed=None,
                                     evaluate_all_cities=False, return_split_groups=False,
-                                    verbose=True):
+                                    verbose=True, weights_dir=WEIGHTS_DIR):
         from models.GPS.config import load_model_config
 
-        saved_cfg = load_model_config(run_id)
+        saved_cfg = load_model_config(run_id, weights_dir=weights_dir)
         if saved_cfg is None:
             print(f"  [SKIP] {run_id}: config JSON not found.")
             return []
@@ -215,6 +216,7 @@ class GPSBenchmarkLoader:
                 inference_seed=inference_seed,
                 verbose=verbose,
                 is_test_city=city_id in test_city_id_set,
+                weights_dir=weights_dir,
             )
             if city_metric:
                 city_metric = dict(city_metric)

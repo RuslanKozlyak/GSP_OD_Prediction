@@ -1,5 +1,6 @@
 import os
 import csv
+import json
 import warnings
 from dataclasses import dataclass, field, replace, asdict
 from typing import Optional, Literal
@@ -16,6 +17,7 @@ DATA_PATH = str(PROJECT_ROOT / "data_lu/data")
 SHP_PATH = str(PROJECT_ROOT / "assets" / "Boundaries_Regions_within_Areas")
 RESULTS_DIR = PROJECT_ROOT / "results"
 WEIGHTS_DIR = RESULTS_DIR / "weights"
+WEIGHTS_CPC_BEST_DIR = RESULTS_DIR / "weights_CPC_best"
 METRICS_CSV = RESULTS_DIR / "metrics.csv"
 METRICS_RUNS_DIR = RESULTS_DIR / "metrics_runs"
 
@@ -138,6 +140,7 @@ class TrainingConfig:
 def ensure_dirs():
     RESULTS_DIR.mkdir(exist_ok=True)
     WEIGHTS_DIR.mkdir(exist_ok=True)
+    WEIGHTS_CPC_BEST_DIR.mkdir(exist_ok=True)
     METRICS_RUNS_DIR.mkdir(exist_ok=True)
 
 
@@ -183,23 +186,24 @@ def save_metrics_to_csv(run_id, run_name, config, metrics_full, metrics_nz,
     print(f"  -> Metrics saved to {metrics_path}")
 
 
-def save_model_weights(run_id, model, config=None):
+def save_model_weights(run_id, model_or_state, config=None, weights_dir=WEIGHTS_DIR):
     ensure_dirs()
-    path = WEIGHTS_DIR / f"{run_id}.pt"
-    torch.save(model.state_dict(), path)
+    weights_dir = Path(weights_dir)
+    weights_dir.mkdir(exist_ok=True)
+    state_dict = model_or_state.state_dict() if hasattr(model_or_state, 'state_dict') else model_or_state
+    path = weights_dir / f"{run_id}.pt"
+    torch.save(state_dict, path)
     print(f"  -> Weights saved to {path}")
     if config is not None:
-        import json
-        cfg_path = WEIGHTS_DIR / f"{run_id}.json"
+        cfg_path = weights_dir / f"{run_id}.json"
         with open(cfg_path, 'w') as f:
             json.dump(asdict(config), f, indent=2)
         print(f"  -> Config  saved to {cfg_path}")
 
 
-def load_model_config(run_id):
+def load_model_config(run_id, weights_dir=WEIGHTS_DIR):
     """Load TrainingConfig saved alongside model weights. Returns None if not found."""
-    import json
-    cfg_path = WEIGHTS_DIR / f"{run_id}.json"
+    cfg_path = Path(weights_dir) / f"{run_id}.json"
     if not cfg_path.exists():
         return None
     with open(cfg_path) as f:

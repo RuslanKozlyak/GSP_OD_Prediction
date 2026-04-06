@@ -1,7 +1,7 @@
 from collections import defaultdict
 from numbers import Real
 
-from .config import BASELINE_MODELS, INFERENCE_SEEDS, SINGLE_CITY_IDS, cleanup_gpu
+from .config import BASELINE_MODELS, INFERENCE_SEEDS, SINGLE_CITY_IDS, WEIGHTS_DIR, cleanup_gpu
 from .data_utils import split_multi_city_ids
 from .gps_loader import GPSBenchmarkLoader
 from .repeats import aggregate_metric_samples, single_city_lgbm_run_id, single_city_run_id
@@ -145,6 +145,8 @@ def run_single_city_benchmark(
     gps_loader=None,
     gmel_gps_run_ids=None,
     inference_seeds=None,
+    gps_weights_dir=WEIGHTS_DIR,
+    gps_model_type_label="Ours (GPS)",
 ):
     single_city_ids = _normalize_single_city_ids(single_city_ids)
     inference_seeds = list(INFERENCE_SEEDS if inference_seeds is None else inference_seeds)
@@ -164,12 +166,13 @@ def run_single_city_benchmark(
                     run_id,
                     area_id=city_id,
                     inference_seed=inference_seed,
+                    weights_dir=gps_weights_dir,
                 )
                 if metrics:
                     metric_samples.append(metrics)
         if metric_samples:
             results[base_run_id] = aggregate_metric_samples(metric_samples)
-            model_types[base_run_id] = "Ours (GPS)"
+            model_types[base_run_id] = gps_model_type_label
     cleanup_gpu()
 
     print("\n[Our Model - GPS+LGBM variants]")
@@ -249,6 +252,8 @@ def run_multi_city_benchmark(
     baseline_models=None,
     gps_loader=None,
     inference_seeds=None,
+    gps_weights_dir=WEIGHTS_DIR,
+    gps_model_type_label="Ours (GPS)",
 ):
     inference_seeds = list(INFERENCE_SEEDS if inference_seeds is None else inference_seeds)
     gps_loader = gps_loader or GPSBenchmarkLoader(multi_city_ids=city_ids, data_path=data_path)
@@ -270,6 +275,7 @@ def run_multi_city_benchmark(
                 evaluate_all_cities=True,
                 return_split_groups=True,
                 verbose=False,
+                weights_dir=gps_weights_dir,
             )
             if metric_groups and metric_groups.get("all"):
                 for city_metric in metric_groups["all"]:
@@ -286,7 +292,7 @@ def run_multi_city_benchmark(
             per_city_summary = _summarize_multi_city_per_city(per_city_metric_samples)
             results[run_id] = aggregate_metric_samples(metric_samples)
             results[run_id]["per_city"] = per_city_summary
-            model_types[run_id] = "Ours (GPS)"
+            model_types[run_id] = gps_model_type_label
             _print_multi_city_city_summary(run_id, per_city_summary, results[run_id])
     cleanup_gpu()
 

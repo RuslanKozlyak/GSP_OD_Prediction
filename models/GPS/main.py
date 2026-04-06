@@ -4,7 +4,7 @@ import torch
 from dataclasses import replace
 
 from .config import (
-    TrainingConfig, WEIGHTS_DIR, device,
+    TrainingConfig, WEIGHTS_DIR, WEIGHTS_CPC_BEST_DIR, device,
     ORIGIN_BATCH_SIZE, DEST_BATCH_SIZE, NAN_BATCH_THRESHOLD,
     save_metrics_to_csv, save_model_weights,
 )
@@ -227,6 +227,7 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         return avg_mf, avg_mnz, avg_mt, per_city
 
     mf_last, mnz_last, mt_last, pc_last = eval_all(f"Last weights (epoch {epoch})")
+    last_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
 
     if best_state:
         model.load_state_dict(best_state)
@@ -238,9 +239,20 @@ def _train_loop(run_id, run_name, config, model, city_datas,
     else:
         mf, mnz, mt, pc = mf_best, mnz_best, mt_best, pc_best
 
+    val_loss_best_state = best_state if best_state is not None else last_state
+    if mf_last['CPC'] > mf_best['CPC']:
+        cpc_best_state = last_state
+        cpc_best_label = f"last weights (epoch {epoch})"
+        print(f"\n  ! Last weights better by CPC_full ({mf_last['CPC']:.4f} > {mf_best['CPC']:.4f})")
+    else:
+        cpc_best_state = val_loss_best_state
+        cpc_best_label = "best val_loss weights"
+
     # Save
     save_metrics_to_csv(run_id, run_name, config, mf, mnz, mt, n_params, epoch, status)
-    save_model_weights(run_id, model, config)
+    save_model_weights(run_id, val_loss_best_state, config)
+    print(f"  -> CPC_full-best checkpoint source: {cpc_best_label}")
+    save_model_weights(run_id, cpc_best_state, config, weights_dir=WEIGHTS_CPC_BEST_DIR)
 
     return {
         'name': run_name, 'model': model, 'config': config, 'history': history,
