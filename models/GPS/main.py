@@ -10,7 +10,7 @@ from .config import (
 )
 from .model import make_model
 from .loss import compute_loss_for_city
-from .metrics import compute_metrics, evaluate_full_matrix
+from .metrics import evaluate_full_matrix, summarize_prediction_metrics
 from .data_load import prepare_single_city_data, prepare_multi_city_data
 from models.shared.plotting import save_loss_plot
 
@@ -198,13 +198,14 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         test_eval_ids = set(test_eval_cities)
         for ecid, ecd in full_eval_cities.items():
             pred, mf, mnz = evaluate_full_matrix(model, ecd, config, dest_batch_size=DEST_BATCH_SIZE)
-            mt = None
+            metric_bundle = summarize_prediction_metrics(
+                pred, ecd, is_test_city=ecid in test_eval_ids
+            )
+            mt = metric_bundle['test']
             if is_multi:
                 if ecid in test_eval_ids:
-                    mt = {'CPC': mf['CPC'], 'MAE': mf['MAE'], 'RMSE': mf['RMSE']}
                     all_mt.append(mt)
             else:
-                mt = compute_metrics(pred[ecd['test_mask']], ecd['od_matrix_np'][ecd['test_mask']].astype(float))
                 all_mt.append(mt)
             all_mf.append(mf)
             all_mnz.append(mnz)

@@ -51,6 +51,59 @@ def predict_full_matrix(model, cd, config, dbs=DEST_BATCH_SIZE):
     return pred
 
 
+def _nan_quick_metrics():
+    return {'CPC': float('nan'), 'MAE': float('nan'), 'RMSE': float('nan')}
+
+
+def summarize_prediction_metrics(pred, cd, is_test_city=True):
+    """Compute one consistent metric bundle for a predicted city matrix.
+
+    This helper is the shared source of truth for GPS evaluation used by both
+    training (`gps_od.ipynb` via models.GPS.main) and benchmarking
+    (`benchmark.ipynb` via benchmarking.gps_loader).
+    """
+    od = cd['od_matrix_np']
+    full_metrics = cal_od_metrics(pred, od)
+
+    nz = od > 0
+    if np.any(nz):
+        nonzero_metrics = compute_metrics(pred[nz], od[nz].astype(float))
+    else:
+        nonzero_metrics = {'CPC': 0.0, 'MAE': 0.0, 'RMSE': 0.0}
+
+    if cd.get('split_scope') == 'multi_city':
+        test_metrics = (
+            {
+                'CPC': full_metrics['CPC'],
+                'MAE': full_metrics['MAE'],
+                'RMSE': full_metrics['RMSE'],
+            }
+            if is_test_city else
+            _nan_quick_metrics()
+        )
+    else:
+        test_mask = cd.get('test_mask')
+        if test_mask is not None and np.any(test_mask):
+            test_metrics = compute_metrics(pred[test_mask], od[test_mask].astype(float))
+        else:
+            test_metrics = _nan_quick_metrics()
+
+    combined_metrics = dict(full_metrics)
+    combined_metrics['CPC_nz'] = nonzero_metrics['CPC']
+    combined_metrics['MAE_nz'] = nonzero_metrics['MAE']
+    combined_metrics['RMSE_nz'] = nonzero_metrics['RMSE']
+    combined_metrics['CPC_test'] = test_metrics['CPC']
+    combined_metrics['MAE_test'] = test_metrics['MAE']
+    combined_metrics['RMSE_test'] = test_metrics['RMSE']
+
+    return {
+        'full': full_metrics,
+        'nonzero': nonzero_metrics,
+        'test': test_metrics,
+        'combined': combined_metrics,
+    }
+
+
 def evaluate_full_matrix(model, cd, config, dest_batch_size=DEST_BATCH_SIZE):
     """Predict full matrix and compute metrics (full suite + nonzero).
 
@@ -60,10 +113,9 @@ def evaluate_full_matrix(model, cd, config, dest_batch_size=DEST_BATCH_SIZE):
         mnz:   {CPC, MAE, RMSE} computed on nonzero entries only
     """
     pred = predict_full_matrix(model, cd, config, dest_batch_size)
-    od = cd['od_matrix_np']
-    nz = od > 0
+    summary = summarize_prediction_metrics(pred, cd, is_test_city=True)
     return (
         pred,
-        cal_od_metrics(pred, od),
-        compute_metrics(pred[nz], od[nz].astype(float)),
+        summary['full'],
+        summary['nonzero'],
     )

@@ -4,8 +4,7 @@ import torch
 from models.GPS.config import WEIGHTS_DIR, device
 from models.GPS.data_load import prepare_multi_city_data, prepare_single_city_data
 from models.GPS.lgbm_pipeline import load_lgbm_results as load_saved_lgbm_results
-from models.shared.metrics import cal_od_metrics, compute_metrics
-from models.GPS.metrics import predict_full_matrix
+from models.GPS.metrics import predict_full_matrix, summarize_prediction_metrics
 from models.GPS.model import make_model
 
 from .artifacts import save_od_artifacts
@@ -13,28 +12,6 @@ from .config import DATA_PATH, MULTI_CITY_IDS, SINGLE_CITY_ID, cleanup_gpu
 from .config import set_global_seed
 
 _PE_TYPE_UNSET = object()
-
-
-def _enrich_metrics(metrics, pred, city_data, is_test_city=True):
-    """Add benchmark-specific test metrics to a cal_od_metrics dict."""
-    import numpy as np
-    od = city_data['od_matrix_np']
-    if city_data.get('split_scope') == 'multi_city':
-        if is_test_city:
-            metrics['CPC_test'] = metrics['CPC']
-            metrics['MAE_test'] = metrics['MAE']
-            metrics['RMSE_test'] = metrics['RMSE']
-        else:
-            metrics['CPC_test'] = np.nan
-            metrics['MAE_test'] = np.nan
-            metrics['RMSE_test'] = np.nan
-    else:
-        tm = city_data.get('test_mask')
-        if tm is not None and np.any(tm):
-            mt = compute_metrics(pred[tm], od[tm].astype(float))
-            metrics['CPC_test'] = mt['CPC']
-            metrics['MAE_test'] = mt['MAE']
-            metrics['RMSE_test'] = mt['RMSE']
 
 
 class GPSBenchmarkLoader:
@@ -105,8 +82,9 @@ class GPSBenchmarkLoader:
                 city_id=city_data.get("city_id", area_id),
                 inference_seed=inference_seed,
             )
-            metrics = cal_od_metrics(pred, city_data["od_matrix_np"])
-            _enrich_metrics(metrics, pred, city_data, is_test_city=is_test_city)
+            metrics = summarize_prediction_metrics(
+                pred, city_data, is_test_city=is_test_city
+            )['combined']
             if verbose:
                 print(f"  {run_id}: CPC={metrics['CPC']:.4f}  MAE={metrics['MAE']:.4f}")
             return metrics
@@ -204,8 +182,7 @@ class GPSBenchmarkLoader:
                 city_id=city_data.get("city_id", area_id),
                 inference_seed=inference_seed,
             )
-            metrics = cal_od_metrics(pred, city_data['od_matrix_np'])
-            _enrich_metrics(metrics, pred, city_data)
+            metrics = summarize_prediction_metrics(pred, city_data)['combined']
             print(f"  {run_id}: CPC={metrics['CPC']:.4f}  MAE={metrics['MAE']:.4f}")
             return metrics
         except Exception as exc:
