@@ -113,12 +113,17 @@ def load_lgbm_results(run_id, city_data):
         if np.any(nz):
             mnz = compute_metrics(pred[nz], od[nz].astype(float))
             metrics['CPC_nz'] = mnz['CPC']
-        tm = city_data.get('test_mask')
-        if tm is not None and np.any(tm):
-            mt = compute_metrics(pred[tm], od[tm].astype(float))
-            metrics['CPC_test'] = mt['CPC']
-            metrics['MAE_test'] = mt['MAE']
-            metrics['RMSE_test'] = mt['RMSE']
+        if city_data.get('split_scope') == 'multi_city':
+            metrics['CPC_test'] = metrics['CPC']
+            metrics['MAE_test'] = metrics['MAE']
+            metrics['RMSE_test'] = metrics['RMSE']
+        else:
+            tm = city_data.get('test_mask')
+            if tm is not None and np.any(tm):
+                mt = compute_metrics(pred[tm], od[tm].astype(float))
+                metrics['CPC_test'] = mt['CPC']
+                metrics['MAE_test'] = mt['MAE']
+                metrics['RMSE_test'] = mt['RMSE']
         print(f"  {run_id}: CPC={metrics['CPC']:.4f}  MAE={metrics['MAE']:.4f}")
         return metrics
 
@@ -174,7 +179,10 @@ def train_lgbm_from_model(run_id, city_data, donor_model, donor_name):
     mf = compute_metrics(pred.ravel(), od.ravel().astype(float))
     nzm = od > 0
     mnz = compute_metrics(pred[nzm], od[nzm].astype(float))
-    mt = compute_metrics(pred[tsm], od[tsm].astype(float))
+    if city_data.get('split_scope') == 'multi_city':
+        mt = dict(mf)
+    else:
+        mt = compute_metrics(pred[tsm], od[tsm].astype(float))
 
     print(f"  Full:    CPC={mf['CPC']:.4f}  MAE={mf['MAE']:.4f}")
     print(f"  Nonzero: CPC={mnz['CPC']:.4f}")

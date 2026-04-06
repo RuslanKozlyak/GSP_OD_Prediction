@@ -357,7 +357,7 @@ def run_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_PA
         gps_loader = gps_loader or GPSBenchmarkLoader(
             multi_city_ids=city_ids, data_path=data_path,
         )
-        mc_dict, mc_train_ids, mc_val_ids, _ = gps_loader.get_multi_city_data(
+        mc_dict, mc_train_ids, mc_val_ids, mc_test_ids = gps_loader.get_multi_city_data(
             pe_type=cfg.pe_type, city_ids=city_ids,
         )
         result = train_multi_city(
@@ -367,6 +367,7 @@ def run_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_PA
             city_data_dict=mc_dict,
             train_city_ids=mc_train_ids,
             val_city_ids=mc_val_ids,
+            test_city_ids=mc_test_ids,
         )
 
     cleanup_gpu()

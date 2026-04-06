@@ -21,12 +21,17 @@ def _enrich_metrics(metrics, pred, city_data):
     if np.any(nz):
         mnz = compute_metrics(pred[nz], od[nz].astype(float))
         metrics['CPC_nz'] = mnz['CPC']
-    tm = city_data.get('test_mask')
-    if tm is not None and np.any(tm):
-        mt = compute_metrics(pred[tm], od[tm].astype(float))
-        metrics['CPC_test'] = mt['CPC']
-        metrics['MAE_test'] = mt['MAE']
-        metrics['RMSE_test'] = mt['RMSE']
+    if city_data.get('split_scope') == 'multi_city':
+        metrics['CPC_test'] = metrics['CPC']
+        metrics['MAE_test'] = metrics['MAE']
+        metrics['RMSE_test'] = metrics['RMSE']
+    else:
+        tm = city_data.get('test_mask')
+        if tm is not None and np.any(tm):
+            mt = compute_metrics(pred[tm], od[tm].astype(float))
+            metrics['CPC_test'] = mt['CPC']
+            metrics['MAE_test'] = mt['MAE']
+            metrics['RMSE_test'] = mt['RMSE']
 
 
 class GPSBenchmarkLoader:
@@ -181,9 +186,11 @@ class GPSBenchmarkLoader:
         if saved_cfg is None:
             print(f"  [SKIP] {run_id}: config JSON not found.")
             return []
-        city_data_dict, _, _, _ = self.get_multi_city_data(pe_type=saved_cfg.pe_type, city_ids=city_ids)
+        city_data_dict, _, _, test_city_ids = self.get_multi_city_data(
+            pe_type=saved_cfg.pe_type, city_ids=city_ids,
+        )
         metrics = []
-        for city_id in city_data_dict:
+        for city_id in test_city_ids:
             city_metric = self.load_gps_results(run_id, city_data=city_data_dict[city_id], config=saved_cfg)
             if city_metric:
                 metrics.append(city_metric)

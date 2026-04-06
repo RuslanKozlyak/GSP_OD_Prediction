@@ -18,7 +18,8 @@ from models.shared.plotting import save_loss_plot
 # ─── Unified training loop ───────────────────────────────────────────────────
 
 def _train_loop(run_id, run_name, config, model, city_datas,
-                is_multi=False, train_city_ids=None, val_city_ids=None):
+                is_multi=False, train_city_ids=None, val_city_ids=None,
+                test_city_ids=None):
     """
     Unified training loop for single-city and multi-city modes.
     city_datas: dict {city_id: city_data}
@@ -174,7 +175,10 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         }
 
     # Evaluate on last and best weights
-    eval_cities = city_datas if is_multi else {list(city_datas.keys())[0]: list(city_datas.values())[0]}
+    if is_multi and test_city_ids is not None:
+        eval_cities = {cid: city_datas[cid] for cid in test_city_ids if cid in city_datas}
+    else:
+        eval_cities = city_datas if is_multi else {list(city_datas.keys())[0]: list(city_datas.values())[0]}
 
     def eval_all(label):
         all_mf = []
@@ -183,7 +187,13 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         per_city = []
         for ecid, ecd in eval_cities.items():
             pred, mf, mnz = evaluate_full_matrix(model, ecd, config, dest_batch_size=DEST_BATCH_SIZE)
-            mt = compute_metrics(pred[ecd['test_mask']], ecd['od_matrix_np'][ecd['test_mask']].astype(float))
+            if is_multi:
+                # In multi-city mode, the held-out split is at the city level.
+                # Once we evaluate only on test cities, "test" metrics should
+                # reflect the full matrix for those cities rather than od > 0.
+                mt = {'CPC': mf['CPC'], 'MAE': mf['MAE'], 'RMSE': mf['RMSE']}
+            else:
+                mt = compute_metrics(pred[ecd['test_mask']], ecd['od_matrix_np'][ecd['test_mask']].astype(float))
             all_mf.append(mf)
             all_mnz.append(mnz)
             all_mt.append(mt)
@@ -241,19 +251,21 @@ def train_single_city(run_id, run_name, config, city_data=None, area_id=None, da
 
 
 def train_multi_city(run_id, run_name, config, city_data_dict=None,
-                     train_city_ids=None, val_city_ids=None, city_ids=None, data_path=None):
+                     train_city_ids=None, val_city_ids=None, test_city_ids=None,
+                     city_ids=None, data_path=None):
     if city_data_dict is None:
         kwargs = {}
         if city_ids is not None:
             kwargs['city_ids'] = city_ids
         if data_path is not None:
             kwargs['data_path'] = data_path
-        city_data_dict, train_city_ids, val_city_ids, _ = prepare_multi_city_data(
+        city_data_dict, train_city_ids, val_city_ids, test_city_ids = prepare_multi_city_data(
             pe_type=config.pe_type, **kwargs
         )
     input_dim = city_data_dict[list(city_data_dict.keys())[0]]['graph_data'].x.shape[1]
     model = make_model(config, input_dim=input_dim, edge_dim=1)
     return _train_loop(run_id, run_name, config, model, city_data_dict,
-                       is_multi=True, train_city_ids=train_city_ids, val_city_ids=val_city_ids)
+                       is_multi=True, train_city_ids=train_city_ids,
+                       val_city_ids=val_city_ids, test_city_ids=test_city_ids)
 
 
