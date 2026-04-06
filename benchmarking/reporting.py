@@ -38,13 +38,19 @@ def build_combined_summary(single_city_results, multi_city_results):
         if model in single_city_results:
             sc = single_city_results[model]
             row["SC_CPC"] = sc.get("CPC")
+            row["SC_CPC_std"] = sc.get("CPC_std")
             row["SC_MAE"] = sc.get("MAE")
+            row["SC_MAE_std"] = sc.get("MAE_std")
             row["SC_RMSE"] = sc.get("RMSE")
+            row["SC_RMSE_std"] = sc.get("RMSE_std")
         if model in multi_city_results:
             mc = multi_city_results[model]
             row["MC_CPC"] = mc.get("CPC")
+            row["MC_CPC_std"] = mc.get("CPC_std")
             row["MC_MAE"] = mc.get("MAE")
+            row["MC_MAE_std"] = mc.get("MAE_std")
             row["MC_RMSE"] = mc.get("RMSE")
+            row["MC_RMSE_std"] = mc.get("RMSE_std")
         rows.append(row)
     return pd.DataFrame(rows).set_index("Model")
 
@@ -78,7 +84,9 @@ def plot_comparison(results_dict, title, metrics_to_plot=None):
 
     for idx, metric in enumerate(available):
         vals = df[metric].values
-        axes[idx].barh(range(len(df)), vals, color=colors)
+        err_col = f"{metric}_std"
+        errs = df[err_col].values if err_col in df.columns else None
+        axes[idx].barh(range(len(df)), vals, color=colors, xerr=errs, capsize=3 if errs is not None else 0)
         axes[idx].set_yticks(range(len(df)))
         axes[idx].set_yticklabels(df.index, fontsize=9)
         axes[idx].set_xlabel(metric)

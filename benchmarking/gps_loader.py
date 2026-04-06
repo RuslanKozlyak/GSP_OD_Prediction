@@ -9,6 +9,7 @@ from models.GPS.metrics import predict_full_matrix
 from models.GPS.model import make_model
 
 from .config import DATA_PATH, MULTI_CITY_IDS, SINGLE_CITY_ID, cleanup_gpu
+from .config import set_global_seed
 
 _PE_TYPE_UNSET = object()
 
@@ -64,7 +65,7 @@ class GPSBenchmarkLoader:
             )
         return self._multi_city_cache[key]
 
-    def load_gps_results(self, run_id, city_data=None, config=None, area_id=None):
+    def load_gps_results(self, run_id, city_data=None, config=None, area_id=None, inference_seed=None):
         from models.GPS.config import load_model_config
 
         weight_path = WEIGHTS_DIR / f"{run_id}.pt"
@@ -84,6 +85,8 @@ class GPSBenchmarkLoader:
         print(f"  Loading {run_id} (pe_type={effective_cfg.pe_type}) ...")
         model = None
         try:
+            if inference_seed is not None:
+                set_global_seed(inference_seed)
             model = make_model(effective_cfg, graph_data_ref=city_data["graph_data"])
             model.load_state_dict(torch.load(str(weight_path), map_location=device))
             model.to(device).eval()
@@ -102,7 +105,7 @@ class GPSBenchmarkLoader:
                 del model
             cleanup_gpu()
 
-    def load_lgbm_results(self, run_id, city_data=None, area_id=None, pe_type=_PE_TYPE_UNSET):
+    def load_lgbm_results(self, run_id, city_data=None, area_id=None, pe_type=_PE_TYPE_UNSET, inference_seed=None):
         from models.GPS.config import load_model_config
 
         if city_data is None:
@@ -117,9 +120,11 @@ class GPSBenchmarkLoader:
                 donor_cfg.pe_type if donor_cfg is not None else "rwpe"
             )
             city_data = self.get_single_city_data(pe_type=effective_pe_type, area_id=area_id)
+        if inference_seed is not None:
+            set_global_seed(inference_seed)
         return load_saved_lgbm_results(run_id, city_data)
 
-    def load_gmel_gps_results(self, run_id, city_data=None, area_id=None):
+    def load_gmel_gps_results(self, run_id, city_data=None, area_id=None, inference_seed=None):
         """Load a pre-trained GMEL_GPS model + GBRT and evaluate on one city."""
         import json
         from models.GMEL_GPS.model import GMEL_GPS
@@ -150,6 +155,8 @@ class GPSBenchmarkLoader:
         print(f"  Loading {run_id} (pe_type={cfg.pe_type}) ...")
         model = None
         try:
+            if inference_seed is not None:
+                set_global_seed(inference_seed)
             gd = city_data['graph_data']
             model = GMEL_GPS(
                 input_dim  = gd.x.shape[1],
@@ -179,7 +186,7 @@ class GPSBenchmarkLoader:
                 del model
             cleanup_gpu()
 
-    def load_multi_city_gps_results(self, run_id, city_ids=None):
+    def load_multi_city_gps_results(self, run_id, city_ids=None, inference_seed=None):
         from models.GPS.config import load_model_config
 
         saved_cfg = load_model_config(run_id)
@@ -191,7 +198,12 @@ class GPSBenchmarkLoader:
         )
         metrics = []
         for city_id in test_city_ids:
-            city_metric = self.load_gps_results(run_id, city_data=city_data_dict[city_id], config=saved_cfg)
+            city_metric = self.load_gps_results(
+                run_id,
+                city_data=city_data_dict[city_id],
+                config=saved_cfg,
+                inference_seed=inference_seed,
+            )
             if city_metric:
                 metrics.append(city_metric)
         return metrics

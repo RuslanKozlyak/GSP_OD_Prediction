@@ -17,9 +17,11 @@ SHP_PATH = str(PROJECT_ROOT / "assets" / "Boundaries_Regions_within_Areas")
 RESULTS_DIR = PROJECT_ROOT / "results"
 WEIGHTS_DIR = RESULTS_DIR / "weights"
 METRICS_CSV = RESULTS_DIR / "metrics.csv"
+METRICS_RUNS_DIR = RESULTS_DIR / "metrics_runs"
 
 SINGLE_CITY_ID = "48201"
 MULTI_CITY_IDS = ["17031","48201","04013","06073","06059","36047","12086","48113","06065","36081"]
+SINGLE_CITY_IDS = [SINGLE_CITY_ID] + [cid for cid in MULTI_CITY_IDS if cid != SINGLE_CITY_ID][:2]
 
 # ─── Architecture ─────────────────────────────────────────────────────────────
 HIDDEN_DIM = 128
@@ -136,6 +138,7 @@ class TrainingConfig:
 def ensure_dirs():
     RESULTS_DIR.mkdir(exist_ok=True)
     WEIGHTS_DIR.mkdir(exist_ok=True)
+    METRICS_RUNS_DIR.mkdir(exist_ok=True)
 
 
 def save_metrics_to_csv(run_id, run_name, config, metrics_full, metrics_nz,
@@ -174,6 +177,10 @@ def save_metrics_to_csv(run_id, run_name, config, metrics_full, metrics_nz,
         if not file_exists: writer.writeheader()
         writer.writerow(row)
     print(f"  -> Metrics saved to {METRICS_CSV}")
+    metrics_path = METRICS_RUNS_DIR / f"{run_id}.json"
+    with open(metrics_path, 'w') as f:
+        json.dump(row, f, indent=2)
+    print(f"  -> Metrics saved to {metrics_path}")
 
 
 def save_model_weights(run_id, model, config=None):

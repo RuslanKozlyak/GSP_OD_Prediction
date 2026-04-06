@@ -6,7 +6,7 @@ import numpy as np
 import torch
 import lightgbm as lgb
 
-from .config import TrainingConfig, METRICS_CSV, WEIGHTS_DIR, device, ensure_dirs
+from .config import TrainingConfig, METRICS_CSV, METRICS_RUNS_DIR, WEIGHTS_DIR, device, ensure_dirs
 from .metrics import compute_metrics, cal_od_metrics
 
 
@@ -206,6 +206,10 @@ def train_lgbm_from_model(run_id, city_data, donor_model, donor_name):
     with open(METRICS_CSV, 'a', newline='') as f:
         w = csv.DictWriter(f, fieldnames=row.keys())
         w.writerow(row)
+    metrics_path = METRICS_RUNS_DIR / f"{run_id}.json"
+    with open(metrics_path, 'w') as f:
+        json.dump(row, f, indent=2)
+    print(f"  -> Metrics saved to {metrics_path}")
 
     return {
         'name': f'LGBM({donor_name})', 'model': lgbm_model,

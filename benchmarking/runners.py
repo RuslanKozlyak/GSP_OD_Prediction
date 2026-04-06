@@ -16,7 +16,7 @@ from models.shared.data_load import (
     prepare_single_city_flat, prepare_single_city_graph,
 )
 
-from .config import DATA_PATH, PROJECT_ROOT, SEED, cleanup_gpu, device
+from .config import DATA_PATH, PROJECT_ROOT, cleanup_gpu, device, set_global_seed
 
 
 def _predict_flat_array(model, x):
@@ -109,10 +109,22 @@ def _enrich_metrics_with_test(mf, pred_matrix, od_matrix, test_mask):
     return mf
 
 
-def run_flat_model(model_name, train_areas, valid_areas, test_areas, data_path=DATA_PATH):
+def _repeat_inference(eval_once, inference_seeds):
+    seeds = list(inference_seeds or [None])
+    metric_runs = []
+    for seed in seeds:
+        if seed is not None:
+            set_global_seed(seed)
+        metric_runs.append(average_listed_metrics(eval_once()))
+    return metric_runs
+
+
+def run_flat_model(model_name, train_areas, valid_areas, test_areas, data_path=DATA_PATH,
+                   inference_seeds=None):
     """Train and evaluate a flat-feature model (RF, SVR, GBRT, DGM, GM_E, GM_P)."""
     print(f"\n{'=' * 60}\n  Running: {model_name}\n{'=' * 60}")
     t0 = time.time()
+    set_global_seed()
     feature_mode = "gravity" if model_name in ("GM_E", "GM_P") else "full"
     single_city_split = (
         len(train_areas) == len(valid_areas) == len(test_areas) == 1
@@ -167,38 +179,40 @@ def run_flat_model(model_name, train_areas, valid_areas, test_areas, data_path=D
 
     del x_train, y_train, xs_valid, ys_valid; gc.collect()
 
-    # Evaluate
-    if single_city_split and od_matrix is not None:
-        # Single-city: predict full matrix, compute 3-level metrics
-        x_full = xs_test[0]
-        pred_flat = _predict_flat_array(model, x_full)
-        pred_matrix = pred_flat.reshape(n_nodes, n_nodes)
-        mf = cal_od_metrics(pred_matrix, od_matrix)
-        _enrich_metrics_with_test(mf, pred_matrix, od_matrix, test_mask)
-        metrics_all = [mf]
-    elif hasattr(module, 'evaluate'):
-        metrics_all = module.evaluate(model, xs_test, ys_test)
-    else:
-        metrics_all = []
-        for x_one, y_one in zip(xs_test, ys_test):
-            nn = int(np.sqrt(y_one.shape[0]))
-            y_hat = model.predict(x_one) if hasattr(model, 'predict') else model(x_one)
-            y_hat = y_hat.reshape(nn, nn)
-            y_true = y_one.reshape(nn, nn)
-            y_hat[y_hat < 0] = 0
-            metrics_all.append(cal_od_metrics(y_hat, y_true))
+    def evaluate_once():
+        if single_city_split and od_matrix is not None:
+            x_full = xs_test[0]
+            pred_flat = _predict_flat_array(model, x_full)
+            pred_matrix = pred_flat.reshape(n_nodes, n_nodes)
+            mf = cal_od_metrics(pred_matrix, od_matrix)
+            _enrich_metrics_with_test(mf, pred_matrix, od_matrix, test_mask)
+            metrics_all = [mf]
+        elif hasattr(module, 'evaluate'):
+            metrics_all = module.evaluate(model, xs_test, ys_test)
+        else:
+            metrics_all = []
+            for x_one, y_one in zip(xs_test, ys_test):
+                nn = int(np.sqrt(y_one.shape[0]))
+                y_hat = model.predict(x_one) if hasattr(model, 'predict') else model(x_one)
+                y_hat = y_hat.reshape(nn, nn)
+                y_true = y_one.reshape(nn, nn)
+                y_hat[y_hat < 0] = 0
+                metrics_all.append(cal_od_metrics(y_hat, y_true))
+        return _attach_validation_metrics(metrics_all, validation_metrics)
 
-    metrics_all = _attach_validation_metrics(metrics_all, validation_metrics)
-    avg = average_listed_metrics(metrics_all)
+    metric_runs = _repeat_inference(evaluate_once, inference_seeds)
+    avg = average_listed_metrics(metric_runs)
     print(f"  CPC={avg['CPC']:.4f}  RMSE={avg['RMSE']:.2f}  MAE={avg['MAE']:.2f}  ({time.time() - t0:.1f}s)")
     del model; gc.collect(); cleanup_gpu()
-    return metrics_all
+    return metric_runs
 
 
-def run_graph_model(model_name, train_areas, valid_areas, test_areas, data_path=DATA_PATH):
+def run_graph_model(model_name, train_areas, valid_areas, test_areas, data_path=DATA_PATH,
+                    inference_seeds=None):
     """Train and evaluate a graph-based model (GMEL variants, NetGAN)."""
     print(f"\n{'=' * 60}\n  Running: {model_name}\n{'=' * 60}")
     t0 = time.time()
+    set_global_seed()
     single_city_split = (
         len(train_areas) == len(valid_areas) == len(test_areas) == 1
         and train_areas[0] == valid_areas[0] == test_areas[0]
@@ -233,24 +247,31 @@ def run_graph_model(model_name, train_areas, valid_areas, test_areas, data_path=
             )
             print(f"  Val: CPC_val={validation_metrics['CPC_val']:.4f}  "
                   f"CPC_full={validation_metrics['CPC_full']:.4f}")
-            if single_city_split and single_city_data is not None:
-                od_hat = _predict_gmel_matrix(
-                    gmel, decoder, nfeat_scaler,
-                    single_city_data['nfeat'], single_city_data['adj'],
-                    single_city_data['dis'], device,
-                )
-                od_full = single_city_data['od'].astype(float)
-                mf = cal_od_metrics(od_hat, od_full)
-                _enrich_metrics_with_test(mf, od_hat, od_full, single_city_data['test_mask'])
-                metrics_all = [mf]
-            else:
-                nf_test, adj_test, dis_test, od_test = load_graph_data(test_areas, data_path)
-                gmel.eval()
-                for nf, adj, dis, od in tqdm(zip(nf_test, adj_test, dis_test, od_test),
-                                              total=len(nf_test), desc="GMEL eval"):
-                    od_hat = _predict_gmel_matrix(gmel, decoder, nfeat_scaler, nf, adj, dis, device)
-                    metrics_all.append(cal_od_metrics(od_hat, od))
-            metrics_all = _attach_validation_metrics(metrics_all, validation_metrics)
+            def evaluate_once():
+                if single_city_split and single_city_data is not None:
+                    od_hat = _predict_gmel_matrix(
+                        gmel, decoder, nfeat_scaler,
+                        single_city_data['nfeat'], single_city_data['adj'],
+                        single_city_data['dis'], device,
+                    )
+                    od_full = single_city_data['od'].astype(float)
+                    mf = cal_od_metrics(od_hat, od_full)
+                    _enrich_metrics_with_test(mf, od_hat, od_full, single_city_data['test_mask'])
+                    metrics_all = [mf]
+                else:
+                    metrics_all = []
+                    nf_test, adj_test, dis_test, od_test = load_graph_data(test_areas, data_path)
+                    gmel.eval()
+                    for nf, adj, dis, od in tqdm(
+                        zip(nf_test, adj_test, dis_test, od_test),
+                        total=len(nf_test),
+                        desc="GMEL eval",
+                    ):
+                        od_hat = _predict_gmel_matrix(gmel, decoder, nfeat_scaler, nf, adj, dis, device)
+                        metrics_all.append(cal_od_metrics(od_hat, od))
+                return _attach_validation_metrics(metrics_all, validation_metrics)
+
+            metric_runs = _repeat_inference(evaluate_once, inference_seeds)
             del gmel, decoder; gc.collect()
 
         elif model_name == "NetGAN":
@@ -275,30 +296,32 @@ def run_graph_model(model_name, train_areas, valid_areas, test_areas, data_path=
                 }
                 print(f"  Val: CPC_val={validation_metrics['CPC_val']:.4f}  "
                       f"CPC_full={validation_metrics['CPC_full']:.4f}")
-            if single_city_split and single_city_data is not None:
-                # Single-city: predict and compute 3-level metrics
-                gen = trained['generator']
-                gen.eval()
-                nf_s = trained['nfeat_scaler'].transform(single_city_data['nfeat'])
-                dis_s = trained['dis_scaler'].transform(
-                    single_city_data['dis'].reshape(-1, 1)
-                ).reshape(single_city_data['dis'].shape)
-                nf_t = torch.FloatTensor(nf_s).to(device)
-                dis_t = torch.FloatTensor(dis_s).to(device)
-                g = build_dgl_graph(single_city_data['adj'], device)
-                with torch.no_grad():
-                    od_gen, _, _ = gen.generate_OD_net(g, nf_t, dis_t)
-                od_hat = trained['od_scaler'].inverse_transform(
-                    od_gen.cpu().numpy().reshape(-1, 1)
-                ).reshape(single_city_data['od'].shape)
-                od_hat[od_hat < 0] = 0
-                od_full = single_city_data['od'].astype(float)
-                mf = cal_od_metrics(od_hat, od_full)
-                _enrich_metrics_with_test(mf, od_hat, od_full, single_city_data['test_mask'])
-                metrics_all = [mf]
-            else:
-                metrics_all = module.evaluate(trained, test_areas, str(data_path), device=device)
-            metrics_all = _attach_validation_metrics(metrics_all, validation_metrics)
+            def evaluate_once():
+                if single_city_split and single_city_data is not None:
+                    gen = trained['generator']
+                    gen.eval()
+                    nf_s = trained['nfeat_scaler'].transform(single_city_data['nfeat'])
+                    dis_s = trained['dis_scaler'].transform(
+                        single_city_data['dis'].reshape(-1, 1)
+                    ).reshape(single_city_data['dis'].shape)
+                    nf_t = torch.FloatTensor(nf_s).to(device)
+                    dis_t = torch.FloatTensor(dis_s).to(device)
+                    g = build_dgl_graph(single_city_data['adj'], device)
+                    with torch.no_grad():
+                        od_gen, _, _ = gen.generate_OD_net(g, nf_t, dis_t)
+                    od_hat = trained['od_scaler'].inverse_transform(
+                        od_gen.cpu().numpy().reshape(-1, 1)
+                    ).reshape(single_city_data['od'].shape)
+                    od_hat[od_hat < 0] = 0
+                    od_full = single_city_data['od'].astype(float)
+                    mf = cal_od_metrics(od_hat, od_full)
+                    _enrich_metrics_with_test(mf, od_hat, od_full, single_city_data['test_mask'])
+                    metrics_all = [mf]
+                else:
+                    metrics_all = module.evaluate(trained, test_areas, str(data_path), device=device)
+                return _attach_validation_metrics(metrics_all, validation_metrics)
+
+            metric_runs = _repeat_inference(evaluate_once, inference_seeds)
             del trained; gc.collect()
 
         else:
@@ -306,22 +329,25 @@ def run_graph_model(model_name, train_areas, valid_areas, test_areas, data_path=
     finally:
         cleanup_gpu()
 
-    avg = average_listed_metrics(metrics_all)
+    avg = average_listed_metrics(metric_runs)
     print(f"  CPC={avg['CPC']:.4f}  RMSE={avg['RMSE']:.2f}  MAE={avg['MAE']:.2f}  ({time.time() - t0:.1f}s)")
-    return metrics_all
+    return metric_runs
 
 
 def run_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_PATH,
-                         gps_loader=None, city_ids=None):
+                         gps_loader=None, city_ids=None, inference_seeds=None):
     """Train and evaluate TransFlowerOrig via the GPS training infrastructure."""
     from dataclasses import replace as dc_replace
     from models.GPS.main import train_single_city, train_multi_city
     from models.GPS.config import MC_EPOCHS
+    from models.GPS.metrics import predict_full_matrix
+    from models.shared.metrics import cal_od_metrics
     from .config import TRANSFLOWER_ORIG_CONFIG
     from .gps_loader import GPSBenchmarkLoader
 
     print(f"\n{'=' * 60}\n  Running: TransFlowerOrig\n{'=' * 60}")
     t0 = time.time()
+    set_global_seed()
 
     single_city_split = (
         len(train_areas) == len(valid_areas) == len(test_areas) == 1
@@ -376,22 +402,42 @@ def run_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_PA
         print(f"  TransFlowerOrig FAILED: {result.get('status')}")
         return []
 
-    mf = result["metrics_full"]
-    # Merge CPC_nz, CPC_test from the GPS result dict
-    mnz = result.get("metrics_nonzero", {})
-    mt = result.get("metrics_test_pairs", {})
-    if mnz:
-        mf['CPC_nz'] = mnz.get('CPC', float('nan'))
-    if mt:
+    def evaluate_single_city_once():
+        pred = predict_full_matrix(result["model"], city_data, result["config"])
+        mf = cal_od_metrics(pred, city_data["od_matrix_np"])
+        nz = city_data["od_matrix_np"] > 0
+        if np.any(nz):
+            mf["CPC_nz"] = compute_metrics(pred[nz], city_data["od_matrix_np"][nz].astype(float)).get("CPC", float("nan"))
+        mt = compute_metrics(pred[city_data["test_mask"]], city_data["od_matrix_np"][city_data["test_mask"]].astype(float))
         mf['CPC_test'] = mt.get('CPC', float('nan'))
         mf['MAE_test'] = mt.get('MAE', float('nan'))
         mf['RMSE_test'] = mt.get('RMSE', float('nan'))
+        return [mf]
 
-    print(f"  CPC={mf.get('CPC', 'N/A'):.4f}  ({time.time() - t0:.1f}s)")
-    return [mf]
+    def evaluate_multi_city_once():
+        metrics_all = []
+        for city_id in mc_test_ids:
+            city_data = mc_dict[city_id]
+            pred = predict_full_matrix(result["model"], city_data, result["config"])
+            mf = cal_od_metrics(pred, city_data["od_matrix_np"])
+            nz = city_data["od_matrix_np"] > 0
+            if np.any(nz):
+                mf["CPC_nz"] = compute_metrics(pred[nz], city_data["od_matrix_np"][nz].astype(float)).get("CPC", float("nan"))
+            mf["CPC_test"] = mf["CPC"]
+            mf["MAE_test"] = mf["MAE"]
+            mf["RMSE_test"] = mf["RMSE"]
+            metrics_all.append(mf)
+        return metrics_all
+
+    evaluate_once = evaluate_single_city_once if single_city_split else evaluate_multi_city_once
+    metric_runs = _repeat_inference(evaluate_once, inference_seeds)
+    avg = average_listed_metrics(metric_runs)
+    print(f"  CPC={avg.get('CPC', 'N/A'):.4f}  ({time.time() - t0:.1f}s)")
+    return metric_runs
 
 
-def run_diffusion_model(model_name, train_areas, valid_areas, test_areas, data_path=DATA_PATH):
+def run_diffusion_model(model_name, train_areas, valid_areas, test_areas, data_path=DATA_PATH,
+                        inference_seeds=None):
     """Run DiffODGen/WeDAN as subprocess (complex dependencies)."""
     del train_areas, valid_areas, test_areas, data_path
     print(f"\n{'=' * 60}\n  Running: {model_name}\n{'=' * 60}")
@@ -426,7 +472,8 @@ def run_diffusion_model(model_name, train_areas, valid_areas, test_areas, data_p
             avg_metrics.setdefault("CPC_val", float('nan'))
             avg_metrics.setdefault("CPC_full", float('nan'))
             print(f"  CPC={avg_metrics.get('CPC', 'N/A')}  ({time.time() - t0:.1f}s)")
-            return [avg_metrics]
+            repeats = list(inference_seeds or [None])
+            return [dict(avg_metrics) for _ in repeats]
     except Exception as exc:
         print(f"  Could not parse metrics: {exc}")
 
