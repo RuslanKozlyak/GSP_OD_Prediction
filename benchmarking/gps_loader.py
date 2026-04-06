@@ -14,7 +14,7 @@ from .config import set_global_seed
 _PE_TYPE_UNSET = object()
 
 
-def _enrich_metrics(metrics, pred, city_data):
+def _enrich_metrics(metrics, pred, city_data, is_test_city=True):
     """Add CPC_nz and CPC_test to a cal_od_metrics dict."""
     import numpy as np
     od = city_data['od_matrix_np']
@@ -23,9 +23,14 @@ def _enrich_metrics(metrics, pred, city_data):
         mnz = compute_metrics(pred[nz], od[nz].astype(float))
         metrics['CPC_nz'] = mnz['CPC']
     if city_data.get('split_scope') == 'multi_city':
-        metrics['CPC_test'] = metrics['CPC']
-        metrics['MAE_test'] = metrics['MAE']
-        metrics['RMSE_test'] = metrics['RMSE']
+        if is_test_city:
+            metrics['CPC_test'] = metrics['CPC']
+            metrics['MAE_test'] = metrics['MAE']
+            metrics['RMSE_test'] = metrics['RMSE']
+        else:
+            metrics['CPC_test'] = np.nan
+            metrics['MAE_test'] = np.nan
+            metrics['RMSE_test'] = np.nan
     else:
         tm = city_data.get('test_mask')
         if tm is not None and np.any(tm):
@@ -65,7 +70,8 @@ class GPSBenchmarkLoader:
             )
         return self._multi_city_cache[key]
 
-    def load_gps_results(self, run_id, city_data=None, config=None, area_id=None, inference_seed=None):
+    def load_gps_results(self, run_id, city_data=None, config=None, area_id=None,
+                         inference_seed=None, verbose=True, is_test_city=True):
         from models.GPS.config import load_model_config
 
         weight_path = WEIGHTS_DIR / f"{run_id}.pt"
@@ -82,7 +88,8 @@ class GPSBenchmarkLoader:
         if city_data is None:
             city_data = self.get_single_city_data(pe_type=effective_cfg.pe_type, area_id=area_id)
 
-        print(f"  Loading {run_id} (pe_type={effective_cfg.pe_type}) ...")
+        if verbose:
+            print(f"  Loading {run_id} (pe_type={effective_cfg.pe_type}) ...")
         model = None
         try:
             if inference_seed is not None:
@@ -94,8 +101,9 @@ class GPSBenchmarkLoader:
                 pred = predict_full_matrix(model, city_data, effective_cfg)
             pred[pred < 0] = 0
             metrics = cal_od_metrics(pred, city_data["od_matrix_np"])
-            _enrich_metrics(metrics, pred, city_data)
-            print(f"  {run_id}: CPC={metrics['CPC']:.4f}  MAE={metrics['MAE']:.4f}")
+            _enrich_metrics(metrics, pred, city_data, is_test_city=is_test_city)
+            if verbose:
+                print(f"  {run_id}: CPC={metrics['CPC']:.4f}  MAE={metrics['MAE']:.4f}")
             return metrics
         except Exception as exc:
             print(f"  ERROR loading {run_id}: {exc}")
@@ -187,7 +195,8 @@ class GPSBenchmarkLoader:
             cleanup_gpu()
 
     def load_multi_city_gps_results(self, run_id, city_ids=None, inference_seed=None,
-                                    evaluate_all_cities=False, return_split_groups=False):
+                                    evaluate_all_cities=False, return_split_groups=False,
+                                    verbose=True):
         from models.GPS.config import load_model_config
 
         saved_cfg = load_model_config(run_id)
@@ -208,8 +217,13 @@ class GPSBenchmarkLoader:
                 city_data=city_data_dict[city_id],
                 config=saved_cfg,
                 inference_seed=inference_seed,
+                verbose=verbose,
+                is_test_city=city_id in test_city_id_set,
             )
             if city_metric:
+                city_metric = dict(city_metric)
+                city_metric["city_id"] = city_id
+                city_metric["is_test_city"] = city_id in test_city_id_set
                 metrics.append(city_metric)
                 if city_id in test_city_id_set:
                     test_metrics.append(city_metric)

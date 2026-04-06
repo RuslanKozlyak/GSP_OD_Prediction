@@ -1,3 +1,6 @@
+from collections import defaultdict
+from numbers import Real
+
 from .config import BASELINE_MODELS, INFERENCE_SEEDS, SINGLE_CITY_IDS, cleanup_gpu
 from .data_utils import split_multi_city_ids
 from .gps_loader import GPSBenchmarkLoader
@@ -258,6 +261,7 @@ def run_multi_city_benchmark(
     print("\n[Our Model - GPS variants]")
     for run_id in gps_run_ids:
         metric_samples = []
+        per_city_metric_samples = defaultdict(list)
         for inference_seed in inference_seeds:
             metric_groups = gps_loader.load_multi_city_gps_results(
                 run_id,
@@ -265,8 +269,13 @@ def run_multi_city_benchmark(
                 inference_seed=inference_seed,
                 evaluate_all_cities=True,
                 return_split_groups=True,
+                verbose=False,
             )
             if metric_groups and metric_groups.get("all"):
+                for city_metric in metric_groups["all"]:
+                    city_id = city_metric.get("city_id")
+                    if city_id is not None:
+                        per_city_metric_samples[city_id].append(city_metric)
                 metric_samples.append(
                     _average_multi_city_metrics(
                         metric_groups["all"],
@@ -274,8 +283,11 @@ def run_multi_city_benchmark(
                     )
                 )
         if metric_samples:
+            per_city_summary = _summarize_multi_city_per_city(per_city_metric_samples)
             results[run_id] = aggregate_metric_samples(metric_samples)
+            results[run_id]["per_city"] = per_city_summary
             model_types[run_id] = "Ours (GPS)"
+            _print_multi_city_city_summary(run_id, per_city_summary, results[run_id])
     cleanup_gpu()
 
     print("\n[Baselines - classical & graph models]")
@@ -306,9 +318,13 @@ def _normalize_single_city_ids(single_city_ids):
 
 
 def _average_metrics(metric_dicts):
+    numeric_keys = [
+        key for key, value in metric_dicts[0].items()
+        if isinstance(value, Real) and not isinstance(value, bool)
+    ]
     return {
         key: sum(metric[key] for metric in metric_dicts) / len(metric_dicts)
-        for key in metric_dicts[0]
+        for key in numeric_keys
     }
 
 
@@ -320,3 +336,60 @@ def _average_multi_city_metrics(all_metric_dicts, test_metric_dicts=None):
             if key in averaged_test:
                 averaged[key] = averaged_test[key]
     return averaged
+
+
+def _summarize_multi_city_per_city(per_city_metric_samples):
+    summary = {}
+    for city_id in sorted(per_city_metric_samples):
+        aggregated = aggregate_metric_samples(per_city_metric_samples[city_id])
+        aggregated["is_test_city"] = any(
+            sample.get("is_test_city", False)
+            for sample in per_city_metric_samples[city_id]
+        )
+        summary[city_id] = aggregated
+    return summary
+
+
+def _print_multi_city_city_summary(run_id, per_city_summary, overall_metrics):
+    print(f"  {run_id}:")
+    for city_id in sorted(per_city_summary):
+        city_metrics = per_city_summary[city_id]
+        tag = " [test]" if city_metrics.get("is_test_city") else ""
+        print(
+            f"    {city_id}{tag}: "
+            f"CPC_full={_fmt_metric(city_metrics, 'CPC')}  "
+            f"CPC_nz={_fmt_metric(city_metrics, 'CPC_nz')}  "
+            f"CPC_test={_fmt_metric(city_metrics, 'CPC_test')}  "
+            f"MAE={_fmt_metric(city_metrics, 'MAE')}  "
+            f"RMSE={_fmt_metric(city_metrics, 'RMSE')}"
+        )
+    print(
+        "  Avg all cities: "
+        f"CPC_full={_fmt_metric(overall_metrics, 'CPC')}  "
+        f"CPC_nz={_fmt_metric(overall_metrics, 'CPC_nz')}  "
+        f"CPC_test={_fmt_metric(overall_metrics, 'CPC_test')}  "
+        f"MAE={_fmt_metric(overall_metrics, 'MAE')}  "
+        f"RMSE={_fmt_metric(overall_metrics, 'RMSE')}"
+    )
+
+
+def _fmt_metric(metrics, key, precision=4):
+    mean = metrics.get(key)
+    std = metrics.get(f"{key}_std")
+    if mean is None:
+        return "-"
+    try:
+        mean = float(mean)
+    except (TypeError, ValueError):
+        return "-"
+    if mean != mean:
+        return "-"
+    if std is None:
+        return f"{mean:.{precision}f}"
+    try:
+        std = float(std)
+    except (TypeError, ValueError):
+        return f"{mean:.{precision}f}"
+    if std != std:
+        return f"{mean:.{precision}f}"
+    return f"{mean:.{precision}f}+/-{std:.{precision}f}"

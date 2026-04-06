@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 import time
+from numbers import Real
 
 import joblib
 import numpy as np
@@ -134,6 +135,17 @@ def _repeat_inference(eval_once, inference_seeds):
             set_global_seed(seed)
         metric_runs.append(average_listed_metrics(eval_once()))
     return metric_runs
+
+
+def _average_numeric_metrics(metric_dicts):
+    numeric_keys = [
+        key for key, value in metric_dicts[0].items()
+        if isinstance(value, Real) and not isinstance(value, bool)
+    ]
+    return {
+        key: sum(metric[key] for metric in metric_dicts) / len(metric_dicts)
+        for key in numeric_keys
+    }
 
 
 def _is_single_city_split(train_areas, valid_areas, test_areas):
@@ -722,10 +734,10 @@ def infer_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_
                 return_split_groups=True,
             )
             if metric_groups and metric_groups.get("all"):
-                averaged = average_listed_metrics(metric_groups["all"])
+                averaged = _average_numeric_metrics(metric_groups["all"])
                 test_metrics = metric_groups.get("test") or []
                 if test_metrics:
-                    averaged_test = average_listed_metrics(test_metrics)
+                    averaged_test = _average_numeric_metrics(test_metrics)
                     for key in ("CPC_test", "MAE_test", "RMSE_test"):
                         if key in averaged_test:
                             averaged[key] = averaged_test[key]
