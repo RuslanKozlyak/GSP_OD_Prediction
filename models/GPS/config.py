@@ -24,7 +24,7 @@ MULTI_CITY_IDS = ["17031","48201","04013","06073","06059","36047","12086","48113
 SINGLE_CITY_IDS = [SINGLE_CITY_ID] + [cid for cid in MULTI_CITY_IDS if cid != SINGLE_CITY_ID][:2]
 
 # ─── Architecture ─────────────────────────────────────────────────────────────
-HIDDEN_DIM = 128
+HIDDEN_DIM = 64
 PE_DIM = 8
 PE_WALK_LEN = 20
 GPS_HEADS = 4

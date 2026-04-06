@@ -16,27 +16,10 @@ INFERENCE_SEEDS = [42, 43, 44, 45, 46]
 
 GPS_BENCHMARK_IDS = [
     "SC_TF_CE",
-    "SC_TF_H",
-    "SC_TF_CE_lape",
-    "SC_TF_CE_gn",
-    "SC_TF_focal",
-    "SC_TF_CE_samp",
-    "SC_TF_CE_nz",
-    "SC_TF_CE_rle",
-    "SC_TF_CE_lape_rle",
-    "SC_TF_focal_rle",
-    "SC_BL_CE",
-    "SC_BL_H",
 ]
 
 GPS_MC_BENCHMARK_IDS = [
-    "MC_TF_CE",
-    "MC_TF_H",
-    "MC_TF_CE_lape",
-    "MC_TF_focal",
-    "MC_TF_CE_rle",
-    "MC_BL_CE",
-    "MC_BL_H",
+    "MC_BL_CE_lape_log_gn",
 ]
 
 BASELINE_MODELS = [
@@ -46,12 +29,12 @@ BASELINE_MODELS = [
     # "DGM",
     # "GM_E",
     # "GM_P",
-    "GMEL",
-    "GMEL_LGBM",
+    # "GMEL",
+    # "GMEL_LGBM",
     # "NetGAN",
     # "DiffODGen",
     # "WeDAN",
-    "TransFlowerOrig",
+    # "TransFlowerOrig",
 ]
 
 FLAT_BASELINE_MODELS = ["RF", "SVR", "GBRT", "DGM", "GM_E", "GM_P"]
