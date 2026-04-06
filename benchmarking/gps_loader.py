@@ -186,7 +186,8 @@ class GPSBenchmarkLoader:
                 del model
             cleanup_gpu()
 
-    def load_multi_city_gps_results(self, run_id, city_ids=None, inference_seed=None):
+    def load_multi_city_gps_results(self, run_id, city_ids=None, inference_seed=None,
+                                    evaluate_all_cities=False, return_split_groups=False):
         from models.GPS.config import load_model_config
 
         saved_cfg = load_model_config(run_id)
@@ -196,8 +197,12 @@ class GPSBenchmarkLoader:
         city_data_dict, _, _, test_city_ids = self.get_multi_city_data(
             pe_type=saved_cfg.pe_type, city_ids=city_ids,
         )
+        test_city_ids = list(test_city_ids)
+        test_city_id_set = set(test_city_ids)
+        eval_city_ids = list(city_data_dict.keys()) if evaluate_all_cities else list(test_city_ids)
         metrics = []
-        for city_id in test_city_ids:
+        test_metrics = []
+        for city_id in eval_city_ids:
             city_metric = self.load_gps_results(
                 run_id,
                 city_data=city_data_dict[city_id],
@@ -206,4 +211,8 @@ class GPSBenchmarkLoader:
             )
             if city_metric:
                 metrics.append(city_metric)
+                if city_id in test_city_id_set:
+                    test_metrics.append(city_metric)
+        if return_split_groups:
+            return {"all": metrics, "test": test_metrics}
         return metrics

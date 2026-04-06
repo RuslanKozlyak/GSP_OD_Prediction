@@ -714,13 +714,22 @@ def infer_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_
             multi_city_ids=city_ids, data_path=data_path,
         )
         for inference_seed in list(inference_seeds or [None]):
-            per_city_metrics = gps_loader.load_multi_city_gps_results(
+            metric_groups = gps_loader.load_multi_city_gps_results(
                 run_id,
                 city_ids=city_ids,
                 inference_seed=inference_seed,
+                evaluate_all_cities=True,
+                return_split_groups=True,
             )
-            if per_city_metrics:
-                metric_runs.append(average_listed_metrics(per_city_metrics))
+            if metric_groups and metric_groups.get("all"):
+                averaged = average_listed_metrics(metric_groups["all"])
+                test_metrics = metric_groups.get("test") or []
+                if test_metrics:
+                    averaged_test = average_listed_metrics(test_metrics)
+                    for key in ("CPC_test", "MAE_test", "RMSE_test"):
+                        if key in averaged_test:
+                            averaged[key] = averaged_test[key]
+                metric_runs.append(averaged)
 
     if metric_runs:
         avg = average_listed_metrics(metric_runs)

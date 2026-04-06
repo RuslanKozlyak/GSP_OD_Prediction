@@ -61,6 +61,9 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         assert train_city_ids is not None and val_city_ids is not None
         train_cds = {cid: city_datas[cid] for cid in train_city_ids if cid in city_datas}
         val_cds = {cid: city_datas[cid] for cid in val_city_ids if cid in city_datas}
+        if test_city_ids is None:
+            seen = set(train_city_ids) | set(val_city_ids)
+            test_city_ids = [cid for cid in city_datas if cid not in seen]
     else:
         cid = list(city_datas.keys())[0]
         cd = city_datas[cid]
@@ -175,35 +178,48 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         }
 
     # Evaluate on last and best weights
-    if is_multi and test_city_ids is not None:
-        eval_cities = {cid: city_datas[cid] for cid in test_city_ids if cid in city_datas}
+    if is_multi:
+        full_eval_cities = city_datas
+        test_eval_cities = (
+            {cid: city_datas[cid] for cid in test_city_ids if cid in city_datas}
+            if test_city_ids is not None else {}
+        )
+        if not test_eval_cities:
+            test_eval_cities = full_eval_cities
     else:
-        eval_cities = city_datas if is_multi else {list(city_datas.keys())[0]: list(city_datas.values())[0]}
+        full_eval_cities = {list(city_datas.keys())[0]: list(city_datas.values())[0]}
+        test_eval_cities = full_eval_cities
 
     def eval_all(label):
         all_mf = []
         all_mnz = []
         all_mt = []
         per_city = []
-        for ecid, ecd in eval_cities.items():
+        test_eval_ids = set(test_eval_cities)
+        for ecid, ecd in full_eval_cities.items():
             pred, mf, mnz = evaluate_full_matrix(model, ecd, config, dest_batch_size=DEST_BATCH_SIZE)
+            mt = None
             if is_multi:
-                # In multi-city mode, the held-out split is at the city level.
-                # Once we evaluate only on test cities, "test" metrics should
-                # reflect the full matrix for those cities rather than od > 0.
-                mt = {'CPC': mf['CPC'], 'MAE': mf['MAE'], 'RMSE': mf['RMSE']}
+                if ecid in test_eval_ids:
+                    mt = {'CPC': mf['CPC'], 'MAE': mf['MAE'], 'RMSE': mf['RMSE']}
+                    all_mt.append(mt)
             else:
                 mt = compute_metrics(pred[ecd['test_mask']], ecd['od_matrix_np'][ecd['test_mask']].astype(float))
+                all_mt.append(mt)
             all_mf.append(mf)
             all_mnz.append(mnz)
-            all_mt.append(mt)
             per_city.append({
                 'city_id': ecid, 'CPC_full': mf['CPC'], 'CPC_nz': mnz['CPC'],
-                'MAE': mf['MAE'], 'RMSE': mf['RMSE'], 'CPC_test': mt['CPC'],
+                'MAE': mf['MAE'], 'RMSE': mf['RMSE'],
+                'CPC_test': mt['CPC'] if mt is not None else float('nan'),
             })
         avg_mf = {k: np.mean([m[k] for m in all_mf]) for k in all_mf[0]}
         avg_mnz = {k: np.mean([m[k] for m in all_mnz]) for k in all_mnz[0]}
-        avg_mt = {k: np.mean([m[k] for m in all_mt]) for k in all_mt[0]}
+        avg_mt = (
+            {k: np.mean([m[k] for m in all_mt]) for k in all_mt[0]}
+            if all_mt else
+            {'CPC': avg_mf['CPC'], 'MAE': avg_mf['MAE'], 'RMSE': avg_mf['RMSE']}
+        )
         print(f"\n  === {label} ===")
         for pc in per_city:
             print(f"    {pc['city_id']}: CPC_full={pc['CPC_full']:.4f}  CPC_nz={pc['CPC_nz']:.4f}  CPC_test={pc['CPC_test']:.4f}")

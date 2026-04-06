@@ -259,13 +259,20 @@ def run_multi_city_benchmark(
     for run_id in gps_run_ids:
         metric_samples = []
         for inference_seed in inference_seeds:
-            per_city_metrics = gps_loader.load_multi_city_gps_results(
+            metric_groups = gps_loader.load_multi_city_gps_results(
                 run_id,
                 city_ids=city_ids,
                 inference_seed=inference_seed,
+                evaluate_all_cities=True,
+                return_split_groups=True,
             )
-            if per_city_metrics:
-                metric_samples.append(_average_metrics(per_city_metrics))
+            if metric_groups and metric_groups.get("all"):
+                metric_samples.append(
+                    _average_multi_city_metrics(
+                        metric_groups["all"],
+                        metric_groups.get("test"),
+                    )
+                )
         if metric_samples:
             results[run_id] = aggregate_metric_samples(metric_samples)
             model_types[run_id] = "Ours (GPS)"
@@ -303,3 +310,13 @@ def _average_metrics(metric_dicts):
         key: sum(metric[key] for metric in metric_dicts) / len(metric_dicts)
         for key in metric_dicts[0]
     }
+
+
+def _average_multi_city_metrics(all_metric_dicts, test_metric_dicts=None):
+    averaged = _average_metrics(all_metric_dicts)
+    if test_metric_dicts:
+        averaged_test = _average_metrics(test_metric_dicts)
+        for key in ("CPC_test", "MAE_test", "RMSE_test"):
+            if key in averaged_test:
+                averaged[key] = averaged_test[key]
+    return averaged
