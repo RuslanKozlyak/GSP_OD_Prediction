@@ -114,11 +114,7 @@ def _load_local_module(module_name, path):
 
 
 def _enrich_metrics_with_test(mf, pred_matrix, od_matrix, test_mask):
-    """Add CPC_nz, CPC_test (and MAE/RMSE variants) to a cal_od_metrics dict."""
-    nz = od_matrix > 0
-    if np.any(nz):
-        mnz = compute_metrics(pred_matrix[nz], od_matrix[nz].astype(float))
-        mf['CPC_nz'] = mnz['CPC']
+    """Add benchmark-specific test metrics to a cal_od_metrics dict."""
     if test_mask is not None and np.any(test_mask):
         mt = compute_metrics(pred_matrix[test_mask], od_matrix[test_mask].astype(float))
         mf['CPC_test'] = mt['CPC']

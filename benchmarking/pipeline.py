@@ -358,7 +358,7 @@ def _print_multi_city_city_summary(run_id, per_city_summary, overall_metrics):
         print(
             f"    {city_id}{tag}: "
             f"CPC_full={_fmt_metric(city_metrics, 'CPC')}  "
-            f"CPC_nz={_fmt_metric(city_metrics, 'CPC_nz')}  "
+            f"CPC_nonzero={_fmt_metric(city_metrics, 'CPC_nonzero')}  "
             f"CPC_test={_fmt_metric(city_metrics, 'CPC_test')}  "
             f"MAE={_fmt_metric(city_metrics, 'MAE')}  "
             f"RMSE={_fmt_metric(city_metrics, 'RMSE')}"
@@ -366,7 +366,7 @@ def _print_multi_city_city_summary(run_id, per_city_summary, overall_metrics):
     print(
         "  Avg all cities: "
         f"CPC_full={_fmt_metric(overall_metrics, 'CPC')}  "
-        f"CPC_nz={_fmt_metric(overall_metrics, 'CPC_nz')}  "
+        f"CPC_nonzero={_fmt_metric(overall_metrics, 'CPC_nonzero')}  "
         f"CPC_test={_fmt_metric(overall_metrics, 'CPC_test')}  "
         f"MAE={_fmt_metric(overall_metrics, 'MAE')}  "
         f"RMSE={_fmt_metric(overall_metrics, 'RMSE')}"
@@ -374,8 +374,17 @@ def _print_multi_city_city_summary(run_id, per_city_summary, overall_metrics):
 
 
 def _fmt_metric(metrics, key, precision=4):
-    mean = metrics.get(key)
-    std = metrics.get(f"{key}_std")
+    aliases = {
+        "CPC_nonzero": ("CPC_nonzero", "CPC_nz"),
+    }
+    candidates = aliases.get(key, (key,))
+    mean = None
+    std = None
+    for candidate in candidates:
+        if candidate in metrics:
+            mean = metrics.get(candidate)
+            std = metrics.get(f"{candidate}_std")
+            break
     if mean is None:
         return "-"
     try:

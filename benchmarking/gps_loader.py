@@ -15,13 +15,9 @@ _PE_TYPE_UNSET = object()
 
 
 def _enrich_metrics(metrics, pred, city_data, is_test_city=True):
-    """Add CPC_nz and CPC_test to a cal_od_metrics dict."""
+    """Add benchmark-specific test metrics to a cal_od_metrics dict."""
     import numpy as np
     od = city_data['od_matrix_np']
-    nz = od > 0
-    if np.any(nz):
-        mnz = compute_metrics(pred[nz], od[nz].astype(float))
-        metrics['CPC_nz'] = mnz['CPC']
     if city_data.get('split_scope') == 'multi_city':
         if is_test_city:
             metrics['CPC_test'] = metrics['CPC']
