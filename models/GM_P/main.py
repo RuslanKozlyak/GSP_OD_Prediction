@@ -10,6 +10,27 @@ from models.shared.metrics import compute_metrics
 from models.shared.plotting import save_loss_plot
 
 
+def _clone_state_dict(module):
+    return {k: v.detach().cpu().clone() for k, v in module.state_dict().items()}
+
+
+def _make_predict_fn(net, dist_max, device, batch_size):
+    def predict(x):
+        net.eval()
+        x = x.copy()
+        if dist_max > 1.0:
+            x[:, 2] /= dist_max
+        with torch.no_grad():
+            return np.atleast_1d(np.abs(net(torch.FloatTensor(x).to(device)).squeeze().cpu().numpy()))
+
+    predict._serialization = {
+        'state_dict': _clone_state_dict(net),
+        'dist_max': float(dist_max),
+        'batch_size': int(batch_size),
+    }
+    return predict
+
+
 def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_full=None,
           device=None, batch_size=50_000, max_epochs=10000, patience=100,
           loss_plot_path=None):
@@ -159,15 +180,7 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
     )
     if saved_plot_path is not None:
         print(f"  -> Loss plot saved to {saved_plot_path}")
-    _net, _dist_max = net, dist_max
-
-    def predict(x):
-        _net.eval()
-        x = x.copy()
-        if _dist_max > 1.0:
-            x[:, 2] /= _dist_max
-        with torch.no_grad():
-            return np.atleast_1d(np.abs(_net(torch.FloatTensor(x).to(device)).squeeze().cpu().numpy()))
+    predict = _make_predict_fn(net, dist_max, device, batch_size)
 
     predict.train_losses = train_losses
     predict.val_losses = val_losses
@@ -175,3 +188,30 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
     predict.val_cpc_fulls = val_cpc_fulls
     predict.loss_plot_path = str(saved_plot_path) if saved_plot_path is not None else None
     return predict
+
+
+def save_model(model, path):
+    """Persist a trained GRAVITY (GM_P) predictor."""
+    bundle = getattr(model, '_serialization', None)
+    if bundle is None:
+        raise ValueError("GM_P predictor is missing serialization metadata")
+    torch.save(bundle, path)
+
+
+def load_model(path, device=None, **kwargs):
+    """Load a persisted GRAVITY (GM_P) predictor."""
+    del kwargs
+    import os
+    import sys
+
+    sys.modules.pop('model', None)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from model import GRAVITY
+
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    bundle = torch.load(path, map_location='cpu', weights_only=False)
+    net = GRAVITY().to(device)
+    net.load_state_dict(bundle['state_dict'])
+    return _make_predict_fn(net, bundle['dist_max'], device, bundle['batch_size'])

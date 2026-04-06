@@ -11,6 +11,30 @@ from models.shared.metrics import compute_metrics
 from models.shared.plotting import save_loss_plot
 
 
+def _clone_state_dict(module):
+    return {k: v.detach().cpu().clone() for k, v in module.state_dict().items()}
+
+
+def _make_predict_fn(net, feat_scaler, od_scaler, device, batch_size):
+    def predict(x):
+        net.eval()
+        with torch.no_grad():
+            y_log = od_scaler.renormalize(
+                net(torch.FloatTensor(feat_scaler.transform(x)).to(device)).squeeze().cpu().numpy()
+            )
+            return np.atleast_1d(np.expm1(np.maximum(y_log, 0.0)))
+
+    predict._serialization = {
+        'input_dim': net.linear_in.in_features,
+        'state_dict': _clone_state_dict(net),
+        'feat_scaler': feat_scaler,
+        'od_scaler_min': float(od_scaler.min_),
+        'od_scaler_max': float(od_scaler.max_),
+        'batch_size': int(batch_size),
+    }
+    return predict
+
+
 def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_full=None,
           device=None, batch_size=50_000, max_epochs=300, patience=100,
           loss_plot_path=None):
@@ -158,16 +182,7 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
     if saved_plot_path is not None:
         print(f"  -> Loss plot saved to {saved_plot_path}")
 
-    # Capture in closure so callers can safely del their local references
-    _net, _fs, _os = net, feat_scaler, od_scaler
-
-    def predict(x):
-        _net.eval()
-        with torch.no_grad():
-            y_log = _os.renormalize(
-                _net(torch.FloatTensor(_fs.transform(x)).to(device)).squeeze().cpu().numpy()
-            )
-            return np.atleast_1d(np.expm1(np.maximum(y_log, 0.0)))
+    predict = _make_predict_fn(net, feat_scaler, od_scaler, device, batch_size)
 
     predict.train_losses = train_losses
     predict.val_losses = val_losses
@@ -176,3 +191,32 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
     predict.loss_plot_path = str(saved_plot_path) if saved_plot_path is not None else None
 
     return predict
+
+
+def save_model(model, path):
+    """Persist a trained DeepGravity predictor."""
+    bundle = getattr(model, '_serialization', None)
+    if bundle is None:
+        raise ValueError("DeepGravity predictor is missing serialization metadata")
+    torch.save(bundle, path)
+
+
+def load_model(path, device=None, **kwargs):
+    """Load a persisted DeepGravity predictor."""
+    del kwargs
+    import os
+    import sys
+
+    sys.modules.pop('model', None)
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from model import DeepGravity, OD_normer
+
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    bundle = torch.load(path, map_location='cpu', weights_only=False)
+    net = DeepGravity(bundle['input_dim']).to(device)
+    net.load_state_dict(bundle['state_dict'])
+    feat_scaler = bundle['feat_scaler']
+    od_scaler = OD_normer(bundle['od_scaler_min'], bundle['od_scaler_max'])
+    return _make_predict_fn(net, feat_scaler, od_scaler, device, bundle['batch_size'])

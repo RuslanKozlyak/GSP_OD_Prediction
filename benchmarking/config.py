@@ -54,6 +54,10 @@ BASELINE_MODELS = [
     "TransFlowerOrig",
 ]
 
+FLAT_BASELINE_MODELS = ["RF", "SVR", "GBRT", "DGM", "GM_E", "GM_P"]
+GRAPH_BASELINE_MODELS = ["GMEL", "GMEL_GBRT", "GMEL_LGBM", "NetGAN"]
+SEPARABLE_BASELINE_MODELS = FLAT_BASELINE_MODELS + GRAPH_BASELINE_MODELS + ["TransFlowerOrig"]
+
 SINGLE_CITY_ID = "48201"
 MULTI_CITY_IDS = ["17031", "48201", "04013", "06073", "06059", "36047", "12086", "48113", "06065", "36081"]
 SINGLE_CITY_IDS = [SINGLE_CITY_ID] + [cid for cid in MULTI_CITY_IDS if cid != SINGLE_CITY_ID][:2]
@@ -114,6 +118,43 @@ def set_global_seed(seed: int = SEED) -> None:
     torch.manual_seed(seed)
 
 
+def baseline_single_city_run_id(model_name, city_id):
+    return single_city_run_id(f"benchmark_{model_name}", city_id)
+
+
+def baseline_multi_city_run_id(model_name):
+    return f"benchmark_{model_name}__multi_city"
+
+
+def baseline_artifact_paths(model_name, run_id):
+    if model_name in ("RF", "SVR", "GBRT"):
+        return [WEIGHTS_DIR / f"{run_id}.joblib"]
+    if model_name in ("DGM", "GM_E", "GM_P", "NetGAN", "TransFlowerOrig"):
+        base_paths = [WEIGHTS_DIR / f"{run_id}.pt"]
+        if model_name == "TransFlowerOrig":
+            base_paths.append(WEIGHTS_DIR / f"{run_id}.json")
+        if model_name == "NetGAN":
+            base_paths.append(WEIGHTS_DIR / f"{run_id}_meta.joblib")
+        return base_paths
+    if model_name in ("GMEL", "GMEL_GBRT"):
+        return [
+            WEIGHTS_DIR / f"{run_id}.pt",
+            WEIGHTS_DIR / f"{run_id}_gbrt.joblib",
+            WEIGHTS_DIR / f"{run_id}_meta.joblib",
+        ]
+    if model_name == "GMEL_LGBM":
+        return [
+            WEIGHTS_DIR / f"{run_id}.pt",
+            WEIGHTS_DIR / f"{run_id}_lgbm.lgbm",
+            WEIGHTS_DIR / f"{run_id}_meta.joblib",
+        ]
+    raise ValueError(f"Unsupported baseline model for artifact lookup: {model_name}")
+
+
+def has_trained_baseline_artifacts(model_name, run_id):
+    return all(path.exists() for path in baseline_artifact_paths(model_name, run_id))
+
+
 
 def trained_gps_run_ids(run_ids):
     return [run_id for run_id in run_ids if (WEIGHTS_DIR / f"{run_id}.pt").exists()]
@@ -137,6 +178,30 @@ def trained_single_city_lgbm_base_ids(run_ids, city_ids=None):
     return [
         run_id for run_id in run_ids
         if all((WEIGHTS_DIR / f"{single_city_lgbm_run_id(run_id, city_id)}.lgbm").exists() for city_id in city_ids)
+    ]
+
+
+def trained_single_city_baseline_models(model_names=None, city_ids=None):
+    city_ids = list(SINGLE_CITY_IDS if city_ids is None else city_ids)
+    model_names = list(SEPARABLE_BASELINE_MODELS if model_names is None else model_names)
+    return [
+        model_name for model_name in model_names
+        if all(
+            has_trained_baseline_artifacts(
+                model_name, baseline_single_city_run_id(model_name, city_id)
+            )
+            for city_id in city_ids
+        )
+    ]
+
+
+def trained_multi_city_baseline_models(model_names=None):
+    model_names = list(SEPARABLE_BASELINE_MODELS if model_names is None else model_names)
+    return [
+        model_name for model_name in model_names
+        if has_trained_baseline_artifacts(
+            model_name, baseline_multi_city_run_id(model_name)
+        )
     ]
 
 

@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 
+import joblib
 import numpy as np
 import torch
 from tqdm.auto import tqdm
@@ -16,7 +17,16 @@ from models.shared.data_load import (
     prepare_single_city_flat, prepare_single_city_graph,
 )
 
-from .config import DATA_PATH, PROJECT_ROOT, cleanup_gpu, device, set_global_seed
+from .config import (
+    DATA_PATH,
+    PROJECT_ROOT,
+    WEIGHTS_DIR,
+    baseline_multi_city_run_id,
+    baseline_single_city_run_id,
+    cleanup_gpu,
+    device,
+    set_global_seed,
+)
 
 
 def _predict_flat_array(model, x):
@@ -95,6 +105,13 @@ def load_model_main(model_name):
     return module
 
 
+def _load_local_module(module_name, path):
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _enrich_metrics_with_test(mf, pred_matrix, od_matrix, test_mask):
     """Add CPC_nz, CPC_test (and MAE/RMSE variants) to a cal_od_metrics dict."""
     nz = od_matrix > 0
@@ -119,111 +136,322 @@ def _repeat_inference(eval_once, inference_seeds):
     return metric_runs
 
 
-def run_flat_model(model_name, train_areas, valid_areas, test_areas, data_path=DATA_PATH,
-                   inference_seeds=None):
-    """Train and evaluate a flat-feature model (RF, SVR, GBRT, DGM, GM_E, GM_P)."""
-    print(f"\n{'=' * 60}\n  Running: {model_name}\n{'=' * 60}")
-    t0 = time.time()
-    set_global_seed()
-    feature_mode = "gravity" if model_name in ("GM_E", "GM_P") else "full"
-    single_city_split = (
+def _is_single_city_split(train_areas, valid_areas, test_areas):
+    return (
         len(train_areas) == len(valid_areas) == len(test_areas) == 1
         and train_areas[0] == valid_areas[0] == test_areas[0]
     )
 
-    od_matrix = None
-    test_mask = None
-    n_nodes = None
+
+def _benchmark_run_id(model_name, train_areas, valid_areas, test_areas):
+    if _is_single_city_split(train_areas, valid_areas, test_areas):
+        return baseline_single_city_run_id(model_name, train_areas[0])
+    return baseline_multi_city_run_id(model_name)
+
+
+def _loss_plot_path(run_id):
+    return WEIGHTS_DIR.parent / "loss_plots" / f"{run_id}_loss.png"
+
+
+def _meta_path(run_id):
+    return WEIGHTS_DIR / f"{run_id}_meta.joblib"
+
+
+def _prepare_flat_payload(train_areas, valid_areas, test_areas, data_path, feature_mode):
+    single_city_split = _is_single_city_split(train_areas, valid_areas, test_areas)
+    payload = {
+        'single_city_split': single_city_split,
+        'feature_mode': feature_mode,
+        'od_matrix': None,
+        'test_mask': None,
+        'n_nodes': None,
+    }
 
     if single_city_split:
         split_data = prepare_single_city_flat(
             area_id=train_areas[0], data_path=data_path, feature_mode=feature_mode
         )
-        x_train = split_data['x_train']
-        y_train = split_data['y_train']
-        xs_valid = split_data['xs_val']
-        ys_valid = split_data['ys_val']
-        xs_valid_full = split_data['xs_val_full']
-        ys_valid_full = split_data['ys_val_full']
-        xs_test = split_data['xs_test']
-        ys_test = split_data['ys_test']
-        od_matrix = split_data['od_matrix'].astype(float)
-        test_mask = split_data['test_mask']
-        n_nodes = split_data['n_nodes']
+        payload.update({
+            'x_train': split_data['x_train'],
+            'y_train': split_data['y_train'],
+            'xs_valid': split_data['xs_val'],
+            'ys_valid': split_data['ys_val'],
+            'xs_valid_full': split_data['xs_val_full'],
+            'ys_valid_full': split_data['ys_val_full'],
+            'xs_test': split_data['xs_test'],
+            'ys_test': split_data['ys_test'],
+            'od_matrix': split_data['od_matrix'].astype(float),
+            'test_mask': split_data['test_mask'],
+            'n_nodes': split_data['n_nodes'],
+        })
+        return payload
+
+    xs_tr, ys_tr = construct_flat_features(train_areas, data_path, feature_mode)
+    payload['x_train'] = np.concatenate(xs_tr, axis=0)
+    payload['y_train'] = np.concatenate(ys_tr, axis=0)
+    del xs_tr, ys_tr
+
+    xs_valid, ys_valid = construct_flat_features(valid_areas, data_path, feature_mode)
+    xs_test, ys_test = construct_flat_features(test_areas, data_path, feature_mode)
+    payload.update({
+        'xs_valid': xs_valid,
+        'ys_valid': ys_valid,
+        'xs_valid_full': xs_valid,
+        'ys_valid_full': ys_valid,
+        'xs_test': xs_test,
+        'ys_test': ys_test,
+    })
+    gc.collect()
+    return payload
+
+
+def _flat_model_suffix(model_name):
+    if model_name in ("RF", "SVR", "GBRT"):
+        return ".joblib"
+    return ".pt"
+
+
+def _flat_model_path(model_name, run_id):
+    return WEIGHTS_DIR / f"{run_id}{_flat_model_suffix(model_name)}"
+
+
+def _save_flat_model_artifact(module, model_name, run_id, model):
+    path = _flat_model_path(model_name, run_id)
+    if hasattr(module, 'save_model'):
+        module.save_model(model, str(path))
     else:
-        xs_tr, ys_tr = construct_flat_features(train_areas, data_path, feature_mode)
-        x_train = np.concatenate(xs_tr, axis=0)
-        y_train = np.concatenate(ys_tr, axis=0)
-        del xs_tr, ys_tr; gc.collect()
+        joblib.dump(model, str(path))
+    print(f"  -> Weights saved to {path}")
+    return path
 
-        xs_valid, ys_valid = construct_flat_features(valid_areas, data_path, feature_mode)
-        xs_valid_full, ys_valid_full = xs_valid, ys_valid
-        xs_test, ys_test = construct_flat_features(test_areas, data_path, feature_mode)
 
-    # Train
-    module = load_model_main(model_name)
-    if hasattr(module, 'train'):
-        model = module.train(
-            x_train, y_train, xs_valid, ys_valid,
-            xs_valid_full=xs_valid_full, ys_valid_full=ys_valid_full,
-            device=device, batch_size=10_000, max_epochs=10000, patience=100,
-        )
+def _load_flat_model_artifact(module, model_name, run_id):
+    path = _flat_model_path(model_name, run_id)
+    if not path.exists():
+        print(f"  [SKIP] {run_id}: weights not found at {path}")
+        return None
+    if hasattr(module, 'load_model'):
+        return module.load_model(str(path), device=device)
+    return joblib.load(str(path))
+
+
+def _save_gmel_artifacts(run_id, model_name, gmel, decoder, nfeat_scaler, dis_scaler=None):
+    encoder_path = WEIGHTS_DIR / f"{run_id}.pt"
+    meta_path = _meta_path(run_id)
+    decoder_type = "lgbm" if model_name == "GMEL_LGBM" else "gbrt"
+
+    torch.save({k: v.detach().cpu() for k, v in gmel.state_dict().items()}, encoder_path)
+    if decoder_type == "lgbm":
+        decoder_path = WEIGHTS_DIR / f"{run_id}_lgbm.lgbm"
+        decoder.save_model(str(decoder_path))
     else:
-        raise ValueError(f"Model {model_name} has no train() function")
-
-    validation_metrics = _compute_flat_validation_metrics(
-        model, xs_valid, ys_valid, xs_valid_full, ys_valid_full
+        decoder_path = WEIGHTS_DIR / f"{run_id}_gbrt.joblib"
+        joblib.dump(decoder, str(decoder_path))
+    joblib.dump(
+        {
+            'model_name': model_name,
+            'decoder_type': decoder_type,
+            'nfeat_scaler': nfeat_scaler,
+            'dis_scaler': dis_scaler,
+        },
+        str(meta_path),
     )
-    print(f"  Val: CPC_val={validation_metrics['CPC_val']:.4f}  "
-          f"CPC_full={validation_metrics['CPC_full']:.4f}")
-
-    del x_train, y_train, xs_valid, ys_valid; gc.collect()
-
-    def evaluate_once():
-        if single_city_split and od_matrix is not None:
-            x_full = xs_test[0]
-            pred_flat = _predict_flat_array(model, x_full)
-            pred_matrix = pred_flat.reshape(n_nodes, n_nodes)
-            mf = cal_od_metrics(pred_matrix, od_matrix)
-            _enrich_metrics_with_test(mf, pred_matrix, od_matrix, test_mask)
-            metrics_all = [mf]
-        elif hasattr(module, 'evaluate'):
-            metrics_all = module.evaluate(model, xs_test, ys_test)
-        else:
-            metrics_all = []
-            for x_one, y_one in zip(xs_test, ys_test):
-                nn = int(np.sqrt(y_one.shape[0]))
-                y_hat = model.predict(x_one) if hasattr(model, 'predict') else model(x_one)
-                y_hat = y_hat.reshape(nn, nn)
-                y_true = y_one.reshape(nn, nn)
-                y_hat[y_hat < 0] = 0
-                metrics_all.append(cal_od_metrics(y_hat, y_true))
-        return _attach_validation_metrics(metrics_all, validation_metrics)
-
-    metric_runs = _repeat_inference(evaluate_once, inference_seeds)
-    avg = average_listed_metrics(metric_runs)
-    print(f"  CPC={avg['CPC']:.4f}  RMSE={avg['RMSE']:.2f}  MAE={avg['MAE']:.2f}  ({time.time() - t0:.1f}s)")
-    del model; gc.collect(); cleanup_gpu()
-    return metric_runs
+    print(f"  -> Weights saved to {encoder_path}")
+    print(f"  -> Decoder saved to {decoder_path}")
+    print(f"  -> Meta saved to {meta_path}")
 
 
-def run_graph_model(model_name, train_areas, valid_areas, test_areas, data_path=DATA_PATH,
-                    inference_seeds=None):
-    """Train and evaluate a graph-based model (GMEL variants, NetGAN)."""
-    print(f"\n{'=' * 60}\n  Running: {model_name}\n{'=' * 60}")
-    t0 = time.time()
+def _load_gmel_artifacts(run_id):
+    encoder_path = WEIGHTS_DIR / f"{run_id}.pt"
+    meta_path = _meta_path(run_id)
+    if not encoder_path.exists() or not meta_path.exists():
+        print(f"  [SKIP] {run_id}: GMEL artifacts not found")
+        return None
+
+    meta = joblib.load(str(meta_path))
+    decoder_type = meta['decoder_type']
+    if decoder_type == "lgbm":
+        decoder_path = WEIGHTS_DIR / f"{run_id}_lgbm.lgbm"
+        if not decoder_path.exists():
+            print(f"  [SKIP] {run_id}: decoder not found at {decoder_path}")
+            return None
+        import lightgbm as lgb
+        decoder = lgb.Booster(model_file=str(decoder_path))
+    else:
+        decoder_path = WEIGHTS_DIR / f"{run_id}_gbrt.joblib"
+        if not decoder_path.exists():
+            print(f"  [SKIP] {run_id}: decoder not found at {decoder_path}")
+            return None
+        decoder = joblib.load(str(decoder_path))
+
+    gmel_module = _load_local_module("benchmark_gmel_model", PROJECT_ROOT / "models" / "GMEL" / "model.py")
+    gmel = gmel_module.GMEL().to(device)
+    gmel.load_state_dict(torch.load(str(encoder_path), map_location=device, weights_only=False))
+    gmel.eval()
+    return gmel, decoder, meta['nfeat_scaler'], meta.get('dis_scaler')
+
+
+def _save_netgan_artifacts(run_id, trained):
+    generator_path = WEIGHTS_DIR / f"{run_id}.pt"
+    meta_path = _meta_path(run_id)
+    torch.save(
+        {k: v.detach().cpu() for k, v in trained['generator'].state_dict().items()},
+        generator_path,
+    )
+    joblib.dump(
+        {
+            'nfeat_scaler': trained['nfeat_scaler'],
+            'dis_scaler': trained['dis_scaler'],
+            'od_scaler': trained['od_scaler'],
+        },
+        str(meta_path),
+    )
+    print(f"  -> Weights saved to {generator_path}")
+    print(f"  -> Meta saved to {meta_path}")
+
+
+def _load_netgan_artifacts(run_id):
+    generator_path = WEIGHTS_DIR / f"{run_id}.pt"
+    meta_path = _meta_path(run_id)
+    if not generator_path.exists() or not meta_path.exists():
+        print(f"  [SKIP] {run_id}: NetGAN artifacts not found")
+        return None
+
+    netgan_module = _load_local_module("benchmark_netgan_model", PROJECT_ROOT / "models" / "NetGAN" / "model.py")
+    generator = netgan_module.Generator().to(device)
+    generator.load_state_dict(torch.load(str(generator_path), map_location=device, weights_only=False))
+    generator.eval()
+    trained = joblib.load(str(meta_path))
+    trained['generator'] = generator
+    return trained
+
+
+def train_flat_model(model_name, train_areas, valid_areas, test_areas, data_path=DATA_PATH,
+                     run_id=None):
+    """Train a flat-feature baseline and persist its weights."""
+    print(f"\n{'=' * 60}\n  Training: {model_name}\n{'=' * 60}")
     set_global_seed()
-    single_city_split = (
-        len(train_areas) == len(valid_areas) == len(test_areas) == 1
-        and train_areas[0] == valid_areas[0] == test_areas[0]
+    run_id = run_id or _benchmark_run_id(model_name, train_areas, valid_areas, test_areas)
+    feature_mode = "gravity" if model_name in ("GM_E", "GM_P") else "full"
+    payload = _prepare_flat_payload(train_areas, valid_areas, test_areas, data_path, feature_mode)
+    module = load_model_main(model_name)
+    model = None
+    try:
+        if not hasattr(module, 'train'):
+            raise ValueError(f"Model {model_name} has no train() function")
+        model = module.train(
+            payload['x_train'],
+            payload['y_train'],
+            payload['xs_valid'],
+            payload['ys_valid'],
+            xs_valid_full=payload['xs_valid_full'],
+            ys_valid_full=payload['ys_valid_full'],
+            device=device,
+            batch_size=10_000,
+            max_epochs=10000,
+            patience=100,
+            loss_plot_path=_loss_plot_path(run_id),
+        )
+        validation_metrics = _compute_flat_validation_metrics(
+            model,
+            payload['xs_valid'],
+            payload['ys_valid'],
+            payload['xs_valid_full'],
+            payload['ys_valid_full'],
+        )
+        print(f"  Val: CPC_val={validation_metrics['CPC_val']:.4f}  "
+              f"CPC_full={validation_metrics['CPC_full']:.4f}")
+        _save_flat_model_artifact(module, model_name, run_id, model)
+        return run_id
+    finally:
+        del payload
+        if model is not None:
+            del model
+        gc.collect()
+        cleanup_gpu()
+
+
+def infer_flat_model(model_name, train_areas, valid_areas, test_areas, data_path=DATA_PATH,
+                     inference_seeds=None, run_id=None):
+    """Load a flat-feature baseline from disk and evaluate it."""
+    print(f"\n{'=' * 60}\n  Loading: {model_name}\n{'=' * 60}")
+    t0 = time.time()
+    run_id = run_id or _benchmark_run_id(model_name, train_areas, valid_areas, test_areas)
+    feature_mode = "gravity" if model_name in ("GM_E", "GM_P") else "full"
+    payload = _prepare_flat_payload(train_areas, valid_areas, test_areas, data_path, feature_mode)
+    module = load_model_main(model_name)
+    model = None
+    try:
+        model = _load_flat_model_artifact(module, model_name, run_id)
+        if model is None:
+            return []
+        validation_metrics = _compute_flat_validation_metrics(
+            model,
+            payload['xs_valid'],
+            payload['ys_valid'],
+            payload['xs_valid_full'],
+            payload['ys_valid_full'],
+        )
+        print(f"  Val: CPC_val={validation_metrics['CPC_val']:.4f}  "
+              f"CPC_full={validation_metrics['CPC_full']:.4f}")
+
+        def evaluate_once():
+            if payload['single_city_split'] and payload['od_matrix'] is not None:
+                x_full = payload['xs_test'][0]
+                pred_flat = _predict_flat_array(model, x_full)
+                pred_matrix = pred_flat.reshape(payload['n_nodes'], payload['n_nodes'])
+                mf = cal_od_metrics(pred_matrix, payload['od_matrix'])
+                _enrich_metrics_with_test(
+                    mf, pred_matrix, payload['od_matrix'], payload['test_mask']
+                )
+                metrics_all = [mf]
+            elif hasattr(module, 'evaluate'):
+                metrics_all = module.evaluate(model, payload['xs_test'], payload['ys_test'])
+            else:
+                metrics_all = []
+                for x_one, y_one in zip(payload['xs_test'], payload['ys_test']):
+                    nn = int(np.sqrt(y_one.shape[0]))
+                    y_hat = _predict_flat_array(model, x_one).reshape(nn, nn)
+                    metrics_all.append(cal_od_metrics(y_hat, y_one.reshape(nn, nn)))
+            return _attach_validation_metrics(metrics_all, validation_metrics)
+
+        metric_runs = _repeat_inference(evaluate_once, inference_seeds)
+        if metric_runs:
+            avg = average_listed_metrics(metric_runs)
+            print(f"  CPC={avg['CPC']:.4f}  RMSE={avg['RMSE']:.2f}  "
+                  f"MAE={avg['MAE']:.2f}  ({time.time() - t0:.1f}s)")
+        return metric_runs
+    finally:
+        del payload
+        if model is not None:
+            del model
+        gc.collect()
+        cleanup_gpu()
+
+
+def run_flat_model(model_name, train_areas, valid_areas, test_areas, data_path=DATA_PATH,
+                   inference_seeds=None):
+    """Train, save, then load+evaluate a flat-feature model."""
+    run_id = train_flat_model(model_name, train_areas, valid_areas, test_areas, data_path)
+    return infer_flat_model(
+        model_name, train_areas, valid_areas, test_areas, data_path,
+        inference_seeds=inference_seeds, run_id=run_id,
     )
+
+
+def train_graph_model(model_name, train_areas, valid_areas, test_areas, data_path=DATA_PATH,
+                      run_id=None):
+    """Train a graph-based baseline and persist its weights."""
+    print(f"\n{'=' * 60}\n  Training: {model_name}\n{'=' * 60}")
+    set_global_seed()
+    run_id = run_id or _benchmark_run_id(model_name, train_areas, valid_areas, test_areas)
+    single_city_split = _is_single_city_split(train_areas, valid_areas, test_areas)
 
     if single_city_split:
         nfeat_scaler = dis_scaler = od_scaler = None
     else:
         nf_train, _, dis_train, od_train = load_graph_data(train_areas, data_path)
         nfeat_scaler, dis_scaler, od_scaler = get_scalers(nf_train, dis_train, od_train)
-    metrics_all = []
 
     try:
         if model_name in ("GMEL", "GMEL_GBRT", "GMEL_LGBM"):
@@ -240,6 +468,7 @@ def run_graph_model(model_name, train_areas, valid_areas, test_areas, data_path=
                 single_city_data=single_city_data,
                 decoder_type=decoder_type,
                 max_epochs=1000, patience=encoder_patience,
+                loss_plot_path=_loss_plot_path(run_id),
             )
             validation_metrics = _compute_gmel_validation_metrics(
                 gmel, decoder, nfeat_scaler, valid_areas, data_path,
@@ -247,6 +476,55 @@ def run_graph_model(model_name, train_areas, valid_areas, test_areas, data_path=
             )
             print(f"  Val: CPC_val={validation_metrics['CPC_val']:.4f}  "
                   f"CPC_full={validation_metrics['CPC_full']:.4f}")
+            _save_gmel_artifacts(run_id, model_name, gmel, decoder, nfeat_scaler, dis_scaler)
+            del gmel, decoder
+            return run_id
+
+        if model_name == "NetGAN":
+            module = load_model_main("NetGAN")
+            single_city_data = None
+            if single_city_split:
+                single_city_data = prepare_single_city_graph(train_areas[0], data_path=data_path)
+            trained = module.train(
+                train_areas, valid_areas, str(data_path),
+                device=device,
+                nfeat_scaler=nfeat_scaler, dis_scaler=dis_scaler, od_scaler=od_scaler,
+                single_city_data=single_city_data,
+            )
+            _save_netgan_artifacts(run_id, trained)
+            del trained
+            return run_id
+
+        raise ValueError(f"Unsupported graph model: {model_name}")
+    finally:
+        gc.collect()
+        cleanup_gpu()
+
+
+def infer_graph_model(model_name, train_areas, valid_areas, test_areas, data_path=DATA_PATH,
+                      inference_seeds=None, run_id=None):
+    """Load a graph-based baseline from disk and evaluate it."""
+    print(f"\n{'=' * 60}\n  Loading: {model_name}\n{'=' * 60}")
+    t0 = time.time()
+    run_id = run_id or _benchmark_run_id(model_name, train_areas, valid_areas, test_areas)
+    single_city_split = _is_single_city_split(train_areas, valid_areas, test_areas)
+
+    try:
+        if model_name in ("GMEL", "GMEL_GBRT", "GMEL_LGBM"):
+            loaded = _load_gmel_artifacts(run_id)
+            if loaded is None:
+                return []
+            gmel, decoder, nfeat_scaler, _ = loaded
+            single_city_data = None
+            if single_city_split:
+                single_city_data = prepare_single_city_graph(train_areas[0], data_path=data_path)
+            validation_metrics = _compute_gmel_validation_metrics(
+                gmel, decoder, nfeat_scaler, valid_areas, data_path,
+                single_city_data=single_city_data, device=device,
+            )
+            print(f"  Val: CPC_val={validation_metrics['CPC_val']:.4f}  "
+                  f"CPC_full={validation_metrics['CPC_full']:.4f}")
+
             def evaluate_once():
                 if single_city_split and single_city_data is not None:
                     od_hat = _predict_gmel_matrix(
@@ -272,20 +550,16 @@ def run_graph_model(model_name, train_areas, valid_areas, test_areas, data_path=
                 return _attach_validation_metrics(metrics_all, validation_metrics)
 
             metric_runs = _repeat_inference(evaluate_once, inference_seeds)
-            del gmel, decoder; gc.collect()
+            del gmel, decoder
 
         elif model_name == "NetGAN":
+            trained = _load_netgan_artifacts(run_id)
+            if trained is None:
+                return []
             module = load_model_main("NetGAN")
             single_city_data = None
             if single_city_split:
                 single_city_data = prepare_single_city_graph(train_areas[0], data_path=data_path)
-            trained = module.train(
-                train_areas, valid_areas, str(data_path),
-                device=device,
-                nfeat_scaler=nfeat_scaler, dis_scaler=dis_scaler, od_scaler=od_scaler,
-                single_city_data=single_city_data,
-            )
-            if single_city_split:
                 validation_metrics = {'CPC_val': float('nan'), 'CPC_full': float('nan')}
             else:
                 val_metrics_list = module.evaluate(trained, valid_areas, str(data_path), device=device)
@@ -296,6 +570,7 @@ def run_graph_model(model_name, train_areas, valid_areas, test_areas, data_path=
                 }
                 print(f"  Val: CPC_val={validation_metrics['CPC_val']:.4f}  "
                       f"CPC_full={validation_metrics['CPC_full']:.4f}")
+
             def evaluate_once():
                 if single_city_split and single_city_data is not None:
                     gen = trained['generator']
@@ -322,37 +597,44 @@ def run_graph_model(model_name, train_areas, valid_areas, test_areas, data_path=
                 return _attach_validation_metrics(metrics_all, validation_metrics)
 
             metric_runs = _repeat_inference(evaluate_once, inference_seeds)
-            del trained; gc.collect()
+            del trained
 
         else:
             raise ValueError(f"Unsupported graph model: {model_name}")
+
+        if metric_runs:
+            avg = average_listed_metrics(metric_runs)
+            print(f"  CPC={avg['CPC']:.4f}  RMSE={avg['RMSE']:.2f}  "
+                  f"MAE={avg['MAE']:.2f}  ({time.time() - t0:.1f}s)")
+        return metric_runs
     finally:
+        gc.collect()
         cleanup_gpu()
 
-    avg = average_listed_metrics(metric_runs)
-    print(f"  CPC={avg['CPC']:.4f}  RMSE={avg['RMSE']:.2f}  MAE={avg['MAE']:.2f}  ({time.time() - t0:.1f}s)")
-    return metric_runs
+
+def run_graph_model(model_name, train_areas, valid_areas, test_areas, data_path=DATA_PATH,
+                    inference_seeds=None):
+    """Train, save, then load+evaluate a graph-based model."""
+    run_id = train_graph_model(model_name, train_areas, valid_areas, test_areas, data_path)
+    return infer_graph_model(
+        model_name, train_areas, valid_areas, test_areas, data_path,
+        inference_seeds=inference_seeds, run_id=run_id,
+    )
 
 
-def run_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_PATH,
-                         gps_loader=None, city_ids=None, inference_seeds=None):
-    """Train and evaluate TransFlowerOrig via the GPS training infrastructure."""
+def train_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_PATH,
+                           gps_loader=None, city_ids=None, run_id=None):
+    """Train and persist TransFlowerOrig via the GPS training infrastructure."""
     from dataclasses import replace as dc_replace
     from models.GPS.main import train_single_city, train_multi_city
     from models.GPS.config import MC_EPOCHS
-    from models.GPS.metrics import predict_full_matrix
-    from models.shared.metrics import cal_od_metrics
     from .config import TRANSFLOWER_ORIG_CONFIG
     from .gps_loader import GPSBenchmarkLoader
 
-    print(f"\n{'=' * 60}\n  Running: TransFlowerOrig\n{'=' * 60}")
-    t0 = time.time()
+    print(f"\n{'=' * 60}\n  Training: TransFlowerOrig\n{'=' * 60}")
     set_global_seed()
-
-    single_city_split = (
-        len(train_areas) == len(valid_areas) == len(test_areas) == 1
-        and train_areas[0] == valid_areas[0] == test_areas[0]
-    )
+    run_id = run_id or _benchmark_run_id("TransFlowerOrig", train_areas, valid_areas, test_areas)
+    single_city_split = _is_single_city_split(train_areas, valid_areas, test_areas)
 
     if single_city_split:
         area_id = train_areas[0]
@@ -363,7 +645,7 @@ def run_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_PA
             pe_type=TRANSFLOWER_ORIG_CONFIG.pe_type, area_id=area_id,
         )
         result = train_single_city(
-            "transflower_orig",
+            run_id,
             "TransFlower Orig (MLP+TF+RLE)",
             TRANSFLOWER_ORIG_CONFIG,
             city_data=city_data,
@@ -371,7 +653,6 @@ def run_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_PA
     else:
         cfg = dc_replace(TRANSFLOWER_ORIG_CONFIG, mc_epochs=MC_EPOCHS)
         city_ids = city_ids or (train_areas + valid_areas + test_areas)
-        # deduplicate while preserving order
         seen = set()
         unique_ids = []
         for cid in city_ids:
@@ -387,7 +668,7 @@ def run_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_PA
             pe_type=cfg.pe_type, city_ids=city_ids,
         )
         result = train_multi_city(
-            "MC_transflower_orig",
+            run_id,
             "MC TransFlower Orig (MLP+TF+RLE)",
             cfg,
             city_data_dict=mc_dict,
@@ -397,43 +678,71 @@ def run_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_PA
         )
 
     cleanup_gpu()
-
     if result.get("status") != "ok":
         print(f"  TransFlowerOrig FAILED: {result.get('status')}")
-        return []
+        return None
+    return run_id
 
-    def evaluate_single_city_once():
-        pred = predict_full_matrix(result["model"], city_data, result["config"])
-        mf = cal_od_metrics(pred, city_data["od_matrix_np"])
-        nz = city_data["od_matrix_np"] > 0
-        if np.any(nz):
-            mf["CPC_nz"] = compute_metrics(pred[nz], city_data["od_matrix_np"][nz].astype(float)).get("CPC", float("nan"))
-        mt = compute_metrics(pred[city_data["test_mask"]], city_data["od_matrix_np"][city_data["test_mask"]].astype(float))
-        mf['CPC_test'] = mt.get('CPC', float('nan'))
-        mf['MAE_test'] = mt.get('MAE', float('nan'))
-        mf['RMSE_test'] = mt.get('RMSE', float('nan'))
-        return [mf]
 
-    def evaluate_multi_city_once():
-        metrics_all = []
-        for city_id in mc_test_ids:
-            city_data = mc_dict[city_id]
-            pred = predict_full_matrix(result["model"], city_data, result["config"])
-            mf = cal_od_metrics(pred, city_data["od_matrix_np"])
-            nz = city_data["od_matrix_np"] > 0
-            if np.any(nz):
-                mf["CPC_nz"] = compute_metrics(pred[nz], city_data["od_matrix_np"][nz].astype(float)).get("CPC", float("nan"))
-            mf["CPC_test"] = mf["CPC"]
-            mf["MAE_test"] = mf["MAE"]
-            mf["RMSE_test"] = mf["RMSE"]
-            metrics_all.append(mf)
-        return metrics_all
+def infer_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_PATH,
+                           gps_loader=None, city_ids=None, inference_seeds=None, run_id=None):
+    """Load a persisted TransFlowerOrig run and evaluate it."""
+    from .gps_loader import GPSBenchmarkLoader
 
-    evaluate_once = evaluate_single_city_once if single_city_split else evaluate_multi_city_once
-    metric_runs = _repeat_inference(evaluate_once, inference_seeds)
-    avg = average_listed_metrics(metric_runs)
-    print(f"  CPC={avg.get('CPC', 'N/A'):.4f}  ({time.time() - t0:.1f}s)")
+    print(f"\n{'=' * 60}\n  Loading: TransFlowerOrig\n{'=' * 60}")
+    t0 = time.time()
+    run_id = run_id or _benchmark_run_id("TransFlowerOrig", train_areas, valid_areas, test_areas)
+    single_city_split = _is_single_city_split(train_areas, valid_areas, test_areas)
+    metric_runs = []
+
+    if single_city_split:
+        area_id = train_areas[0]
+        gps_loader = gps_loader or GPSBenchmarkLoader(
+            single_city_id=area_id, data_path=data_path,
+        )
+        for inference_seed in list(inference_seeds or [None]):
+            metrics = gps_loader.load_gps_results(
+                run_id,
+                area_id=area_id,
+                inference_seed=inference_seed,
+            )
+            if metrics:
+                metric_runs.append(metrics)
+    else:
+        city_ids = city_ids or (train_areas + valid_areas + test_areas)
+        city_ids = list(dict.fromkeys(city_ids))
+        gps_loader = gps_loader or GPSBenchmarkLoader(
+            multi_city_ids=city_ids, data_path=data_path,
+        )
+        for inference_seed in list(inference_seeds or [None]):
+            per_city_metrics = gps_loader.load_multi_city_gps_results(
+                run_id,
+                city_ids=city_ids,
+                inference_seed=inference_seed,
+            )
+            if per_city_metrics:
+                metric_runs.append(average_listed_metrics(per_city_metrics))
+
+    if metric_runs:
+        avg = average_listed_metrics(metric_runs)
+        print(f"  CPC={avg.get('CPC', float('nan')):.4f}  ({time.time() - t0:.1f}s)")
     return metric_runs
+
+
+def run_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_PATH,
+                         gps_loader=None, city_ids=None, inference_seeds=None):
+    """Train, save, then load+evaluate TransFlowerOrig."""
+    run_id = train_transflower_orig(
+        train_areas, valid_areas, test_areas, data_path,
+        gps_loader=gps_loader, city_ids=city_ids,
+    )
+    if run_id is None:
+        return []
+    return infer_transflower_orig(
+        train_areas, valid_areas, test_areas, data_path,
+        gps_loader=gps_loader, city_ids=city_ids,
+        inference_seeds=inference_seeds, run_id=run_id,
+    )
 
 
 def run_diffusion_model(model_name, train_areas, valid_areas, test_areas, data_path=DATA_PATH,

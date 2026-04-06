@@ -1,6 +1,7 @@
 import time
 
 import numpy as np
+import joblib
 from sklearn.svm import SVR
 
 from models.shared.metrics import cal_od_metrics, average_listed_metrics
@@ -34,3 +35,14 @@ def evaluate(model, xs_test, ys_test):
         y_hat[y_hat < 0] = 0
         metrics_all.append(cal_od_metrics(y_hat, y_true))
     return metrics_all
+
+
+def save_model(model, path):
+    """Persist a trained SVR model."""
+    joblib.dump(model, path)
+
+
+def load_model(path, **kwargs):
+    """Load a persisted SVR model."""
+    del kwargs
+    return joblib.load(path)
