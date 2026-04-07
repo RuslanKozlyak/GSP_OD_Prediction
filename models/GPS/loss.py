@@ -68,6 +68,10 @@ def compute_loss_for_city(model, cd, config, origin_batch_indices=None):
             log_p = F.log_softmax(sc, dim=0)
             ct = torch.FloatTensor(rf / (of[oi] + 1e-8)).to(device)
             rl = -torch.sum(ct * log_p)
+        elif lt == 'ce_old':
+            p = F.softmax(sc, dim=0)
+            ct = torch.FloatTensor(rf / (of[oi] + 1e-8)).to(device)
+            rl = -torch.sum(ct * torch.log(p + 1e-10))
         elif lt == 'focal':
             log_p = F.log_softmax(sc, dim=0)
             p = log_p.exp()

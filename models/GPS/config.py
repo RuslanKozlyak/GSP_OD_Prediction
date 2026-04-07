@@ -77,7 +77,7 @@ class TrainingConfig:
     pe_type:            Optional[Literal['rwpe', 'spe', 'rrwp', 'lape']]    = 'rwpe'
     gps_norm_type:      Literal['batch_norm', 'graph_norm']                 = 'batch_norm'
     # ── Loss ──────────────────────────────────────────────────────────────────
-    loss_type:          Literal['huber', 'ce', 'multitask', 'zinb', 'focal', 'mae'] = 'huber'
+    loss_type:          Literal['huber', 'ce', 'ce_old', 'multitask', 'zinb', 'focal', 'mae'] = 'huber'
     prediction_mode:    Literal['raw', 'normalized']                        = 'raw'
     use_log_transform:  bool  = False
     focal_gamma:        float = 2.0   # used only when loss_type='focal'
@@ -113,7 +113,7 @@ class TrainingConfig:
             'decoder_type':    ('bilinear', 'transflower', 'lgbm', 'gbrt'),
             'pe_type':         ('rwpe', 'spe', 'rrwp', 'lape', None),
             'gps_norm_type':   ('batch_norm', 'graph_norm'),
-            'loss_type':       ('huber', 'ce', 'multitask', 'zinb', 'focal', 'mae'),
+            'loss_type':       ('huber', 'ce', 'ce_old', 'multitask', 'zinb', 'focal', 'mae'),
             'prediction_mode': ('raw', 'normalized'),
         }
         for attr, choices in _valid.items():
