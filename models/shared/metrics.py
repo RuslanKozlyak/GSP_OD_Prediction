@@ -271,8 +271,8 @@ def masked_train_val_cpc_metrics(
 ):
     """Common train/val CPC metrics for single-city pair masks.
 
-    CPC_full_* compares predicted/target split matrices after applying full
-    pair masks, including zeros when those masks are provided. CPC_nz_* is
+    CPC_*_full compares predicted/target split matrices after applying full
+    pair masks, including zeros when those masks are provided. CPC_*_nz is
     restricted to the nonzero split mask entries.
     """
     pred_matrix = np.asarray(pred_matrix)
@@ -288,14 +288,14 @@ def masked_train_val_cpc_metrics(
         else np.asarray(val_full_mask, dtype=bool)
     )
     return {
-        'CPC_full_train': cpc_full(
+        'CPC_train_full': cpc_full(
             pred_matrix * train_full_mask, od_matrix * train_full_mask
         ),
-        'CPC_full_val': cpc_full(
+        'CPC_val_full': cpc_full(
             pred_matrix * val_full_mask, od_matrix * val_full_mask
         ),
-        'CPC_nz_train': cpc_nonzero(pred_matrix, od_matrix, train_mask),
-        'CPC_nz_val': cpc_nonzero(pred_matrix, od_matrix, val_mask),
+        'CPC_train_nz': cpc_nonzero(pred_matrix, od_matrix, train_mask),
+        'CPC_val_nz': cpc_nonzero(pred_matrix, od_matrix, val_mask),
     }
 
 
@@ -307,17 +307,17 @@ def average_matrix_cpc_metrics(pred_matrices, od_matrices, prefix):
         cpc_fulls.append(cpc_full(pred_matrix, od_matrix))
         cpc_nzs.append(cpc_nonzero(pred_matrix, od_matrix))
     return {
-        f'CPC_full_{prefix}': float(np.mean(cpc_fulls)) if cpc_fulls else float('nan'),
-        f'CPC_nz_{prefix}': float(np.mean(cpc_nzs)) if cpc_nzs else float('nan'),
+        f'CPC_{prefix}_full': float(np.mean(cpc_fulls)) if cpc_fulls else float('nan'),
+        f'CPC_{prefix}_nz': float(np.mean(cpc_nzs)) if cpc_nzs else float('nan'),
     }
 
 
 def format_train_val_cpc_metrics(metrics):
     return (
-        f"CPC_full_train={metrics['CPC_full_train']:.4f}  "
-        f"CPC_full_val={metrics['CPC_full_val']:.4f}  "
-        f"CPC_nz_train={metrics['CPC_nz_train']:.4f}  "
-        f"CPC_nz_val={metrics['CPC_nz_val']:.4f}"
+        f"CPC_train_full={metrics['CPC_train_full']:.4f}  "
+        f"CPC_val_full={metrics['CPC_val_full']:.4f}  "
+        f"CPC_train_nz={metrics['CPC_train_nz']:.4f}  "
+        f"CPC_val_nz={metrics['CPC_val_nz']:.4f}"
     )
 
 

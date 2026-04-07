@@ -171,10 +171,10 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         avg_val_loss = np.mean(val_losses) if val_losses else float('nan')
         history['train_loss'].append(train_loss)
         history['val_loss'].append(avg_val_loss)
-        history['train_cpc_full'].append(train_val_cpc['CPC_full_train'])
-        history['train_cpc_nz'].append(train_val_cpc['CPC_nz_train'])
-        history['val_cpc_full'].append(train_val_cpc['CPC_full_val'])
-        history['val_cpc_nz'].append(train_val_cpc['CPC_nz_val'])
+        history['train_cpc_full'].append(train_val_cpc['CPC_train_full'])
+        history['train_cpc_nz'].append(train_val_cpc['CPC_train_nz'])
+        history['val_cpc_full'].append(train_val_cpc['CPC_val_full'])
+        history['val_cpc_nz'].append(train_val_cpc['CPC_val_nz'])
 
         if not np.isnan(avg_val_loss):
             scheduler.step(avg_val_loss)
@@ -189,7 +189,7 @@ def _train_loop(run_id, run_name, config, model, city_datas,
             patience_count += 1
             flag = ''
 
-        cpc_nz_val = train_val_cpc['CPC_nz_val']
+        cpc_nz_val = train_val_cpc['CPC_val_nz']
         if not np.isnan(cpc_nz_val) and cpc_nz_val > best_cpc_nz_val:
             best_cpc_nz_val = cpc_nz_val
             best_cpc_nz_state = {k: v.clone() for k, v in model.state_dict().items()}
@@ -297,7 +297,7 @@ def _train_loop(run_id, run_name, config, model, city_datas,
 
     model.load_state_dict(cpc_nz_best_state)
     mf_cpc, mnz_cpc, mt_cpc, pc_cpc = eval_all(
-        f"Best weights (CPC_nz_val @ epoch {best_cpc_nz_epoch or best_val_epoch or epoch})"
+        f"Best weights (CPC_val_nz @ epoch {best_cpc_nz_epoch or best_val_epoch or epoch})"
     )
 
     # Save
@@ -318,7 +318,7 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         run_suffix='cpc_nz',
         checkpoint_selection='cpc_nz_best',
         selected_epoch=best_cpc_nz_epoch or best_val_epoch or epoch,
-        selection_metric='CPC_nz_val',
+        selection_metric='CPC_val_nz',
         selection_metric_value=best_cpc_nz_val,
     )
     save_model_weights(run_id, val_loss_best_state, config)

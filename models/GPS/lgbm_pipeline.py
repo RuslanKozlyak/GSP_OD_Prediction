@@ -142,7 +142,7 @@ def load_lgbm_results(run_id, city_data, return_payload=False):
                     )
                 )
         print(f"  {run_id}: CPC={metrics['CPC']:.4f}  MAE={metrics['MAE']:.4f}")
-        if 'CPC_full_train' in metrics:
+        if 'CPC_train_full' in metrics:
             print(f"  Train/Val: {format_train_val_cpc_metrics(metrics)}")
         if return_payload:
             return {

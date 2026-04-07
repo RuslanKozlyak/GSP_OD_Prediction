@@ -5,7 +5,6 @@ import pandas as pd
 from .config import RESULT_COLUMNS, RESULTS_DIR
 
 
-
 def results_to_dataframe(results_dict, model_types=None, sort_by="CPC"):
     if not results_dict:
         return pd.DataFrame()

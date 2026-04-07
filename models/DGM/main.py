@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from sklearn.preprocessing import MinMaxScaler
 from tqdm.auto import tqdm
 
-from models.shared.metrics import compute_metrics
+from models.shared.metrics import compute_metrics, masked_train_val_cpc_metrics
 from models.shared.plotting import save_loss_plot
 
 
@@ -37,7 +37,9 @@ def _make_predict_fn(net, feat_scaler, od_scaler, device, batch_size):
 
 def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_full=None,
           device=None, batch_size=50_000, max_epochs=300, patience=100,
-          loss_plot_path=None, lr=3e-4, grad_clip=1.0, verbose=1):
+          loss_plot_path=None, lr=3e-4, grad_clip=1.0, verbose=1,
+          x_full=None, od_matrix=None, train_mask=None, val_mask=None,
+          train_full_mask=None, val_full_mask=None):
     """Train DeepGravity on pre-built feature arrays.
 
     Args:
@@ -67,6 +69,13 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
     if xs_valid_full is None or ys_valid_full is None:
         xs_valid_full = xs_valid
         ys_valid_full = ys_valid
+
+    split_metric_ready = (
+        x_full is not None
+        and od_matrix is not None
+        and train_mask is not None
+        and val_mask is not None
+    )
 
     # Filter zero OD pairs — avoids mode collapse on sparse matrices
     nz = y_train > 0
@@ -143,24 +152,50 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
                 vc_vals.append(compute_metrics(pred_val, yv)['CPC'])
 
             vcpcs = []
+            full_preds = []
             for xv_full, yv_full in zip(xs_valid_full, ys_valid_full):
                 pred_full = _predict_np(xv_full)
+                full_preds.append(pred_full)
                 vcpcs.append(compute_metrics(pred_full, yv_full)['CPC'])
             vc_val = float(np.mean(vc_vals)) if vc_vals else 0.0
             vc = float(np.mean(vcpcs)) if vcpcs else 0.0
+
+            split_metrics = None
+            if split_metric_ready:
+                pred_full = (
+                    full_preds[0]
+                    if len(full_preds) == 1 and full_preds[0].shape[0] == x_full.shape[0]
+                    else _predict_np(x_full)
+                )
+                split_metrics = masked_train_val_cpc_metrics(
+                    pred_full.reshape(od_matrix.shape),
+                    od_matrix,
+                    train_mask,
+                    val_mask,
+                    train_full_mask=train_full_mask,
+                    val_full_mask=val_full_mask,
+                )
 
         tl = float(np.mean(ep_losses))
         train_losses.append(tl)
         val_losses.append(vl)
         val_cpc_vals.append(vc_val)
         val_cpc_fulls.append(vc)
-        pbar.set_postfix(
+        postfix = dict(
             loss=f'{tl:.4g}',
             val=f'{vl:.4g}',
             CPC_val=f'{vc_val:.4g}',
             CPC_full=f'{vc:.4g}',
             pat=best_pat,
         )
+        if split_metrics is not None:
+            postfix.update(
+                CPC_train_full=f"{split_metrics['CPC_train_full']:.4g}",
+                CPC_val_full=f"{split_metrics['CPC_val_full']:.4g}",
+                CPC_train_nz=f"{split_metrics['CPC_train_nz']:.4g}",
+                CPC_val_nz=f"{split_metrics['CPC_val_nz']:.4g}",
+            )
+        pbar.set_postfix(**postfix)
 
         if vl < best_vl:
             best_vl = vl

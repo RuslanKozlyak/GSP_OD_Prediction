@@ -88,7 +88,7 @@ class GPSBenchmarkLoader:
             )['combined']
             if verbose:
                 print(f"  {run_id}: CPC={metrics['CPC']:.4f}  MAE={metrics['MAE']:.4f}")
-                if 'CPC_full_train' in metrics:
+                if 'CPC_train_full' in metrics:
                     print(f"  Train/Val: {format_train_val_cpc_metrics(metrics)}")
             return metrics
         except Exception as exc:
@@ -188,7 +188,7 @@ class GPSBenchmarkLoader:
             )
             metrics = summarize_prediction_metrics(pred, city_data)['combined']
             print(f"  {run_id}: CPC={metrics['CPC']:.4f}  MAE={metrics['MAE']:.4f}")
-            if 'CPC_full_train' in metrics:
+            if 'CPC_train_full' in metrics:
                 print(f"  Train/Val: {format_train_val_cpc_metrics(metrics)}")
             return metrics
         except Exception as exc:
@@ -208,7 +208,7 @@ class GPSBenchmarkLoader:
         if saved_cfg is None:
             print(f"  [SKIP] {run_id}: config JSON not found.")
             return []
-        city_data_dict, _, _, test_city_ids = self.get_multi_city_data(
+        city_data_dict, train_city_ids, val_city_ids, test_city_ids = self.get_multi_city_data(
             pe_type=saved_cfg.pe_type, city_ids=city_ids,
         )
         test_city_ids = list(test_city_ids)

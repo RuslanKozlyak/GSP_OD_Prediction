@@ -90,7 +90,7 @@ def _compute_flat_train_val_metrics(model, payload):
 
 
 def _print_train_val_metrics(metrics):
-    if 'CPC_full_train' not in metrics:
+    if 'CPC_train_full' not in metrics:
         return
     print(f"  Train/Val: {format_train_val_cpc_metrics(metrics)}")
 
@@ -314,6 +314,9 @@ def _prepare_flat_payload(train_areas, valid_areas, test_areas, data_path, featu
             'train_mask': split_data['train_mask'],
             'val_mask': split_data['val_mask'],
             'test_mask': split_data['test_mask'],
+            'train_full_mask': split_data['train_full_mask'],
+            'val_full_mask': split_data['val_full_mask'],
+            'test_full_mask': split_data['test_full_mask'],
             'n_nodes': split_data['n_nodes'],
             'area_id': split_data['area_id'],
             'test_area_ids': [split_data['area_id']],
@@ -475,6 +478,16 @@ def train_flat_model(model_name, train_areas, valid_areas, test_areas, data_path
     try:
         if not hasattr(module, 'train'):
             raise ValueError(f"Model {model_name} has no train() function")
+        split_metric_kwargs = {}
+        if model_name == "DGM" and payload.get('single_city_split'):
+            split_metric_kwargs = {
+                'x_full': payload.get('x_full'),
+                'od_matrix': payload.get('od_matrix'),
+                'train_mask': payload.get('train_mask'),
+                'val_mask': payload.get('val_mask'),
+                'train_full_mask': payload.get('train_full_mask'),
+                'val_full_mask': payload.get('val_full_mask'),
+            }
         model = module.train(
             payload['x_train'],
             payload['y_train'],
@@ -487,6 +500,7 @@ def train_flat_model(model_name, train_areas, valid_areas, test_areas, data_path
             max_epochs=hp.get('max_epochs', 10_000),
             patience=hp.get('patience', 100),
             loss_plot_path=_loss_plot_path(run_id),
+            **split_metric_kwargs,
             **{k: v for k, v in hp.items() if k not in ('batch_size', 'max_epochs', 'patience')},
         )
         validation_metrics = _compute_flat_validation_metrics(
@@ -976,18 +990,18 @@ def infer_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_
                     if split_metrics:
                         averaged_split = _average_numeric_metrics(split_metrics)
                         if "CPC" in averaged_split:
-                            averaged[f"CPC_full_{prefix}"] = averaged_split["CPC"]
+                            averaged[f"CPC_{prefix}_full"] = averaged_split["CPC"]
                         cpc_nz = averaged_split.get(
                             "CPC_nz", averaged_split.get("CPC_nonzero")
                         )
                         if cpc_nz is not None:
-                            averaged[f"CPC_nz_{prefix}"] = cpc_nz
+                            averaged[f"CPC_{prefix}_nz"] = cpc_nz
                 metric_runs.append(averaged)
 
     if metric_runs:
         avg = average_listed_metrics(metric_runs)
         print(f"  CPC={avg.get('CPC', float('nan')):.4f}  ({time.time() - t0:.1f}s)")
-        if "CPC_full_train" in avg:
+        if "CPC_train_full" in avg:
             print(f"  Train/Val: {format_train_val_cpc_metrics(avg)}")
     return metric_runs
 
@@ -1043,7 +1057,7 @@ def run_diffusion_model(model_name, train_areas, valid_areas, test_areas, data_p
             avg_metrics = json.loads("\n".join(dict_lines).replace("'", '"'))
             avg_metrics.setdefault("CPC_val", float('nan'))
             avg_metrics.setdefault("CPC_full", float('nan'))
-            for key in ("CPC_full_train", "CPC_full_val", "CPC_nz_train", "CPC_nz_val"):
+            for key in ("CPC_train_full", "CPC_val_full", "CPC_train_nz", "CPC_val_nz"):
                 avg_metrics.setdefault(key, float('nan'))
             print(f"  CPC={avg_metrics.get('CPC', 'N/A')}  ({time.time() - t0:.1f}s)")
             repeats = list(inference_seeds or [None])

@@ -441,10 +441,10 @@ def _add_split_cpc_metrics(target, metric_dicts, prefix):
         return
     averaged = _average_metrics(metric_dicts)
     if "CPC" in averaged:
-        target[f"CPC_full_{prefix}"] = averaged["CPC"]
+        target[f"CPC_{prefix}_full"] = averaged["CPC"]
     cpc_nz = averaged.get("CPC_nz", averaged.get("CPC_nonzero"))
     if cpc_nz is not None:
-        target[f"CPC_nz_{prefix}"] = cpc_nz
+        target[f"CPC_{prefix}_nz"] = cpc_nz
 
 
 def _summarize_multi_city_per_city(per_city_metric_samples):
@@ -480,7 +480,7 @@ def _print_multi_city_city_summary(run_id, per_city_summary, overall_metrics):
         f"MAE={_fmt_metric(overall_metrics, 'MAE')}  "
         f"RMSE={_fmt_metric(overall_metrics, 'RMSE')}"
     )
-    if "CPC_full_train" in overall_metrics:
+    if "CPC_train_full" in overall_metrics:
         print(f"  Train/Val: {format_train_val_cpc_metrics(overall_metrics)}")
 
 

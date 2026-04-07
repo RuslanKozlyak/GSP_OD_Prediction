@@ -232,10 +232,10 @@ def train(run_id, run_name, config, city_data):
 
         history['train_loss'].append(loss.item())
         history['val_loss'].append(val_loss)
-        history['train_cpc_full'].append(train_val_cpc['CPC_full_train'])
-        history['train_cpc_nz'].append(train_val_cpc['CPC_nz_train'])
-        history['val_cpc_full'].append(train_val_cpc['CPC_full_val'])
-        history['val_cpc_nz'].append(train_val_cpc['CPC_nz_val'])
+        history['train_cpc_full'].append(train_val_cpc['CPC_train_full'])
+        history['train_cpc_nz'].append(train_val_cpc['CPC_train_nz'])
+        history['val_cpc_full'].append(train_val_cpc['CPC_val_full'])
+        history['val_cpc_nz'].append(train_val_cpc['CPC_val_nz'])
         scheduler.step(val_loss)
 
         if val_loss < best_val_loss:
