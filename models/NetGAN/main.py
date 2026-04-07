@@ -20,7 +20,8 @@ def _transform_masked_matrix(matrix, scaler, mask=None):
 
 def train(train_areas, valid_areas, data_path,
           device=None, nfeat_scaler=None, dis_scaler=None, od_scaler=None,
-          n_epochs=2, lr=3e-4, gp_lambda=10, batch_size=128, single_city_data=None):
+          n_epochs=2, lr=3e-4, gp_lambda=10, batch_size=128, verbose=1,
+          single_city_data=None):
     """Train NetGAN (GAT + Generator + Discriminator).
 
     Args:
@@ -33,6 +34,7 @@ def train(train_areas, valid_areas, data_path,
         lr: generator/discriminator learning rate
         gp_lambda: gradient penalty weight
         batch_size: random-walk batch size
+        verbose: enables training log messages
 
     Returns:
         dict with 'generator', 'nfeat_scaler', 'dis_scaler', 'od_scaler'
@@ -86,7 +88,8 @@ def train(train_areas, valid_areas, data_path,
     opt_g = torch.optim.Adam(generator.parameters(), lr=lr)
     opt_d = torch.optim.Adam(discriminator.parameters(), lr=lr)
 
-    print(f'  NetGAN: training for {n_epochs} epochs...')
+    if verbose:
+        print(f'  NetGAN: training for {n_epochs} epochs...')
     t0 = time.time()
     for epoch in range(n_epochs):
         generator.train()
@@ -120,7 +123,8 @@ def train(train_areas, valid_areas, data_path,
                 loss_d.backward()
                 opt_d.step()
 
-    print(f'  NetGAN: trained in {time.time() - t0:.1f}s')
+    if verbose:
+        print(f'  NetGAN: trained in {time.time() - t0:.1f}s')
 
     return {
         'generator': generator,

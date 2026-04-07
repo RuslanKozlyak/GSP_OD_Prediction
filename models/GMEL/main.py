@@ -102,6 +102,7 @@ def _print_averaged_stage_metrics(stage_name, metrics_full, metrics_nonzero):
 
 
 def _fit_decoder(decoder_type, x_train, y_train, x_val=None, y_val=None, **kwargs):
+    verbose = int(kwargs.get('verbose', 0) or 0)
     if decoder_type == 'lgbm':
         import lightgbm as lgb
 
@@ -113,20 +114,24 @@ def _fit_decoder(decoder_type, x_train, y_train, x_val=None, y_val=None, **kwarg
             'max_depth': kwargs.get('lgbm_max_depth', 8),
             'subsample': kwargs.get('lgbm_subsample', 0.8),
             'colsample_bytree': kwargs.get('lgbm_colsample_bytree', 0.8),
-            'verbose': -1,
+            'verbosity': verbose if verbose else -1,
             'seed': 42,
         }
         num_boost_round = kwargs.get('lgbm_num_boost_round', 1000)
         early_stopping_rounds = kwargs.get('lgbm_early_stopping', 50)
+        log_period = kwargs.get('lgbm_log_period', 100) if verbose else 0
         train_set = lgb.Dataset(x_train, y_train)
         if x_val is not None and len(x_val) > 0:
             valid_set = lgb.Dataset(x_val, y_val, reference=train_set)
+            callbacks = [lgb.early_stopping(early_stopping_rounds, verbose=bool(verbose))]
+            if log_period:
+                callbacks.append(lgb.log_evaluation(log_period))
             return lgb.train(
                 params,
                 train_set,
                 num_boost_round=num_boost_round,
                 valid_sets=[valid_set],
-                callbacks=[lgb.early_stopping(early_stopping_rounds), lgb.log_evaluation(100)],
+                callbacks=callbacks,
             )
         return lgb.train(params, train_set, num_boost_round=num_boost_round)
 
@@ -135,6 +140,7 @@ def _fit_decoder(decoder_type, x_train, y_train, x_val=None, y_val=None, **kwarg
         min_samples_split=kwargs.get('gbrt_min_samples_split', 2),
         min_samples_leaf=kwargs.get('gbrt_min_samples_leaf', 2),
         max_depth=None,
+        verbose=verbose,
     )
     decoder.fit(x_train, y_train)
     return decoder
@@ -143,7 +149,7 @@ def _fit_decoder(decoder_type, x_train, y_train, x_val=None, y_val=None, **kwarg
 def train(train_areas, val_areas, data_path,
           device=None, nfeat_scaler=None, dis_scaler=None, od_scaler=None,
           max_epochs=1000, patience=10, single_city_data=None, decoder_type='gbrt',
-          encoder_lr=3e-4, loss_plot_path=None, **decoder_kwargs):
+          encoder_lr=3e-4, loss_plot_path=None, verbose=1, **decoder_kwargs):
     """Train GMEL (PyG GAT encoder + tree decoder).
 
     Args:
@@ -154,6 +160,7 @@ def train(train_areas, val_areas, data_path,
         nfeat_scaler, dis_scaler, od_scaler: pre-fitted sklearn scalers
             (if None, fitted on train_areas data)
         max_epochs / patience / encoder_lr: GAT training schedule
+        verbose: enables tqdm, decoder logs, and stage metric prints
         single_city_data: optional dict from prepare_single_city_graph() for
             honest train/val masking inside one city
 
@@ -282,7 +289,7 @@ def train(train_areas, val_areas, data_path,
     best_state = None
     train_losses = []
     val_losses = []
-    pbar = tqdm(range(max_epochs), desc='GMEL-GAT', unit='ep')
+    pbar = tqdm(range(max_epochs), desc='GMEL-GAT', unit='ep', disable=not verbose)
     for ep in pbar:
         gmel.train()
         ep_losses = []
@@ -335,13 +342,13 @@ def train(train_areas, val_areas, data_path,
         title="GMEL Encoder Loss",
         save_path=loss_plot_path,
     )
-    if saved_plot_path is not None:
+    if saved_plot_path is not None and verbose:
         print(f"  -> Loss plot saved to {saved_plot_path}")
     gmel.train_losses = train_losses
     gmel.val_losses = val_losses
     gmel.loss_plot_path = str(saved_plot_path) if saved_plot_path is not None else None
 
-    if single_city_data is not None:
+    if verbose and single_city_data is not None:
         bilinear_pred = _predict_bilinear_matrix(gmel, val_data_gpu[0][0], val_data_gpu[0][1], od_scaler)
         _print_stage_metrics(
             "Bilinear Head",
@@ -349,7 +356,7 @@ def train(train_areas, val_areas, data_path,
             single_city_data['od'],
             single_city_data['test_mask'],
         )
-    else:
+    elif verbose:
         bilinear_metrics_full = []
         bilinear_metrics_nonzero = []
         for nf_t, g, _, _, _, _, _, od, _ in val_data_gpu:
@@ -361,7 +368,8 @@ def train(train_areas, val_areas, data_path,
         _print_averaged_stage_metrics("Bilinear Head", bilinear_metrics_full, bilinear_metrics_nonzero)
 
     # ── Phase 2: Train GBRT on GAT embeddings ────────────────────────────────
-    print(f'  GMEL: fitting {decoder_type.upper()} on embeddings...')
+    if verbose:
+        print(f'  GMEL: fitting {decoder_type.upper()} on embeddings...')
     xtrain_emb, ytrain_emb = [], []
     xval_emb, yval_emb = [], []
     gmel.eval()
@@ -392,10 +400,11 @@ def train(train_areas, val_areas, data_path,
     xval = np.concatenate(xval_emb) if xval_emb else None
     yval = np.concatenate(yval_emb) if yval_emb else None
 
-    decoder = _fit_decoder(decoder_type, xtrain, ytrain, xval, yval, **decoder_kwargs)
-    print(f'  GMEL: {decoder_type.upper()} fitted.')
+    decoder = _fit_decoder(decoder_type, xtrain, ytrain, xval, yval, verbose=verbose, **decoder_kwargs)
+    if verbose:
+        print(f'  GMEL: {decoder_type.upper()} fitted.')
 
-    if single_city_data is not None:
+    if verbose and single_city_data is not None:
         nf_t, g, *_ = val_data_gpu[0]
         with torch.no_grad():
             _, _, _, h_in, h_out = gmel(g, nf_t)
@@ -411,7 +420,7 @@ def train(train_areas, val_areas, data_path,
             single_city_data['od'],
             single_city_data['test_mask'],
         )
-    else:
+    elif verbose:
         tree_metrics_full = []
         tree_metrics_nonzero = []
         with torch.no_grad():

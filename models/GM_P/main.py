@@ -33,7 +33,7 @@ def _make_predict_fn(net, dist_max, device, batch_size):
 
 def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_full=None,
           device=None, batch_size=50_000, max_epochs=10000, patience=100,
-          loss_plot_path=None, lr=1e-3):
+          loss_plot_path=None, lr=1e-3, verbose=1):
     """Train GRAVITY (GM_P) on pre-built feature arrays.
 
     Args:
@@ -46,6 +46,7 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
         device: torch.device
         batch_size: DataLoader mini-batch size
         max_epochs / patience: training schedule
+        verbose: enables tqdm and training log messages
 
     Returns:
         predict: callable(x: np.ndarray) -> np.ndarray (abs applied)
@@ -116,7 +117,7 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
     val_cpc_vals = []
     val_cpc_fulls = []
     yv_log_all_t = torch.FloatTensor(yv_log_all).to(device) if xv_all_t is not None else None
-    pbar = tqdm(range(max_epochs), desc='GM_P', unit='ep')
+    pbar = tqdm(range(max_epochs), desc='GM_P', unit='ep', disable=not verbose)
     for ep in pbar:
         net.train()
         ep_losses = []
@@ -178,7 +179,7 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
         title="GM_P Training Loss",
         save_path=loss_plot_path,
     )
-    if saved_plot_path is not None:
+    if saved_plot_path is not None and verbose:
         print(f"  -> Loss plot saved to {saved_plot_path}")
     predict = _make_predict_fn(net, dist_max, device, batch_size)
 

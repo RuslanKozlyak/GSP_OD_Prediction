@@ -37,7 +37,7 @@ def _make_predict_fn(net, feat_scaler, od_scaler, device, batch_size):
 
 def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_full=None,
           device=None, batch_size=50_000, max_epochs=300, patience=100,
-          loss_plot_path=None, lr=3e-4, grad_clip=1.0):
+          loss_plot_path=None, lr=3e-4, grad_clip=1.0, verbose=1):
     """Train DeepGravity on pre-built feature arrays.
 
     Args:
@@ -51,6 +51,7 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
         batch_size: DataLoader mini-batch size
         max_epochs: max training epochs
         patience: early-stopping patience
+        verbose: enables tqdm and training log messages
 
     Returns:
         predict: callable(x: np.ndarray) -> np.ndarray
@@ -115,7 +116,7 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
     val_losses = []
     val_cpc_vals = []
     val_cpc_fulls = []
-    pbar = tqdm(range(max_epochs), desc='DGM', unit='ep')
+    pbar = tqdm(range(max_epochs), desc='DGM', unit='ep', disable=not verbose)
     for ep in pbar:
         net.train()
         ep_losses = []
@@ -179,7 +180,7 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
         title="DGM Training Loss",
         save_path=loss_plot_path,
     )
-    if saved_plot_path is not None:
+    if saved_plot_path is not None and verbose:
         print(f"  -> Loss plot saved to {saved_plot_path}")
 
     predict = _make_predict_fn(net, feat_scaler, od_scaler, device, batch_size)

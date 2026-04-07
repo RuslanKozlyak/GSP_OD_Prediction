@@ -531,6 +531,7 @@ def train_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
                 lr=hp.get('lr', 3e-4),
                 gp_lambda=hp.get('gp_lambda', 10),
                 batch_size=hp.get('batch_size', 128),
+                verbose=hp.get('verbose', 1),
             )
             _save_netgan_artifacts(run_id, trained)
             del trained

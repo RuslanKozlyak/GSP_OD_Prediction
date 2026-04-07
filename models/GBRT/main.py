@@ -17,16 +17,20 @@ def train(x_train, y_train, xs_valid=None, ys_valid=None, **kwargs):
     Returns:
         model with .predict(x) method
     """
+    verbose = int(kwargs.get('verbose', 1) or 0)
     model = GradientBoostingRegressor(
         n_estimators=kwargs.get('n_estimators', 20),
         min_samples_split=kwargs.get('min_samples_split', 2),
         min_samples_leaf=kwargs.get('min_samples_leaf', 2),
         max_depth=None,
+        verbose=verbose,
     )
-    print('  GBRT: fitting...')
+    if verbose:
+        print('  GBRT: fitting...')
     t0 = time.time()
     model.fit(x_train, y_train)
-    print(f'  GBRT: fitted in {time.time() - t0:.1f}s')
+    if verbose:
+        print(f'  GBRT: fitted in {time.time() - t0:.1f}s')
     return model
 
 

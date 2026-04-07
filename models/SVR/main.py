@@ -20,14 +20,21 @@ def train(x_train, y_train, xs_valid=None, ys_valid=None, **kwargs):
         model with .predict(x) method
     """
     n_samples = x_train.shape[0]
-    print(f'  SVR: {n_samples:,} samples, fitting LinearSVR...')
+    verbose = int(kwargs.get('verbose', 1) or 0)
+    if verbose:
+        print(f'  SVR: {n_samples:,} samples, fitting LinearSVR...')
     model = Pipeline([
         ('scaler', StandardScaler()),
-        ('svr', LinearSVR(C=kwargs.get('C', 100), max_iter=kwargs.get('max_iter', 10_000))),
+        ('svr', LinearSVR(
+            C=kwargs.get('C', 100),
+            max_iter=kwargs.get('max_iter', 10_000),
+            verbose=verbose,
+        )),
     ])
     t0 = time.time()
     model.fit(x_train, y_train)
-    print(f'  SVR: fitted in {time.time() - t0:.1f}s')
+    if verbose:
+        print(f'  SVR: fitted in {time.time() - t0:.1f}s')
     return model
 
 
