@@ -51,7 +51,14 @@ def _train_loop(run_id, run_name, config, model, city_datas,
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5, min_lr=1e-5)
 
     max_epochs = config.mc_epochs if is_multi else config.epochs
-    history = {'train_loss': [], 'val_loss': [], 'val_cpc_full': [], 'val_cpc_nz': []}
+    history = {
+        'train_loss': [],
+        'val_loss': [],
+        'train_cpc_full': [],
+        'train_cpc_nz': [],
+        'val_cpc_full': [],
+        'val_cpc_nz': [],
+    }
     best_val_loss = float('inf')
     patience_count = 0
     best_state = None
@@ -74,6 +81,23 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         val_cd['inflow_train'] = cd['inflow_val']
         val_cd['nonzero_dest_dict'] = cd['val_dest_dict']
         val_cds = {cid: val_cd}
+
+    def _average_cpc_for_cities(eval_cds):
+        cpc_fulls = []
+        cpc_nzs = []
+        for ecd in eval_cds.values():
+            eval_cd = dict(ecd)
+            eval_cd['od_matrix_np'] = ecd['od_matrix_train']
+            eval_cd['outflow_full'] = ecd['outflow_train']
+            _, mf, mnz = evaluate_full_matrix(
+                model, eval_cd, config, dest_batch_size=DEST_BATCH_SIZE
+            )
+            cpc_fulls.append(mf['CPC'])
+            cpc_nzs.append(mnz['CPC'])
+        return (
+            float(np.mean(cpc_fulls)) if cpc_fulls else float('nan'),
+            float(np.mean(cpc_nzs)) if cpc_nzs else float('nan'),
+        )
 
     epoch = 0
     status = 'ok'
@@ -113,28 +137,24 @@ def _train_loop(run_id, run_name, config, model, city_datas,
 
         train_loss = np.mean(epoch_losses) if epoch_losses else float('nan')
 
-        # Validation: loss + CPC on full matrix
+        # Validation loss + split-specific train/val CPC diagnostics.
         model.eval()
         val_losses = []
-        val_cpc_fulls = []
-        val_cpc_nzs = []
         with torch.no_grad():
             for vcid, vcd in val_cds.items():
                 vl = compute_loss_for_city(model, vcd, config)
                 if not (torch.isnan(vl) or torch.isinf(vl)):
                     val_losses.append(vl.item())
-                eval_cd = city_datas[vcid] if is_multi else list(city_datas.values())[0]
-                _, mf, mnz = evaluate_full_matrix(model, eval_cd, config, dest_batch_size=DEST_BATCH_SIZE)
-                val_cpc_fulls.append(mf['CPC'])
-                val_cpc_nzs.append(mnz['CPC'])
+            avg_cpc_full_train, avg_cpc_nz_train = _average_cpc_for_cities(train_cds)
+            avg_cpc_full_val, avg_cpc_nz_val = _average_cpc_for_cities(val_cds)
 
         avg_val_loss = np.mean(val_losses) if val_losses else float('nan')
-        avg_cpc_full = np.mean(val_cpc_fulls)
-        avg_cpc_nz = np.mean(val_cpc_nzs)
         history['train_loss'].append(train_loss)
         history['val_loss'].append(avg_val_loss)
-        history['val_cpc_full'].append(avg_cpc_full)
-        history['val_cpc_nz'].append(avg_cpc_nz)
+        history['train_cpc_full'].append(avg_cpc_full_train)
+        history['train_cpc_nz'].append(avg_cpc_nz_train)
+        history['val_cpc_full'].append(avg_cpc_full_val)
+        history['val_cpc_nz'].append(avg_cpc_nz_val)
 
         if not np.isnan(avg_val_loss):
             scheduler.step(avg_val_loss)
@@ -151,7 +171,10 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         if epoch % 5 == 0 or epoch == 1:
             nan_str = f" NaN:{nan_count}" if nan_count > 0 else ""
             print(f"  {epoch:3d}/{max_epochs}  train={train_loss:.4f}  val={avg_val_loss:.4f}  "
-                  f"CPC_full={avg_cpc_full:.4f}  CPC_nz={avg_cpc_nz:.4f}  "
+                  f"CPC_full_train={avg_cpc_full_train:.4f}  "
+                  f"CPC_full_val={avg_cpc_full_val:.4f}  "
+                  f"CPC_nz_train={avg_cpc_nz_train:.4f}  "
+                  f"CPC_nz_val={avg_cpc_nz_val:.4f}  "
                   f"{time.time()-t0:.1f}s{flag}{nan_str}")
         if patience_count >= config.patience:
             print(f"  Early stop @ epoch {epoch}")
@@ -198,6 +221,7 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         test_eval_ids = set(test_eval_cities)
         for ecid, ecd in full_eval_cities.items():
             pred, mf, mnz = evaluate_full_matrix(model, ecd, config, dest_batch_size=DEST_BATCH_SIZE)
+
             metric_bundle = summarize_prediction_metrics(
                 pred, ecd, is_test_city=ecid in test_eval_ids
             )
@@ -296,5 +320,3 @@ def train_multi_city(run_id, run_name, config, city_data_dict=None,
     return _train_loop(run_id, run_name, config, model, city_data_dict,
                        is_multi=True, train_city_ids=train_city_ids,
                        val_city_ids=val_city_ids, test_city_ids=test_city_ids)
-
-
