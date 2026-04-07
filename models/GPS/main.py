@@ -94,7 +94,12 @@ def _train_loop(run_id, run_name, config, model, city_datas,
                 model, full_cd, config, dest_batch_size=DEST_BATCH_SIZE
             )
             return masked_train_val_cpc_metrics(
-                pred, full_cd['od_matrix_np'], full_cd['train_mask'], full_cd['val_mask']
+                pred,
+                full_cd['od_matrix_np'],
+                full_cd['train_mask'],
+                full_cd['val_mask'],
+                train_full_mask=full_cd.get('train_full_mask'),
+                val_full_mask=full_cd.get('val_full_mask'),
             )
 
         metrics = {}

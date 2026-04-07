@@ -222,7 +222,12 @@ def train(run_id, run_name, config, city_data):
             ).reshape(vf.shape)
             train_val_pred[train_val_pred < 0] = 0
             train_val_cpc = masked_train_val_cpc_metrics(
-                train_val_pred, od_np, train_mask, val_mask
+                train_val_pred,
+                od_np,
+                train_mask,
+                val_mask,
+                train_full_mask=city_data.get('train_full_mask'),
+                val_full_mask=city_data.get('val_full_mask'),
             )
 
         history['train_loss'].append(loss.item())
@@ -270,7 +275,12 @@ def train(run_id, run_name, config, city_data):
         "Bilinear Head", bilinear_pred, od_np, test_mask
     )
     bilinear_train_val = masked_train_val_cpc_metrics(
-        bilinear_pred, od_np, train_mask, val_mask
+        bilinear_pred,
+        od_np,
+        train_mask,
+        val_mask,
+        train_full_mask=city_data.get('train_full_mask'),
+        val_full_mask=city_data.get('val_full_mask'),
     )
     print(f"    Train/Val: {format_train_val_cpc_metrics(bilinear_train_val)}")
 
@@ -336,7 +346,14 @@ def train(run_id, run_name, config, city_data):
     # ── Evaluation ───────────────────────────────────────────────────────────
     pred = predict_gmel_gps(model, decoder, city_data, device)
     mf, mnz, mt = _print_stage_metrics("Tree Decoder", pred, od_np, test_mask)
-    tree_train_val = masked_train_val_cpc_metrics(pred, od_np, train_mask, val_mask)
+    tree_train_val = masked_train_val_cpc_metrics(
+        pred,
+        od_np,
+        train_mask,
+        val_mask,
+        train_full_mask=city_data.get('train_full_mask'),
+        val_full_mask=city_data.get('val_full_mask'),
+    )
     print(f"    Train/Val: {format_train_val_cpc_metrics(tree_train_val)}")
 
     save_metrics_to_csv(run_id, run_name, config, mf, mnz, mt,

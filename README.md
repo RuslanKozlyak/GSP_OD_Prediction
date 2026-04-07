@@ -44,6 +44,7 @@ benchmarking/
 | `gps_od.ipynb` | Train GPS models with different module combinations (PE type, decoder, loss, norm) |
 | `lgbm_od.ipynb` | Train LGBM decoder on GPS embeddings |
 | `benchmark.ipynb` | Compare GPS variants vs all baseline models from papers |
+| `data_city_analysis.ipynb` | Analyze all `data/` areas, correlations, visualizations, and city type classification |
 
 ## Evaluation Modes
 

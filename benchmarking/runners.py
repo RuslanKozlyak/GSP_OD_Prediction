@@ -70,6 +70,8 @@ def _compute_flat_train_val_metrics(model, payload):
             payload['od_matrix'],
             payload['train_mask'],
             payload['val_mask'],
+            train_full_mask=payload.get('train_full_mask'),
+            val_full_mask=payload.get('val_full_mask'),
         )
 
     metrics = {}
@@ -151,6 +153,8 @@ def _compute_gmel_train_val_metrics(gmel, decoder, nfeat_scaler, train_areas, va
             single_city_data['od'],
             single_city_data['train_mask'],
             single_city_data['val_mask'],
+            train_full_mask=single_city_data.get('train_full_mask'),
+            val_full_mask=single_city_data.get('val_full_mask'),
         )
 
     metrics = {}
@@ -196,6 +200,8 @@ def _compute_netgan_train_val_metrics(trained, train_areas, valid_areas, data_pa
             single_city_data['od'],
             single_city_data['train_mask'],
             single_city_data['val_mask'],
+            train_full_mask=single_city_data.get('train_full_mask'),
+            val_full_mask=single_city_data.get('val_full_mask'),
         )
 
     metrics = {}

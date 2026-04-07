@@ -131,7 +131,16 @@ def load_lgbm_results(run_id, city_data, return_payload=False):
             train_mask = city_data.get('train_mask')
             val_mask = city_data.get('val_mask')
             if train_mask is not None and val_mask is not None:
-                metrics.update(masked_train_val_cpc_metrics(pred, od, train_mask, val_mask))
+                metrics.update(
+                    masked_train_val_cpc_metrics(
+                        pred,
+                        od,
+                        train_mask,
+                        val_mask,
+                        train_full_mask=city_data.get('train_full_mask'),
+                        val_full_mask=city_data.get('val_full_mask'),
+                    )
+                )
         print(f"  {run_id}: CPC={metrics['CPC']:.4f}  MAE={metrics['MAE']:.4f}")
         if 'CPC_full_train' in metrics:
             print(f"  Train/Val: {format_train_val_cpc_metrics(metrics)}")
@@ -199,7 +208,14 @@ def train_lgbm_from_model(run_id, city_data, donor_model, donor_name):
         mt = dict(mf)
     else:
         mt = compute_metrics(pred[tsm], od[tsm].astype(float))
-    train_val_metrics = masked_train_val_cpc_metrics(pred, od, tm, vm)
+    train_val_metrics = masked_train_val_cpc_metrics(
+        pred,
+        od,
+        tm,
+        vm,
+        train_full_mask=city_data.get('train_full_mask'),
+        val_full_mask=city_data.get('val_full_mask'),
+    )
 
     print(f"  Full:    CPC={mf['CPC']:.4f}  MAE={mf['MAE']:.4f}")
     print(f"  Nonzero: CPC={mnz['CPC']:.4f}")

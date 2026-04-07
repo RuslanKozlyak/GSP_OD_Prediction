@@ -103,6 +103,26 @@ def _make_single_city_masks(od_matrix, seed=42):
     return train_mask, val_mask, test_mask
 
 
+def _make_single_city_full_masks(od_matrix, train_mask, val_mask, test_mask, seed=42):
+    """Build matching split masks over all OD pairs, including true zeros."""
+    num_nodes = od_matrix.shape[0]
+    rng = np.random.default_rng(seed + 1)
+    zo, zd = np.where(od_matrix == 0)
+    perm = rng.permutation(len(zo))
+    nt = int(len(zo) * 0.8)
+    nv = int(len(zo) * 0.9)
+
+    train_full_mask = train_mask.copy()
+    val_full_mask = val_mask.copy()
+    test_full_mask = test_mask.copy()
+    train_full_mask[zo[perm[:nt]], zd[perm[:nt]]] = True
+    val_full_mask[zo[perm[nt:nv]], zd[perm[nt:nv]]] = True
+    test_full_mask[zo[perm[nv:]], zd[perm[nv:]]] = True
+
+    assert train_full_mask.shape == (num_nodes, num_nodes)
+    return train_full_mask, val_full_mask, test_full_mask
+
+
 def prepare_single_city_flat(area_id=None, data_path=None, seed=42, feature_mode="full"):
     """Prepare flat features for a single city with proper train/val/test split.
 
@@ -120,6 +140,9 @@ def prepare_single_city_flat(area_id=None, data_path=None, seed=42, feature_mode
     raw = load_area_raw(area_id, data_path)
     od = raw["od"]
     train_mask, val_mask, test_mask = _make_single_city_masks(od, seed)
+    train_full_mask, val_full_mask, test_full_mask = _make_single_city_full_masks(
+        od, train_mask, val_mask, test_mask, seed
+    )
 
     if feature_mode == "gravity":
         feat = raw["demos"][:, :1].astype(np.float32)
@@ -154,6 +177,9 @@ def prepare_single_city_flat(area_id=None, data_path=None, seed=42, feature_mode
         'x_full': x_full, 'y_full': y_full,
         'od_matrix': od,
         'train_mask': train_mask, 'val_mask': val_mask, 'test_mask': test_mask,
+        'train_full_mask': train_full_mask,
+        'val_full_mask': val_full_mask,
+        'test_full_mask': test_full_mask,
         'n_nodes': n,
         'area_id': area_id,
     }
@@ -167,6 +193,9 @@ def prepare_single_city_graph(area_id=None, data_path=None, seed=42):
     raw = load_area_raw(area_id, data_path)
     od = raw["od"].astype(np.float32)
     train_mask, val_mask, test_mask = _make_single_city_masks(od, seed)
+    train_full_mask, val_full_mask, test_full_mask = _make_single_city_full_masks(
+        od, train_mask, val_mask, test_mask, seed
+    )
 
     return {
         'area_id': area_id,
@@ -180,6 +209,9 @@ def prepare_single_city_graph(area_id=None, data_path=None, seed=42):
         'train_mask': train_mask,
         'val_mask': val_mask,
         'test_mask': test_mask,
+        'train_full_mask': train_full_mask,
+        'val_full_mask': val_full_mask,
+        'test_full_mask': test_full_mask,
     }
 
 

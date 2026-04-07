@@ -100,7 +100,14 @@ def summarize_prediction_metrics(pred, cd, is_test_city=True):
         val_mask = cd.get('val_mask')
         if train_mask is not None and val_mask is not None:
             combined_metrics.update(
-                masked_train_val_cpc_metrics(pred, od, train_mask, val_mask)
+                masked_train_val_cpc_metrics(
+                    pred,
+                    od,
+                    train_mask,
+                    val_mask,
+                    train_full_mask=cd.get('train_full_mask'),
+                    val_full_mask=cd.get('val_full_mask'),
+                )
             )
 
     return {

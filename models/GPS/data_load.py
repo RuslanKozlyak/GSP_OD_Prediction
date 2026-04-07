@@ -180,6 +180,18 @@ def prepare_single_city_data(area_id=None, pe_type='rwpe', data_path=DATA_PATH, 
     val_mask[nzo[perm[nt:nv]], nzd_[perm[nt:nv]]] = True
     test_mask[nzo[perm[nv:]], nzd_[perm[nv:]]] = True
 
+    zo, zd = np.where(od_matrix_raw == 0)
+    zero_rng = np.random.default_rng(seed + 1)
+    zp = zero_rng.permutation(len(zo))
+    zt = int(len(zo) * 0.8)
+    zv = int(len(zo) * 0.9)
+    train_full_mask = train_mask.copy()
+    val_full_mask = val_mask.copy()
+    test_full_mask = test_mask.copy()
+    train_full_mask[zo[zp[:zt]], zd[zp[:zt]]] = True
+    val_full_mask[zo[zp[zt:zv]], zd[zp[zt:zv]]] = True
+    test_full_mask[zo[zp[zv:]], zd[zp[zv:]]] = True
+
     toi = np.where(train_mask.any(1))[0]
     node_features_scaled = MinMaxScaler().fit(node_features_raw[toi]).transform(node_features_raw)
     distances_scaled = MinMaxScaler().fit(distances[train_mask].reshape(-1, 1)).transform(
@@ -212,6 +224,9 @@ def prepare_single_city_data(area_id=None, pe_type='rwpe', data_path=DATA_PATH, 
         'num_nodes': num_nodes, 'nonzero_dest_dict': train_dest_dict,
         'huber_flow_grid': huber_flow_grid, 'huber_weight_table': huber_weight_table,
         'train_mask': train_mask, 'val_mask': val_mask, 'test_mask': test_mask,
+        'train_full_mask': train_full_mask,
+        'val_full_mask': val_full_mask,
+        'test_full_mask': test_full_mask,
         'split_scope': 'single_city',
         'val_dest_dict': val_dest_dict,
         'node_features_scaled': node_features_scaled, 'distances_scaled': distances_scaled,
