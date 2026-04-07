@@ -18,11 +18,11 @@ def train(x_train, y_train, xs_valid=None, ys_valid=None, **kwargs):
         model with .predict(x) method
     """
     model = RandomForestRegressor(
-        n_estimators=20,
+        n_estimators=kwargs.get('n_estimators', 20),
         oob_score=True,
         max_depth=None,
-        min_samples_split=2,
-        min_samples_leaf=2,
+        min_samples_split=kwargs.get('min_samples_split', 2),
+        min_samples_leaf=kwargs.get('min_samples_leaf', 2),
         n_jobs=-1,
     )
     print('  RF: fitting...')

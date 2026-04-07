@@ -18,9 +18,9 @@ def train(x_train, y_train, xs_valid=None, ys_valid=None, **kwargs):
         model with .predict(x) method
     """
     model = GradientBoostingRegressor(
-        n_estimators=20,
-        min_samples_split=2,
-        min_samples_leaf=2,
+        n_estimators=kwargs.get('n_estimators', 20),
+        min_samples_split=kwargs.get('min_samples_split', 2),
+        min_samples_leaf=kwargs.get('min_samples_leaf', 2),
         max_depth=None,
     )
     print('  GBRT: fitting...')

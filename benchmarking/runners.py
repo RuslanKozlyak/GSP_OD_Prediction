@@ -27,6 +27,7 @@ from .config import (
     baseline_single_city_run_id,
     cleanup_gpu,
     device,
+    get_baseline_hyperparams,
     set_global_seed,
 )
 
@@ -348,6 +349,7 @@ def train_flat_model(model_name, train_areas, valid_areas, test_areas, data_path
     feature_mode = "gravity" if model_name in ("GM_E", "GM_P") else "full"
     payload = _prepare_flat_payload(train_areas, valid_areas, test_areas, data_path, feature_mode)
     module = load_model_main(model_name)
+    hp = get_baseline_hyperparams(model_name)
     model = None
     try:
         if not hasattr(module, 'train'):
@@ -360,10 +362,11 @@ def train_flat_model(model_name, train_areas, valid_areas, test_areas, data_path
             xs_valid_full=payload['xs_valid_full'],
             ys_valid_full=payload['ys_valid_full'],
             device=device,
-            batch_size=10_000,
-            max_epochs=10000,
-            patience=100,
+            batch_size=hp.get('batch_size', 10_000),
+            max_epochs=hp.get('max_epochs', 10_000),
+            patience=hp.get('patience', 100),
             loss_plot_path=_loss_plot_path(run_id),
+            **{k: v for k, v in hp.items() if k not in ('batch_size', 'max_epochs', 'patience')},
         )
         validation_metrics = _compute_flat_validation_metrics(
             model,
@@ -489,15 +492,19 @@ def train_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
             single_city_data = None
             if single_city_split:
                 single_city_data = prepare_single_city_graph(train_areas[0], data_path=data_path)
-            decoder_type = "lgbm"
-            encoder_patience = 100
+            hp = get_baseline_hyperparams(model_name)
             gmel, decoder, nfeat_scaler, dis_scaler = module.train(
                 train_areas, valid_areas, str(data_path),
                 device=device,
                 nfeat_scaler=nfeat_scaler, dis_scaler=dis_scaler, od_scaler=od_scaler,
                 single_city_data=single_city_data,
-                decoder_type=decoder_type,
-                max_epochs=10000, patience=encoder_patience,
+                decoder_type=hp.get('decoder_type', 'gbrt'),
+                max_epochs=hp.get('encoder_max_epochs', 10_000),
+                patience=hp.get('encoder_patience', 100),
+                encoder_lr=hp.get('encoder_lr', 3e-4),
+                loss_plot_path=_loss_plot_path(run_id),
+                **{k: v for k, v in hp.items()
+                   if k not in ('decoder_type', 'encoder_max_epochs', 'encoder_patience', 'encoder_lr')},
             )
             validation_metrics = _compute_gmel_validation_metrics(
                 gmel, decoder, nfeat_scaler, valid_areas, data_path,
@@ -514,11 +521,16 @@ def train_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
             single_city_data = None
             if single_city_split:
                 single_city_data = prepare_single_city_graph(train_areas[0], data_path=data_path)
+            hp = get_baseline_hyperparams(model_name)
             trained = module.train(
                 train_areas, valid_areas, str(data_path),
                 device=device,
                 nfeat_scaler=nfeat_scaler, dis_scaler=dis_scaler, od_scaler=od_scaler,
                 single_city_data=single_city_data,
+                n_epochs=hp.get('n_epochs', 2),
+                lr=hp.get('lr', 3e-4),
+                gp_lambda=hp.get('gp_lambda', 10),
+                batch_size=hp.get('batch_size', 128),
             )
             _save_netgan_artifacts(run_id, trained)
             del trained

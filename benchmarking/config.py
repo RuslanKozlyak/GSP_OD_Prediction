@@ -57,6 +57,74 @@ TRANSFLOWER_ORIG_CONFIG = TrainingConfig(
 FLAT_CHUNK_SIZE = 200
 FLAT_SGD_EPOCHS = 5
 FLAT_BATCH_SIZE = 10_000
+
+# ─── Baseline model hyperparameters ──────────────────────────────────────────
+BASELINE_HYPERPARAMS = {
+    "RF": {
+        "n_estimators": 20,
+        "min_samples_split": 2,
+        "min_samples_leaf": 2,
+    },
+    "SVR": {
+        "C": 100,
+        "max_iter": 10_000,
+    },
+    "GBRT": {
+        "n_estimators": 20,
+        "min_samples_split": 2,
+        "min_samples_leaf": 2,
+    },
+    "DGM": {
+        "lr": 3e-4,
+        "batch_size": 10_000,
+        "max_epochs": 10_000,
+        "patience": 100,
+        "grad_clip": 1.0,
+    },
+    "GM_E": {
+        "lr": 1e-4,
+        "batch_size": 10_000,
+        "max_epochs": 10_000,
+        "patience": 100,
+    },
+    "GM_P": {
+        "lr": 1e-3,
+        "batch_size": 10_000,
+        "max_epochs": 10_000,
+        "patience": 100,
+    },
+    "GMEL": {
+        "encoder_lr": 3e-4,
+        "encoder_max_epochs": 10_000,
+        "encoder_patience": 100,
+        "decoder_type": "gbrt",
+        "lgbm_learning_rate": 0.05,
+        "lgbm_num_leaves": 63,
+        "lgbm_max_depth": 8,
+        "lgbm_subsample": 0.8,
+        "lgbm_colsample_bytree": 0.8,
+        "lgbm_num_boost_round": 1000,
+        "lgbm_early_stopping": 50,
+        "gbrt_n_estimators": 20,
+        "gbrt_min_samples_split": 2,
+        "gbrt_min_samples_leaf": 2,
+    },
+    "NetGAN": {
+        "lr": 3e-4,
+        "n_epochs": 2,
+        "gp_lambda": 10,
+        "batch_size": 128,
+    },
+}
+
+def get_baseline_hyperparams(model_name):
+    if model_name in ("GMEL_GBRT", "GMEL_LGBM"):
+        params = dict(BASELINE_HYPERPARAMS.get("GMEL", {}))
+        params["decoder_type"] = "lgbm" if model_name == "GMEL_LGBM" else "gbrt"
+        return params
+    return dict(BASELINE_HYPERPARAMS.get(model_name, {}))
+
+
 RESULT_COLUMNS = [
     "CPC",
     "CPC_std",

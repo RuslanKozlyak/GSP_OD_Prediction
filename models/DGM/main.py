@@ -37,7 +37,7 @@ def _make_predict_fn(net, feat_scaler, od_scaler, device, batch_size):
 
 def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_full=None,
           device=None, batch_size=50_000, max_epochs=300, patience=100,
-          loss_plot_path=None):
+          loss_plot_path=None, lr=3e-4, grad_clip=1.0):
     """Train DeepGravity on pre-built feature arrays.
 
     Args:
@@ -83,7 +83,7 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
     input_dim = x_train.shape[1]
     del ds, x_nz, y_nz, _y_log; gc.collect()
     net = DeepGravity(input_dim).to(device)
-    optimizer = torch.optim.Adam(net.parameters(), lr=3e-4)
+    optimizer = torch.optim.Adam(net.parameters(), lr=lr)
 
     def _predict_np(x_np):
         preds = []
@@ -124,7 +124,7 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
             optimizer.zero_grad()
             loss = torch.mean((net(xb).squeeze() - yb) ** 2)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
+            torch.nn.utils.clip_grad_norm_(net.parameters(), grad_clip)
             optimizer.step()
             ep_losses.append(loss.item())
 

@@ -101,35 +101,40 @@ def _print_averaged_stage_metrics(stage_name, metrics_full, metrics_nonzero):
     return mf, mnz
 
 
-def _fit_decoder(decoder_type, x_train, y_train, x_val=None, y_val=None):
+def _fit_decoder(decoder_type, x_train, y_train, x_val=None, y_val=None, **kwargs):
     if decoder_type == 'lgbm':
         import lightgbm as lgb
 
         params = {
             'objective': 'regression',
             'metric': 'mae',
-            'learning_rate': 0.05,
-            'num_leaves': 63,
-            'max_depth': 8,
-            'subsample': 0.8,
-            'colsample_bytree': 0.8,
+            'learning_rate': kwargs.get('lgbm_learning_rate', 0.05),
+            'num_leaves': kwargs.get('lgbm_num_leaves', 63),
+            'max_depth': kwargs.get('lgbm_max_depth', 8),
+            'subsample': kwargs.get('lgbm_subsample', 0.8),
+            'colsample_bytree': kwargs.get('lgbm_colsample_bytree', 0.8),
             'verbose': -1,
             'seed': 42,
         }
+        num_boost_round = kwargs.get('lgbm_num_boost_round', 1000)
+        early_stopping_rounds = kwargs.get('lgbm_early_stopping', 50)
         train_set = lgb.Dataset(x_train, y_train)
         if x_val is not None and len(x_val) > 0:
             valid_set = lgb.Dataset(x_val, y_val, reference=train_set)
             return lgb.train(
                 params,
                 train_set,
-                num_boost_round=1000,
+                num_boost_round=num_boost_round,
                 valid_sets=[valid_set],
-                callbacks=[lgb.early_stopping(50), lgb.log_evaluation(100)],
+                callbacks=[lgb.early_stopping(early_stopping_rounds), lgb.log_evaluation(100)],
             )
-        return lgb.train(params, train_set, num_boost_round=1000)
+        return lgb.train(params, train_set, num_boost_round=num_boost_round)
 
     decoder = GradientBoostingRegressor(
-        n_estimators=20, min_samples_split=2, min_samples_leaf=2, max_depth=None
+        n_estimators=kwargs.get('gbrt_n_estimators', 20),
+        min_samples_split=kwargs.get('gbrt_min_samples_split', 2),
+        min_samples_leaf=kwargs.get('gbrt_min_samples_leaf', 2),
+        max_depth=None,
     )
     decoder.fit(x_train, y_train)
     return decoder
@@ -138,7 +143,7 @@ def _fit_decoder(decoder_type, x_train, y_train, x_val=None, y_val=None):
 def train(train_areas, val_areas, data_path,
           device=None, nfeat_scaler=None, dis_scaler=None, od_scaler=None,
           max_epochs=1000, patience=10, single_city_data=None, decoder_type='gbrt',
-          loss_plot_path=None):
+          encoder_lr=3e-4, loss_plot_path=None, **decoder_kwargs):
     """Train GMEL (PyG GAT encoder + tree decoder).
 
     Args:
@@ -148,7 +153,7 @@ def train(train_areas, val_areas, data_path,
         device:      torch.device
         nfeat_scaler, dis_scaler, od_scaler: pre-fitted sklearn scalers
             (if None, fitted on train_areas data)
-        max_epochs / patience: GAT training schedule
+        max_epochs / patience / encoder_lr: GAT training schedule
         single_city_data: optional dict from prepare_single_city_graph() for
             honest train/val masking inside one city
 
@@ -202,7 +207,7 @@ def train(train_areas, val_areas, data_path,
 
     # ── Phase 1: Train GAT encoder ────────────────────────────────────────────
     gmel = GMEL().to(device)
-    optimizer = torch.optim.Adam(gmel.parameters(), lr=3e-4)
+    optimizer = torch.optim.Adam(gmel.parameters(), lr=encoder_lr)
 
     # Pre-load and cache data on GPU (avoid rebuilding graphs every epoch)
     # Full-matrix marginals for marginal loss (must NOT come from masked matrix)
@@ -387,7 +392,7 @@ def train(train_areas, val_areas, data_path,
     xval = np.concatenate(xval_emb) if xval_emb else None
     yval = np.concatenate(yval_emb) if yval_emb else None
 
-    decoder = _fit_decoder(decoder_type, xtrain, ytrain, xval, yval)
+    decoder = _fit_decoder(decoder_type, xtrain, ytrain, xval, yval, **decoder_kwargs)
     print(f'  GMEL: {decoder_type.upper()} fitted.')
 
     if single_city_data is not None:

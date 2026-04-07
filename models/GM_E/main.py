@@ -29,7 +29,7 @@ def _make_predict_fn(net, device, batch_size):
 
 def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_full=None,
           device=None, batch_size=50_000, max_epochs=10000, patience=100,
-          loss_plot_path=None):
+          loss_plot_path=None, lr=1e-4):
     """Train GRAVITY (GM_E) on pre-built feature arrays.
 
     Args:
@@ -80,7 +80,7 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
     del _vx, _vy
 
     net = GRAVITY().to(device)
-    optimizer = torch.optim.Adam(net.parameters(), lr=1e-4)
+    optimizer = torch.optim.Adam(net.parameters(), lr=lr)
 
     def _predict_np(x_np):
         preds = []

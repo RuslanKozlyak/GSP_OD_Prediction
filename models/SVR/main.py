@@ -23,7 +23,7 @@ def train(x_train, y_train, xs_valid=None, ys_valid=None, **kwargs):
     print(f'  SVR: {n_samples:,} samples, fitting LinearSVR...')
     model = Pipeline([
         ('scaler', StandardScaler()),
-        ('svr', LinearSVR(C=100, max_iter=10_000)),
+        ('svr', LinearSVR(C=kwargs.get('C', 100), max_iter=kwargs.get('max_iter', 10_000))),
     ])
     t0 = time.time()
     model.fit(x_train, y_train)

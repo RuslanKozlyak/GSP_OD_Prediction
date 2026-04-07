@@ -20,7 +20,7 @@ def _transform_masked_matrix(matrix, scaler, mask=None):
 
 def train(train_areas, valid_areas, data_path,
           device=None, nfeat_scaler=None, dis_scaler=None, od_scaler=None,
-          n_epochs=2, single_city_data=None):
+          n_epochs=2, lr=3e-4, gp_lambda=10, batch_size=128, single_city_data=None):
     """Train NetGAN (GAT + Generator + Discriminator).
 
     Args:
@@ -30,6 +30,9 @@ def train(train_areas, valid_areas, data_path,
         device: torch device
         nfeat_scaler, dis_scaler, od_scaler: pre-fitted scalers
         n_epochs: number of GAN training epochs
+        lr: generator/discriminator learning rate
+        gp_lambda: gradient penalty weight
+        batch_size: random-walk batch size
 
     Returns:
         dict with 'generator', 'nfeat_scaler', 'dis_scaler', 'od_scaler'
@@ -80,8 +83,8 @@ def train(train_areas, valid_areas, data_path,
 
     generator = Generator().to(device)
     discriminator = Discriminator().to(device)
-    opt_g = torch.optim.Adam(generator.parameters(), lr=3e-4)
-    opt_d = torch.optim.Adam(discriminator.parameters(), lr=3e-4)
+    opt_g = torch.optim.Adam(generator.parameters(), lr=lr)
+    opt_d = torch.optim.Adam(discriminator.parameters(), lr=lr)
 
     print(f'  NetGAN: training for {n_epochs} epochs...')
     t0 = time.time()
@@ -97,7 +100,7 @@ def train(train_areas, valid_areas, data_path,
             dis_t = torch.FloatTensor(dis_s).to(device)
 
             opt_g.zero_grad()
-            fake_batch = generator.sample_generated_batch(g, nf_t, dis_t, 128).to(device)
+            fake_batch = generator.sample_generated_batch(g, nf_t, dis_t, batch_size).to(device)
             loss_g = -torch.mean(discriminator(fake_batch))
             loss_g.backward()
             opt_g.step()
@@ -106,14 +109,14 @@ def train(train_areas, valid_areas, data_path,
                 opt_d.zero_grad()
                 with torch.no_grad():
                     _, adjacency, logp = generator.generate_OD_net(g, nf_t, dis_t)
-                    batch = [sample_one_random_walk(adjacency, logp) for _ in range(128)]
+                    batch = [sample_one_random_walk(adjacency, logp) for _ in range(batch_size)]
                     fake_batch = torch.stack(batch).to(device)
 
                 od_s = _transform_masked_matrix(od, od_scaler, od_mask)
                 real_batch = torch.FloatTensor(sample_batch_real(od_s)).to(device)
                 loss_d = (torch.mean(discriminator(fake_batch))
                           - torch.mean(discriminator(real_batch))
-                          + 10 * compute_gradient_penalty(discriminator, real_batch, fake_batch))
+                          + gp_lambda * compute_gradient_penalty(discriminator, real_batch, fake_batch))
                 loss_d.backward()
                 opt_d.step()
 
