@@ -39,7 +39,7 @@ TF_DROPOUT = 0.1
 # ─── Training ─────────────────────────────────────────────────────────────────
 EPOCHS = 200
 LEARNING_RATE = 3e-4
-PATIENCE = 100
+PATIENCE = 30
 ORIGIN_BATCH_SIZE = 32
 DEST_BATCH_SIZE = 256
 N_DEST_SAMPLE = 128
