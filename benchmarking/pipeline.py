@@ -1,9 +1,17 @@
 from collections import defaultdict
+import multiprocessing as mp
 from numbers import Real
 
 from models.shared.metrics import format_train_val_cpc_metrics
 
-from .config import BASELINE_MODELS, INFERENCE_SEEDS, SINGLE_CITY_IDS, WEIGHTS_DIR, cleanup_gpu
+from .config import (
+    BASELINE_MODELS,
+    BASELINE_TRAIN_TIMEOUT_SECONDS,
+    INFERENCE_SEEDS,
+    SINGLE_CITY_IDS,
+    WEIGHTS_DIR,
+    cleanup_gpu,
+)
 from .data_utils import split_multi_city_ids
 from .gps_loader import GPSBenchmarkLoader
 from .repeats import aggregate_metric_samples, single_city_lgbm_run_id, single_city_run_id
@@ -37,6 +45,79 @@ def _train_baseline_model(model_name, train_areas, valid_areas, test_areas, data
             gps_loader=gps_loader, city_ids=city_ids,
         )
     raise ValueError(f"Unknown model: {model_name}")
+
+
+def _train_baseline_model_worker(result_queue, model_name, train_areas, valid_areas,
+                                 test_areas, data_path, city_ids):
+    try:
+        run_id = _train_baseline_model(
+            model_name,
+            train_areas,
+            valid_areas,
+            test_areas,
+            data_path,
+            gps_loader=None,
+            city_ids=city_ids,
+        )
+        result_queue.put(('ok', run_id))
+    except BaseException as exc:
+        result_queue.put(('error', repr(exc)))
+    finally:
+        cleanup_gpu()
+
+
+def _train_baseline_model_with_timeout(model_name, train_areas, valid_areas, test_areas,
+                                       data_path, gps_loader=None, city_ids=None,
+                                       timeout_seconds=BASELINE_TRAIN_TIMEOUT_SECONDS):
+    if timeout_seconds is None or timeout_seconds <= 0:
+        return _train_baseline_model(
+            model_name,
+            train_areas,
+            valid_areas,
+            test_areas,
+            data_path,
+            gps_loader=gps_loader,
+            city_ids=city_ids,
+        )
+
+    ctx = mp.get_context('spawn')
+    result_queue = ctx.Queue()
+    proc = ctx.Process(
+        target=_train_baseline_model_worker,
+        args=(
+            result_queue,
+            model_name,
+            list(train_areas),
+            list(valid_areas),
+            list(test_areas),
+            data_path,
+            list(city_ids) if city_ids is not None else None,
+        ),
+    )
+    proc.start()
+    proc.join(timeout_seconds)
+
+    if proc.is_alive():
+        print(
+            f"  TIMEOUT {model_name}: training exceeded "
+            f"{timeout_seconds / 3600:.2f}h; stopping process"
+        )
+        proc.terminate()
+        proc.join(30)
+        if proc.is_alive():
+            proc.kill()
+            proc.join()
+        return None
+
+    if result_queue.empty():
+        if proc.exitcode == 0:
+            return None
+        raise RuntimeError(f"{model_name} training process exited with code {proc.exitcode}")
+
+    status, payload = result_queue.get()
+    if status == 'error':
+        raise RuntimeError(payload)
+    return payload
 
 
 def _infer_baseline_model(model_name, train_areas, valid_areas, test_areas, data_path,
@@ -83,7 +164,7 @@ def train_single_city_benchmark_models(
                 continue
             run_ids = []
             for city_id in single_city_ids:
-                run_id = _train_baseline_model(
+                run_id = _train_baseline_model_with_timeout(
                     model_name,
                     [city_id],
                     [city_id],
@@ -119,7 +200,7 @@ def train_multi_city_benchmark_models(
             if model_name in ("DiffODGen", "WeDAN"):
                 print(f"  SKIP {model_name}: training/inference is still coupled for subprocess models")
                 continue
-            run_id = _train_baseline_model(
+            run_id = _train_baseline_model_with_timeout(
                 model_name,
                 mc_train,
                 mc_valid,

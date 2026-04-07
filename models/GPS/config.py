@@ -19,6 +19,8 @@ RESULTS_DIR = PROJECT_ROOT / "results"
 WEIGHTS_DIR = RESULTS_DIR / "weights"
 WEIGHTS_CPC_BEST_DIR = RESULTS_DIR / "weights_CPC_best"
 METRICS_CSV = RESULTS_DIR / "metrics.csv"
+METRICS_VAL_LOSS_CSV = RESULTS_DIR / "metrics_val_loss.csv"
+METRICS_CPC_NZ_BEST_CSV = RESULTS_DIR / "metrics_cpc_nz_best.csv"
 METRICS_RUNS_DIR = RESULTS_DIR / "metrics_runs"
 
 SINGLE_CITY_ID = "48201"
@@ -145,11 +147,20 @@ def ensure_dirs():
 
 
 def save_metrics_to_csv(run_id, run_name, config, metrics_full, metrics_nz,
-                        metrics_test, n_params, epochs_trained, status='ok'):
+                        metrics_test, n_params, epochs_trained, status='ok',
+                        metrics_csv=None, run_suffix=None,
+                        checkpoint_selection=None, selected_epoch=None,
+                        selection_metric=None, selection_metric_value=None):
     ensure_dirs()
+    metrics_csv = Path(metrics_csv) if metrics_csv is not None else METRICS_CSV
+    metrics_csv.parent.mkdir(exist_ok=True)
     row = {
         'timestamp': datetime.now().isoformat(),
         'run_id': run_id, 'name': run_name, 'status': status,
+        'checkpoint_selection': checkpoint_selection,
+        'selected_epoch': selected_epoch,
+        'selection_metric': selection_metric,
+        'selection_metric_value': selection_metric_value,
         'encoder_type': config.encoder_type,
         'decoder': config.decoder_type, 'loss_type': config.loss_type,
         'prediction_mode': config.prediction_mode,
@@ -174,13 +185,14 @@ def save_metrics_to_csv(run_id, run_name, config, metrics_full, metrics_nz,
         'JSD_outflow': metrics_full.get('JSD_outflow'),
         'JSD_ODflow': metrics_full.get('JSD_ODflow'),
     }
-    file_exists = METRICS_CSV.exists()
-    with open(METRICS_CSV, 'a', newline='') as f:
+    file_exists = metrics_csv.exists()
+    with open(metrics_csv, 'a', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=row.keys())
         if not file_exists: writer.writeheader()
         writer.writerow(row)
-    print(f"  -> Metrics saved to {METRICS_CSV}")
-    metrics_path = METRICS_RUNS_DIR / f"{run_id}.json"
+    print(f"  -> Metrics saved to {metrics_csv}")
+    suffix = f"__{run_suffix}" if run_suffix else ""
+    metrics_path = METRICS_RUNS_DIR / f"{run_id}{suffix}.json"
     with open(metrics_path, 'w') as f:
         json.dump(row, f, indent=2)
     print(f"  -> Metrics saved to {metrics_path}")

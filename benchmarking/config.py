@@ -14,6 +14,9 @@ RESULTS_DIR = PROJECT_ROOT / "results"
 SEED = 42
 INFERENCE_SEEDS = [42, 43, 44, 45, 46]
 
+# Per baseline training run. Set to None or <= 0 to disable.
+BASELINE_TRAIN_TIMEOUT_SECONDS = int(1.5 * 60 * 60)
+
 GPS_BENCHMARK_IDS = [
     "SC_TF_CE",
 ]

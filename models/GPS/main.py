@@ -6,6 +6,7 @@ from dataclasses import replace
 from .config import (
     TrainingConfig, WEIGHTS_DIR, WEIGHTS_CPC_BEST_DIR, device,
     ORIGIN_BATCH_SIZE, DEST_BATCH_SIZE, NAN_BATCH_THRESHOLD,
+    METRICS_VAL_LOSS_CSV, METRICS_CPC_NZ_BEST_CSV,
     save_metrics_to_csv, save_model_weights,
 )
 from .model import make_model
@@ -67,6 +68,10 @@ def _train_loop(run_id, run_name, config, model, city_datas,
     best_val_loss = float('inf')
     patience_count = 0
     best_state = None
+    best_val_epoch = 0
+    best_cpc_nz_val = -float('inf')
+    best_cpc_nz_state = None
+    best_cpc_nz_epoch = 0
 
     # Split cities into train / val
     if is_multi:
@@ -177,11 +182,18 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             best_state = {k: v.clone() for k, v in model.state_dict().items()}
+            best_val_epoch = epoch
             patience_count = 0
             flag = ' *'
         else:
             patience_count += 1
             flag = ''
+
+        cpc_nz_val = train_val_cpc['CPC_nz_val']
+        if not np.isnan(cpc_nz_val) and cpc_nz_val > best_cpc_nz_val:
+            best_cpc_nz_val = cpc_nz_val
+            best_cpc_nz_state = {k: v.clone() for k, v in model.state_dict().items()}
+            best_cpc_nz_epoch = epoch
 
         if epoch % 5 == 0 or epoch == 1:
             nan_str = f" NaN:{nan_count}" if nan_count > 0 else ""
@@ -204,7 +216,17 @@ def _train_loop(run_id, run_name, config, model, city_datas,
 
     if status == 'nan_diverged':
         dummy = {'CPC': 0.0, 'MAE': float('inf'), 'RMSE': float('inf')}
-        save_metrics_to_csv(run_id, run_name, config, dummy, dummy, dummy, n_params, epoch, status)
+        for metrics_csv, run_suffix, selection in (
+            (METRICS_VAL_LOSS_CSV, 'val_loss', 'val_loss_best'),
+            (METRICS_CPC_NZ_BEST_CSV, 'cpc_nz', 'cpc_nz_best'),
+        ):
+            save_metrics_to_csv(
+                run_id, run_name, config, dummy, dummy, dummy,
+                n_params, epoch, status,
+                metrics_csv=metrics_csv,
+                run_suffix=run_suffix,
+                checkpoint_selection=selection,
+            )
         return {
             'name': run_name, 'model': model, 'config': config, 'history': history,
             'metrics_full': dummy, 'metrics_nonzero': dummy, 'metrics_test_pairs': dummy,
@@ -212,7 +234,7 @@ def _train_loop(run_id, run_name, config, model, city_datas,
             'loss_plot_path': str(saved_plot_path) if saved_plot_path is not None else None,
         }
 
-    # Evaluate on last and best weights
+    # Evaluate selected checkpoints
     if is_multi:
         full_eval_cities = city_datas
         test_eval_cities = (
@@ -263,38 +285,55 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         print(f"  Avg: CPC_full={avg_mf['CPC']:.4f}  CPC_nz={avg_mnz['CPC']:.4f}  CPC_test={avg_mt['CPC']:.4f}  MAE={avg_mf['MAE']:.4f}")
         return avg_mf, avg_mnz, avg_mt, per_city
 
-    mf_last, mnz_last, mt_last, pc_last = eval_all(f"Last weights (epoch {epoch})")
     last_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
 
-    if best_state:
-        model.load_state_dict(best_state)
-    mf_best, mnz_best, mt_best, pc_best = eval_all("Best weights (best val_loss)")
-
-    if mnz_last['CPC'] > mnz_best['CPC']:
-        print(f"\n  ! Last weights better by CPC_nz ({mnz_last['CPC']:.4f} > {mnz_best['CPC']:.4f})")
-        mf, mnz, mt, pc = mf_last, mnz_last, mt_last, pc_last
-    else:
-        mf, mnz, mt, pc = mf_best, mnz_best, mt_best, pc_best
-
     val_loss_best_state = best_state if best_state is not None else last_state
-    if mf_last['CPC'] > mf_best['CPC']:
-        cpc_best_state = last_state
-        cpc_best_label = f"last weights (epoch {epoch})"
-        print(f"\n  ! Last weights better by CPC_full ({mf_last['CPC']:.4f} > {mf_best['CPC']:.4f})")
-    else:
-        cpc_best_state = val_loss_best_state
-        cpc_best_label = "best val_loss weights"
+    cpc_nz_best_state = best_cpc_nz_state if best_cpc_nz_state is not None else val_loss_best_state
+
+    model.load_state_dict(val_loss_best_state)
+    mf_val, mnz_val, mt_val, pc_val = eval_all(
+        f"Best weights (val_loss @ epoch {best_val_epoch or epoch})"
+    )
+
+    model.load_state_dict(cpc_nz_best_state)
+    mf_cpc, mnz_cpc, mt_cpc, pc_cpc = eval_all(
+        f"Best weights (CPC_nz_val @ epoch {best_cpc_nz_epoch or best_val_epoch or epoch})"
+    )
 
     # Save
-    save_metrics_to_csv(run_id, run_name, config, mf, mnz, mt, n_params, epoch, status)
+    save_metrics_to_csv(
+        run_id, run_name, config, mf_val, mnz_val, mt_val,
+        n_params, epoch, status,
+        metrics_csv=METRICS_VAL_LOSS_CSV,
+        run_suffix='val_loss',
+        checkpoint_selection='val_loss_best',
+        selected_epoch=best_val_epoch or epoch,
+        selection_metric='val_loss',
+        selection_metric_value=best_val_loss,
+    )
+    save_metrics_to_csv(
+        run_id, run_name, config, mf_cpc, mnz_cpc, mt_cpc,
+        n_params, epoch, status,
+        metrics_csv=METRICS_CPC_NZ_BEST_CSV,
+        run_suffix='cpc_nz',
+        checkpoint_selection='cpc_nz_best',
+        selected_epoch=best_cpc_nz_epoch or best_val_epoch or epoch,
+        selection_metric='CPC_nz_val',
+        selection_metric_value=best_cpc_nz_val,
+    )
     save_model_weights(run_id, val_loss_best_state, config)
-    print(f"  -> CPC_full-best checkpoint source: {cpc_best_label}")
-    save_model_weights(run_id, cpc_best_state, config, weights_dir=WEIGHTS_CPC_BEST_DIR)
+    print(
+        "  -> CPC_nz-best checkpoint source: "
+        f"epoch {best_cpc_nz_epoch or best_val_epoch or epoch}"
+    )
+    save_model_weights(run_id, cpc_nz_best_state, config, weights_dir=WEIGHTS_CPC_BEST_DIR)
 
     return {
         'name': run_name, 'model': model, 'config': config, 'history': history,
-        'metrics_full': mf, 'metrics_nonzero': mnz, 'metrics_test_pairs': mt,
-        'per_city': pc, 'status': status,
+        'metrics_full': mf_cpc, 'metrics_nonzero': mnz_cpc, 'metrics_test_pairs': mt_cpc,
+        'metrics_full_val_loss': mf_val, 'metrics_nonzero_val_loss': mnz_val,
+        'metrics_test_pairs_val_loss': mt_val,
+        'per_city': pc_cpc, 'per_city_val_loss': pc_val, 'status': status,
         'loss_plot_path': str(saved_plot_path) if saved_plot_path is not None else None,
     }
 
