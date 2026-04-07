@@ -2,7 +2,9 @@ import time
 
 import numpy as np
 import joblib
-from sklearn.svm import SVR
+from sklearn.svm import LinearSVR
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
 
 from models.shared.metrics import cal_od_metrics, average_listed_metrics
 
@@ -17,8 +19,12 @@ def train(x_train, y_train, xs_valid=None, ys_valid=None, **kwargs):
     Returns:
         model with .predict(x) method
     """
-    model = SVR(gamma=0.01, C=100)
-    print('  SVR: fitting...')
+    n_samples = x_train.shape[0]
+    print(f'  SVR: {n_samples:,} samples, fitting LinearSVR...')
+    model = Pipeline([
+        ('scaler', StandardScaler()),
+        ('svr', LinearSVR(C=100, max_iter=10_000)),
+    ])
     t0 = time.time()
     model.fit(x_train, y_train)
     print(f'  SVR: fitted in {time.time() - t0:.1f}s')
