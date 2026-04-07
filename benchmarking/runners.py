@@ -39,6 +39,38 @@ def _predict_flat_array(model, x):
     return pred
 
 
+def _cpc_full(pred, target):
+    return compute_metrics(np.asarray(pred).reshape(-1), np.asarray(target).reshape(-1))['CPC']
+
+
+def _cpc_nonzero(pred_matrix, target_matrix, mask=None):
+    mask = target_matrix > 0 if mask is None else mask
+    if mask is None or not np.any(mask):
+        return float('nan')
+    return compute_metrics(pred_matrix[mask], target_matrix[mask].astype(float))['CPC']
+
+
+def _single_city_train_val_cpc_metrics(pred_matrix, od_matrix, train_mask, val_mask):
+    return {
+        'CPC_full_train': _cpc_full(pred_matrix, od_matrix * train_mask),
+        'CPC_full_val': _cpc_full(pred_matrix, od_matrix * val_mask),
+        'CPC_nz_train': _cpc_nonzero(pred_matrix, od_matrix, train_mask),
+        'CPC_nz_val': _cpc_nonzero(pred_matrix, od_matrix, val_mask),
+    }
+
+
+def _average_matrix_cpc_metrics(pred_matrices, od_matrices, prefix):
+    cpc_fulls = []
+    cpc_nzs = []
+    for pred_matrix, od_matrix in zip(pred_matrices, od_matrices):
+        cpc_fulls.append(_cpc_full(pred_matrix, od_matrix))
+        cpc_nzs.append(_cpc_nonzero(pred_matrix, od_matrix))
+    return {
+        f'CPC_full_{prefix}': float(np.mean(cpc_fulls)) if cpc_fulls else float('nan'),
+        f'CPC_nz_{prefix}': float(np.mean(cpc_nzs)) if cpc_nzs else float('nan'),
+    }
+
+
 def _compute_flat_validation_metrics(model, xs_valid, ys_valid, xs_valid_full, ys_valid_full):
     cpc_vals = []
     for x_one, y_one in zip(xs_valid, ys_valid):
@@ -52,6 +84,43 @@ def _compute_flat_validation_metrics(model, xs_valid, ys_valid, xs_valid_full, y
         'CPC_val': float(np.mean(cpc_vals)) if cpc_vals else float('nan'),
         'CPC_full': float(np.mean(cpc_fulls)) if cpc_fulls else float('nan'),
     }
+
+
+def _compute_flat_train_val_metrics(model, payload):
+    if payload['single_city_split']:
+        pred_flat = _predict_flat_array(model, payload['x_full'])
+        pred_matrix = pred_flat.reshape(payload['n_nodes'], payload['n_nodes'])
+        return _single_city_train_val_cpc_metrics(
+            pred_matrix,
+            payload['od_matrix'],
+            payload['train_mask'],
+            payload['val_mask'],
+        )
+
+    metrics = {}
+    for prefix, xs_key, ys_key in (
+        ('train', 'xs_train_eval', 'ys_train_eval'),
+        ('val', 'xs_valid_full', 'ys_valid_full'),
+    ):
+        pred_matrices = []
+        od_matrices = []
+        for x_one, y_one in zip(payload[xs_key], payload[ys_key]):
+            n = int(np.sqrt(y_one.shape[0]))
+            pred_matrices.append(_predict_flat_array(model, x_one).reshape(n, n))
+            od_matrices.append(y_one.reshape(n, n))
+        metrics.update(_average_matrix_cpc_metrics(pred_matrices, od_matrices, prefix))
+    return metrics
+
+
+def _print_train_val_metrics(metrics):
+    if 'CPC_full_train' not in metrics:
+        return
+    print(
+        f"  Train/Val: CPC_full_train={metrics['CPC_full_train']:.4f}  "
+        f"CPC_full_val={metrics['CPC_full_val']:.4f}  "
+        f"CPC_nz_train={metrics['CPC_nz_train']:.4f}  "
+        f"CPC_nz_val={metrics['CPC_nz_val']:.4f}"
+    )
 
 
 def _attach_validation_metrics(metrics_all, validation_metrics):
@@ -97,6 +166,77 @@ def _compute_gmel_validation_metrics(gmel, decoder, nfeat_scaler, valid_areas, d
         cpcs.append(compute_metrics(pred.ravel(), od.ravel())['CPC'])
     avg_cpc = float(np.mean(cpcs)) if cpcs else float('nan')
     return {'CPC_val': avg_cpc, 'CPC_full': avg_cpc}
+
+
+def _compute_gmel_train_val_metrics(gmel, decoder, nfeat_scaler, train_areas, valid_areas,
+                                    data_path, single_city_data=None, device=device):
+    if single_city_data is not None:
+        pred = _predict_gmel_matrix(
+            gmel, decoder, nfeat_scaler,
+            single_city_data['nfeat'], single_city_data['adj'], single_city_data['dis'],
+            device,
+        )
+        return _single_city_train_val_cpc_metrics(
+            pred,
+            single_city_data['od'],
+            single_city_data['train_mask'],
+            single_city_data['val_mask'],
+        )
+
+    metrics = {}
+    for prefix, areas in (('train', train_areas), ('val', valid_areas)):
+        nf_list, adj_list, dis_list, od_list = load_graph_data(areas, data_path)
+        pred_matrices = [
+            _predict_gmel_matrix(gmel, decoder, nfeat_scaler, nf, adj, dis, device)
+            for nf, adj, dis in zip(nf_list, adj_list, dis_list)
+        ]
+        metrics.update(_average_matrix_cpc_metrics(pred_matrices, od_list, prefix))
+    return metrics
+
+
+def _predict_netgan_matrix(trained, nf, adj, dis, device):
+    gen = trained['generator']
+    gen.eval()
+    nf_s = trained['nfeat_scaler'].transform(nf)
+    dis_s = trained['dis_scaler'].transform(dis.reshape(-1, 1)).reshape(dis.shape)
+    nf_t = torch.FloatTensor(nf_s).to(device)
+    dis_t = torch.FloatTensor(dis_s).to(device)
+    graph = build_dgl_graph(adj, device)
+    with torch.no_grad():
+        od_gen, _, _ = gen.generate_OD_net(graph, nf_t, dis_t)
+    od_hat = trained['od_scaler'].inverse_transform(
+        od_gen.cpu().numpy().reshape(-1, 1)
+    ).reshape(dis.shape)
+    od_hat[od_hat < 0] = 0
+    return od_hat
+
+
+def _compute_netgan_train_val_metrics(trained, train_areas, valid_areas, data_path,
+                                      single_city_data=None, device=device):
+    if single_city_data is not None:
+        pred = _predict_netgan_matrix(
+            trained,
+            single_city_data['nfeat'],
+            single_city_data['adj'],
+            single_city_data['dis'],
+            device,
+        )
+        return _single_city_train_val_cpc_metrics(
+            pred,
+            single_city_data['od'],
+            single_city_data['train_mask'],
+            single_city_data['val_mask'],
+        )
+
+    metrics = {}
+    for prefix, areas in (('train', train_areas), ('val', valid_areas)):
+        nf_list, adj_list, dis_list, od_list = load_graph_data(areas, data_path)
+        pred_matrices = [
+            _predict_netgan_matrix(trained, nf, adj, dis, device)
+            for nf, adj, dis in zip(nf_list, adj_list, dis_list)
+        ]
+        metrics.update(_average_matrix_cpc_metrics(pred_matrices, od_list, prefix))
+    return metrics
 
 
 def load_model_main(model_name):
@@ -192,7 +332,11 @@ def _prepare_flat_payload(train_areas, valid_areas, test_areas, data_path, featu
             'ys_valid_full': split_data['ys_val_full'],
             'xs_test': split_data['xs_test'],
             'ys_test': split_data['ys_test'],
+            'x_full': split_data['x_full'],
+            'y_full': split_data['y_full'],
             'od_matrix': split_data['od_matrix'].astype(float),
+            'train_mask': split_data['train_mask'],
+            'val_mask': split_data['val_mask'],
             'test_mask': split_data['test_mask'],
             'n_nodes': split_data['n_nodes'],
             'area_id': split_data['area_id'],
@@ -201,9 +345,10 @@ def _prepare_flat_payload(train_areas, valid_areas, test_areas, data_path, featu
         return payload
 
     xs_tr, ys_tr = construct_flat_features(train_areas, data_path, feature_mode)
+    payload['xs_train_eval'] = xs_tr
+    payload['ys_train_eval'] = ys_tr
     payload['x_train'] = np.concatenate(xs_tr, axis=0)
     payload['y_train'] = np.concatenate(ys_tr, axis=0)
-    del xs_tr, ys_tr
 
     xs_valid, ys_valid = construct_flat_features(valid_areas, data_path, feature_mode)
     xs_test, ys_test = construct_flat_features(test_areas, data_path, feature_mode)
@@ -375,8 +520,10 @@ def train_flat_model(model_name, train_areas, valid_areas, test_areas, data_path
             payload['xs_valid_full'],
             payload['ys_valid_full'],
         )
+        validation_metrics.update(_compute_flat_train_val_metrics(model, payload))
         print(f"  Val: CPC_val={validation_metrics['CPC_val']:.4f}  "
               f"CPC_full={validation_metrics['CPC_full']:.4f}")
+        _print_train_val_metrics(validation_metrics)
         _save_flat_model_artifact(module, model_name, run_id, model)
         return run_id
     finally:
@@ -408,8 +555,10 @@ def infer_flat_model(model_name, train_areas, valid_areas, test_areas, data_path
             payload['xs_valid_full'],
             payload['ys_valid_full'],
         )
+        validation_metrics.update(_compute_flat_train_val_metrics(model, payload))
         print(f"  Val: CPC_val={validation_metrics['CPC_val']:.4f}  "
               f"CPC_full={validation_metrics['CPC_full']:.4f}")
+        _print_train_val_metrics(validation_metrics)
 
         def evaluate_once(inference_seed=None):
             if payload['single_city_split'] and payload['od_matrix'] is not None:
@@ -510,8 +659,13 @@ def train_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
                 gmel, decoder, nfeat_scaler, valid_areas, data_path,
                 single_city_data=single_city_data, device=device,
             )
+            validation_metrics.update(_compute_gmel_train_val_metrics(
+                gmel, decoder, nfeat_scaler, train_areas, valid_areas, data_path,
+                single_city_data=single_city_data, device=device,
+            ))
             print(f"  Val: CPC_val={validation_metrics['CPC_val']:.4f}  "
                   f"CPC_full={validation_metrics['CPC_full']:.4f}")
+            _print_train_val_metrics(validation_metrics)
             _save_gmel_artifacts(run_id, model_name, gmel, decoder, nfeat_scaler, dis_scaler)
             del gmel, decoder
             return run_id
@@ -533,6 +687,11 @@ def train_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
                 batch_size=hp.get('batch_size', 128),
                 verbose=hp.get('verbose', 1),
             )
+            train_val_metrics = _compute_netgan_train_val_metrics(
+                trained, train_areas, valid_areas, data_path,
+                single_city_data=single_city_data, device=device,
+            )
+            _print_train_val_metrics(train_val_metrics)
             _save_netgan_artifacts(run_id, trained)
             del trained
             return run_id
@@ -564,8 +723,13 @@ def infer_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
                 gmel, decoder, nfeat_scaler, valid_areas, data_path,
                 single_city_data=single_city_data, device=device,
             )
+            validation_metrics.update(_compute_gmel_train_val_metrics(
+                gmel, decoder, nfeat_scaler, train_areas, valid_areas, data_path,
+                single_city_data=single_city_data, device=device,
+            ))
             print(f"  Val: CPC_val={validation_metrics['CPC_val']:.4f}  "
                   f"CPC_full={validation_metrics['CPC_full']:.4f}")
+            _print_train_val_metrics(validation_metrics)
 
             def evaluate_once(inference_seed=None):
                 if single_city_split and single_city_data is not None:
@@ -626,8 +790,13 @@ def infer_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
                     'CPC_val': val_avg.get('CPC', float('nan')),
                     'CPC_full': val_avg.get('CPC', float('nan')),
                 }
-                print(f"  Val: CPC_val={validation_metrics['CPC_val']:.4f}  "
-                      f"CPC_full={validation_metrics['CPC_full']:.4f}")
+            validation_metrics.update(_compute_netgan_train_val_metrics(
+                trained, train_areas, valid_areas, data_path,
+                single_city_data=single_city_data, device=device,
+            ))
+            print(f"  Val: CPC_val={validation_metrics['CPC_val']:.4f}  "
+                  f"CPC_full={validation_metrics['CPC_full']:.4f}")
+            _print_train_val_metrics(validation_metrics)
 
             def evaluate_once(inference_seed=None):
                 if single_city_split and single_city_data is not None:
