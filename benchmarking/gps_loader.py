@@ -6,6 +6,7 @@ from models.GPS.data_load import prepare_multi_city_data, prepare_single_city_da
 from models.GPS.lgbm_pipeline import load_lgbm_results as load_saved_lgbm_results
 from models.GPS.metrics import predict_full_matrix, summarize_prediction_metrics
 from models.GPS.model import make_model
+from models.shared.metrics import format_train_val_cpc_metrics
 
 from .artifacts import save_od_artifacts
 from .config import DATA_PATH, MULTI_CITY_IDS, SINGLE_CITY_ID, cleanup_gpu
@@ -87,6 +88,8 @@ class GPSBenchmarkLoader:
             )['combined']
             if verbose:
                 print(f"  {run_id}: CPC={metrics['CPC']:.4f}  MAE={metrics['MAE']:.4f}")
+                if 'CPC_full_train' in metrics:
+                    print(f"  Train/Val: {format_train_val_cpc_metrics(metrics)}")
             return metrics
         except Exception as exc:
             print(f"  ERROR loading {run_id}: {exc}")
@@ -116,6 +119,7 @@ class GPSBenchmarkLoader:
         payload = load_saved_lgbm_results(run_id, city_data, return_payload=True)
         if payload is None:
             return None
+        metrics = dict(payload['metrics'])
         save_od_artifacts(
             run_id,
             payload['pred_matrix'],
@@ -123,7 +127,7 @@ class GPSBenchmarkLoader:
             city_id=city_data.get("city_id", area_id),
             inference_seed=inference_seed,
         )
-        return payload['metrics']
+        return metrics
 
     def load_gmel_gps_results(self, run_id, city_data=None, area_id=None, inference_seed=None):
         """Load a pre-trained GMEL_GPS model + GBRT and evaluate on one city."""
@@ -184,6 +188,8 @@ class GPSBenchmarkLoader:
             )
             metrics = summarize_prediction_metrics(pred, city_data)['combined']
             print(f"  {run_id}: CPC={metrics['CPC']:.4f}  MAE={metrics['MAE']:.4f}")
+            if 'CPC_full_train' in metrics:
+                print(f"  Train/Val: {format_train_val_cpc_metrics(metrics)}")
             return metrics
         except Exception as exc:
             print(f"  ERROR loading {run_id}: {exc}")
@@ -206,9 +212,13 @@ class GPSBenchmarkLoader:
             pe_type=saved_cfg.pe_type, city_ids=city_ids,
         )
         test_city_ids = list(test_city_ids)
+        train_city_id_set = set(train_city_ids)
+        val_city_id_set = set(val_city_ids)
         test_city_id_set = set(test_city_ids)
         eval_city_ids = list(city_data_dict.keys()) if evaluate_all_cities else list(test_city_ids)
         metrics = []
+        train_metrics = []
+        val_metrics = []
         test_metrics = []
         for city_id in eval_city_ids:
             city_metric = self.load_gps_results(
@@ -223,10 +233,21 @@ class GPSBenchmarkLoader:
             if city_metric:
                 city_metric = dict(city_metric)
                 city_metric["city_id"] = city_id
+                city_metric["is_train_city"] = city_id in train_city_id_set
+                city_metric["is_val_city"] = city_id in val_city_id_set
                 city_metric["is_test_city"] = city_id in test_city_id_set
                 metrics.append(city_metric)
+                if city_id in train_city_id_set:
+                    train_metrics.append(city_metric)
+                if city_id in val_city_id_set:
+                    val_metrics.append(city_metric)
                 if city_id in test_city_id_set:
                     test_metrics.append(city_metric)
         if return_split_groups:
-            return {"all": metrics, "test": test_metrics}
+            return {
+                "all": metrics,
+                "train": train_metrics,
+                "val": val_metrics,
+                "test": test_metrics,
+            }
         return metrics

@@ -243,6 +243,64 @@ def compute_metrics(p, t):
     }
 
 
+def cpc_full(pred, target):
+    """CPC on flattened full matrices."""
+    return compute_metrics(
+        np.asarray(pred).reshape(-1),
+        np.asarray(target).reshape(-1),
+    )['CPC']
+
+
+def cpc_nonzero(pred_matrix, target_matrix, mask=None):
+    """CPC on nonzero target entries or an explicit boolean mask."""
+    pred_matrix = np.asarray(pred_matrix)
+    target_matrix = np.asarray(target_matrix)
+    mask = target_matrix > 0 if mask is None else np.asarray(mask, dtype=bool)
+    if not np.any(mask):
+        return 0.0
+    return compute_metrics(pred_matrix[mask], target_matrix[mask].astype(float))['CPC']
+
+
+def masked_train_val_cpc_metrics(pred_matrix, od_matrix, train_mask, val_mask):
+    """Common train/val CPC metrics for single-city pair masks.
+
+    CPC_full_* uses the full predicted matrix against the split target matrix;
+    CPC_nz_* is restricted to the split mask entries.
+    """
+    pred_matrix = np.asarray(pred_matrix)
+    od_matrix = np.asarray(od_matrix)
+    train_mask = np.asarray(train_mask, dtype=bool)
+    val_mask = np.asarray(val_mask, dtype=bool)
+    return {
+        'CPC_full_train': cpc_full(pred_matrix, od_matrix * train_mask),
+        'CPC_full_val': cpc_full(pred_matrix, od_matrix * val_mask),
+        'CPC_nz_train': cpc_nonzero(pred_matrix, od_matrix, train_mask),
+        'CPC_nz_val': cpc_nonzero(pred_matrix, od_matrix, val_mask),
+    }
+
+
+def average_matrix_cpc_metrics(pred_matrices, od_matrices, prefix):
+    """Average full/nonzero CPC over a list of city matrices."""
+    cpc_fulls = []
+    cpc_nzs = []
+    for pred_matrix, od_matrix in zip(pred_matrices, od_matrices):
+        cpc_fulls.append(cpc_full(pred_matrix, od_matrix))
+        cpc_nzs.append(cpc_nonzero(pred_matrix, od_matrix))
+    return {
+        f'CPC_full_{prefix}': float(np.mean(cpc_fulls)) if cpc_fulls else float('nan'),
+        f'CPC_nz_{prefix}': float(np.mean(cpc_nzs)) if cpc_nzs else float('nan'),
+    }
+
+
+def format_train_val_cpc_metrics(metrics):
+    return (
+        f"CPC_full_train={metrics['CPC_full_train']:.4f}  "
+        f"CPC_full_val={metrics['CPC_full_val']:.4f}  "
+        f"CPC_nz_train={metrics['CPC_nz_train']:.4f}  "
+        f"CPC_nz_val={metrics['CPC_nz_val']:.4f}"
+    )
+
+
 def average_listed_metrics(listed_metrics):
     sums = defaultdict(float)
     for d in listed_metrics:

@@ -12,6 +12,11 @@ from .model import make_model
 from .loss import compute_loss_for_city
 from .metrics import evaluate_full_matrix, summarize_prediction_metrics
 from .data_load import prepare_single_city_data, prepare_multi_city_data
+from models.shared.metrics import (
+    average_matrix_cpc_metrics,
+    format_train_val_cpc_metrics,
+    masked_train_val_cpc_metrics,
+)
 from models.shared.plotting import save_loss_plot
 
 
@@ -82,22 +87,28 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         val_cd['nonzero_dest_dict'] = cd['val_dest_dict']
         val_cds = {cid: val_cd}
 
-    def _average_cpc_for_cities(eval_cds):
-        cpc_fulls = []
-        cpc_nzs = []
-        for ecd in eval_cds.values():
-            eval_cd = dict(ecd)
-            eval_cd['od_matrix_np'] = ecd['od_matrix_train']
-            eval_cd['outflow_full'] = ecd['outflow_train']
-            _, mf, mnz = evaluate_full_matrix(
-                model, eval_cd, config, dest_batch_size=DEST_BATCH_SIZE
+    def _train_val_cpc_metrics():
+        if not is_multi:
+            full_cd = list(city_datas.values())[0]
+            pred, _, _ = evaluate_full_matrix(
+                model, full_cd, config, dest_batch_size=DEST_BATCH_SIZE
             )
-            cpc_fulls.append(mf['CPC'])
-            cpc_nzs.append(mnz['CPC'])
-        return (
-            float(np.mean(cpc_fulls)) if cpc_fulls else float('nan'),
-            float(np.mean(cpc_nzs)) if cpc_nzs else float('nan'),
-        )
+            return masked_train_val_cpc_metrics(
+                pred, full_cd['od_matrix_np'], full_cd['train_mask'], full_cd['val_mask']
+            )
+
+        metrics = {}
+        for prefix, eval_cds in (('train', train_cds), ('val', val_cds)):
+            pred_matrices = []
+            od_matrices = []
+            for ecd in eval_cds.values():
+                pred, _, _ = evaluate_full_matrix(
+                    model, ecd, config, dest_batch_size=DEST_BATCH_SIZE
+                )
+                pred_matrices.append(pred)
+                od_matrices.append(ecd['od_matrix_np'])
+            metrics.update(average_matrix_cpc_metrics(pred_matrices, od_matrices, prefix))
+        return metrics
 
     epoch = 0
     status = 'ok'
@@ -145,16 +156,15 @@ def _train_loop(run_id, run_name, config, model, city_datas,
                 vl = compute_loss_for_city(model, vcd, config)
                 if not (torch.isnan(vl) or torch.isinf(vl)):
                     val_losses.append(vl.item())
-            avg_cpc_full_train, avg_cpc_nz_train = _average_cpc_for_cities(train_cds)
-            avg_cpc_full_val, avg_cpc_nz_val = _average_cpc_for_cities(val_cds)
+            train_val_cpc = _train_val_cpc_metrics()
 
         avg_val_loss = np.mean(val_losses) if val_losses else float('nan')
         history['train_loss'].append(train_loss)
         history['val_loss'].append(avg_val_loss)
-        history['train_cpc_full'].append(avg_cpc_full_train)
-        history['train_cpc_nz'].append(avg_cpc_nz_train)
-        history['val_cpc_full'].append(avg_cpc_full_val)
-        history['val_cpc_nz'].append(avg_cpc_nz_val)
+        history['train_cpc_full'].append(train_val_cpc['CPC_full_train'])
+        history['train_cpc_nz'].append(train_val_cpc['CPC_nz_train'])
+        history['val_cpc_full'].append(train_val_cpc['CPC_full_val'])
+        history['val_cpc_nz'].append(train_val_cpc['CPC_nz_val'])
 
         if not np.isnan(avg_val_loss):
             scheduler.step(avg_val_loss)
@@ -171,10 +181,7 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         if epoch % 5 == 0 or epoch == 1:
             nan_str = f" NaN:{nan_count}" if nan_count > 0 else ""
             print(f"  {epoch:3d}/{max_epochs}  train={train_loss:.4f}  val={avg_val_loss:.4f}  "
-                  f"CPC_full_train={avg_cpc_full_train:.4f}  "
-                  f"CPC_full_val={avg_cpc_full_val:.4f}  "
-                  f"CPC_nz_train={avg_cpc_nz_train:.4f}  "
-                  f"CPC_nz_val={avg_cpc_nz_val:.4f}  "
+                  f"{format_train_val_cpc_metrics(train_val_cpc)}  "
                   f"{time.time()-t0:.1f}s{flag}{nan_str}")
         if patience_count >= config.patience:
             print(f"  Early stop @ epoch {epoch}")

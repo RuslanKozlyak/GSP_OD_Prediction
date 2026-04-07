@@ -12,7 +12,14 @@ import numpy as np
 import torch
 from tqdm.auto import tqdm
 
-from models.shared.metrics import average_listed_metrics, cal_od_metrics, compute_metrics
+from models.shared.metrics import (
+    average_listed_metrics,
+    average_matrix_cpc_metrics,
+    cal_od_metrics,
+    compute_metrics,
+    format_train_val_cpc_metrics,
+    masked_train_val_cpc_metrics,
+)
 from models.shared.data_load import (
     construct_flat_features, load_graph_data, get_scalers, build_dgl_graph, build_pyg_graph,
     prepare_single_city_flat, prepare_single_city_graph,
@@ -39,38 +46,6 @@ def _predict_flat_array(model, x):
     return pred
 
 
-def _cpc_full(pred, target):
-    return compute_metrics(np.asarray(pred).reshape(-1), np.asarray(target).reshape(-1))['CPC']
-
-
-def _cpc_nonzero(pred_matrix, target_matrix, mask=None):
-    mask = target_matrix > 0 if mask is None else mask
-    if mask is None or not np.any(mask):
-        return float('nan')
-    return compute_metrics(pred_matrix[mask], target_matrix[mask].astype(float))['CPC']
-
-
-def _single_city_train_val_cpc_metrics(pred_matrix, od_matrix, train_mask, val_mask):
-    return {
-        'CPC_full_train': _cpc_full(pred_matrix, od_matrix * train_mask),
-        'CPC_full_val': _cpc_full(pred_matrix, od_matrix * val_mask),
-        'CPC_nz_train': _cpc_nonzero(pred_matrix, od_matrix, train_mask),
-        'CPC_nz_val': _cpc_nonzero(pred_matrix, od_matrix, val_mask),
-    }
-
-
-def _average_matrix_cpc_metrics(pred_matrices, od_matrices, prefix):
-    cpc_fulls = []
-    cpc_nzs = []
-    for pred_matrix, od_matrix in zip(pred_matrices, od_matrices):
-        cpc_fulls.append(_cpc_full(pred_matrix, od_matrix))
-        cpc_nzs.append(_cpc_nonzero(pred_matrix, od_matrix))
-    return {
-        f'CPC_full_{prefix}': float(np.mean(cpc_fulls)) if cpc_fulls else float('nan'),
-        f'CPC_nz_{prefix}': float(np.mean(cpc_nzs)) if cpc_nzs else float('nan'),
-    }
-
-
 def _compute_flat_validation_metrics(model, xs_valid, ys_valid, xs_valid_full, ys_valid_full):
     cpc_vals = []
     for x_one, y_one in zip(xs_valid, ys_valid):
@@ -90,7 +65,7 @@ def _compute_flat_train_val_metrics(model, payload):
     if payload['single_city_split']:
         pred_flat = _predict_flat_array(model, payload['x_full'])
         pred_matrix = pred_flat.reshape(payload['n_nodes'], payload['n_nodes'])
-        return _single_city_train_val_cpc_metrics(
+        return masked_train_val_cpc_metrics(
             pred_matrix,
             payload['od_matrix'],
             payload['train_mask'],
@@ -108,19 +83,14 @@ def _compute_flat_train_val_metrics(model, payload):
             n = int(np.sqrt(y_one.shape[0]))
             pred_matrices.append(_predict_flat_array(model, x_one).reshape(n, n))
             od_matrices.append(y_one.reshape(n, n))
-        metrics.update(_average_matrix_cpc_metrics(pred_matrices, od_matrices, prefix))
+        metrics.update(average_matrix_cpc_metrics(pred_matrices, od_matrices, prefix))
     return metrics
 
 
 def _print_train_val_metrics(metrics):
     if 'CPC_full_train' not in metrics:
         return
-    print(
-        f"  Train/Val: CPC_full_train={metrics['CPC_full_train']:.4f}  "
-        f"CPC_full_val={metrics['CPC_full_val']:.4f}  "
-        f"CPC_nz_train={metrics['CPC_nz_train']:.4f}  "
-        f"CPC_nz_val={metrics['CPC_nz_val']:.4f}"
-    )
+    print(f"  Train/Val: {format_train_val_cpc_metrics(metrics)}")
 
 
 def _attach_validation_metrics(metrics_all, validation_metrics):
@@ -176,7 +146,7 @@ def _compute_gmel_train_val_metrics(gmel, decoder, nfeat_scaler, train_areas, va
             single_city_data['nfeat'], single_city_data['adj'], single_city_data['dis'],
             device,
         )
-        return _single_city_train_val_cpc_metrics(
+        return masked_train_val_cpc_metrics(
             pred,
             single_city_data['od'],
             single_city_data['train_mask'],
@@ -190,7 +160,7 @@ def _compute_gmel_train_val_metrics(gmel, decoder, nfeat_scaler, train_areas, va
             _predict_gmel_matrix(gmel, decoder, nfeat_scaler, nf, adj, dis, device)
             for nf, adj, dis in zip(nf_list, adj_list, dis_list)
         ]
-        metrics.update(_average_matrix_cpc_metrics(pred_matrices, od_list, prefix))
+        metrics.update(average_matrix_cpc_metrics(pred_matrices, od_list, prefix))
     return metrics
 
 
@@ -221,7 +191,7 @@ def _compute_netgan_train_val_metrics(trained, train_areas, valid_areas, data_pa
             single_city_data['dis'],
             device,
         )
-        return _single_city_train_val_cpc_metrics(
+        return masked_train_val_cpc_metrics(
             pred,
             single_city_data['od'],
             single_city_data['train_mask'],
@@ -235,7 +205,7 @@ def _compute_netgan_train_val_metrics(trained, train_areas, valid_areas, data_pa
             _predict_netgan_matrix(trained, nf, adj, dis, device)
             for nf, adj, dis in zip(nf_list, adj_list, dis_list)
         ]
-        metrics.update(_average_matrix_cpc_metrics(pred_matrices, od_list, prefix))
+        metrics.update(average_matrix_cpc_metrics(pred_matrices, od_list, prefix))
     return metrics
 
 
@@ -993,11 +963,26 @@ def infer_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_
                     for key in ("CPC_test", "MAE_test", "RMSE_test"):
                         if key in averaged_test:
                             averaged[key] = averaged_test[key]
+                for prefix, split_metrics in (
+                    ("train", metric_groups.get("train") or []),
+                    ("val", metric_groups.get("val") or []),
+                ):
+                    if split_metrics:
+                        averaged_split = _average_numeric_metrics(split_metrics)
+                        if "CPC" in averaged_split:
+                            averaged[f"CPC_full_{prefix}"] = averaged_split["CPC"]
+                        cpc_nz = averaged_split.get(
+                            "CPC_nz", averaged_split.get("CPC_nonzero")
+                        )
+                        if cpc_nz is not None:
+                            averaged[f"CPC_nz_{prefix}"] = cpc_nz
                 metric_runs.append(averaged)
 
     if metric_runs:
         avg = average_listed_metrics(metric_runs)
         print(f"  CPC={avg.get('CPC', float('nan')):.4f}  ({time.time() - t0:.1f}s)")
+        if "CPC_full_train" in avg:
+            print(f"  Train/Val: {format_train_val_cpc_metrics(avg)}")
     return metric_runs
 
 
@@ -1052,6 +1037,8 @@ def run_diffusion_model(model_name, train_areas, valid_areas, test_areas, data_p
             avg_metrics = json.loads("\n".join(dict_lines).replace("'", '"'))
             avg_metrics.setdefault("CPC_val", float('nan'))
             avg_metrics.setdefault("CPC_full", float('nan'))
+            for key in ("CPC_full_train", "CPC_full_val", "CPC_nz_train", "CPC_nz_val"):
+                avg_metrics.setdefault(key, float('nan'))
             print(f"  CPC={avg_metrics.get('CPC', 'N/A')}  ({time.time() - t0:.1f}s)")
             repeats = list(inference_seeds or [None])
             return [dict(avg_metrics) for _ in repeats]

@@ -13,7 +13,12 @@ from models.GPS.config import (
     TrainingConfig, WEIGHTS_DIR, device, ensure_dirs,
     save_model_weights, save_metrics_to_csv,
 )
-from models.shared.metrics import cal_od_metrics, compute_metrics
+from models.shared.metrics import (
+    cal_od_metrics,
+    compute_metrics,
+    format_train_val_cpc_metrics,
+    masked_train_val_cpc_metrics,
+)
 from models.shared.plotting import save_loss_plot
 
 
@@ -178,7 +183,14 @@ def train(run_id, run_name, config, city_data):
         optimizer, patience=5, factor=0.5, min_lr=1e-6
     )
 
-    history = {'train_loss': [], 'val_loss': []}
+    history = {
+        'train_loss': [],
+        'val_loss': [],
+        'train_cpc_full': [],
+        'train_cpc_nz': [],
+        'val_cpc_full': [],
+        'val_cpc_nz': [],
+    }
     best_val_loss = float('inf')
     patience_count = 0
     best_state = None
@@ -205,9 +217,20 @@ def train(run_id, run_name, config, city_data):
             val_loss = (_marginal_mse(vfi, marginal_in_t)
                         + _marginal_mse(vfo, marginal_out_t)
                         + _masked_mse(vf, od_val_t, val_mask_t)).item()
+            train_val_pred = od_scaler.inverse_transform(
+                vf.detach().cpu().numpy().reshape(-1, 1)
+            ).reshape(vf.shape)
+            train_val_pred[train_val_pred < 0] = 0
+            train_val_cpc = masked_train_val_cpc_metrics(
+                train_val_pred, od_np, train_mask, val_mask
+            )
 
         history['train_loss'].append(loss.item())
         history['val_loss'].append(val_loss)
+        history['train_cpc_full'].append(train_val_cpc['CPC_full_train'])
+        history['train_cpc_nz'].append(train_val_cpc['CPC_nz_train'])
+        history['val_cpc_full'].append(train_val_cpc['CPC_full_val'])
+        history['val_cpc_nz'].append(train_val_cpc['CPC_nz_val'])
         scheduler.step(val_loss)
 
         if val_loss < best_val_loss:
@@ -222,6 +245,7 @@ def train(run_id, run_name, config, city_data):
         if epoch % 10 == 0 or epoch == 1:
             pbar.write(f"  {epoch:3d}/{max_epochs}  "
                        f"train={loss.item():.4g}  val={val_loss:.4g}  "
+                       f"{format_train_val_cpc_metrics(train_val_cpc)}  "
                        f"pat={patience_count}{flag}")
 
         if patience_count >= patience_limit:
@@ -245,6 +269,10 @@ def train(run_id, run_name, config, city_data):
     bilinear_mf, bilinear_mnz, bilinear_mt = _print_stage_metrics(
         "Bilinear Head", bilinear_pred, od_np, test_mask
     )
+    bilinear_train_val = masked_train_val_cpc_metrics(
+        bilinear_pred, od_np, train_mask, val_mask
+    )
+    print(f"    Train/Val: {format_train_val_cpc_metrics(bilinear_train_val)}")
 
     # ── Phase 2: fit decoder on frozen GPS embeddings ────────────────────────
     print('  GMEL_GPS: extracting embeddings...')
@@ -308,6 +336,8 @@ def train(run_id, run_name, config, city_data):
     # ── Evaluation ───────────────────────────────────────────────────────────
     pred = predict_gmel_gps(model, decoder, city_data, device)
     mf, mnz, mt = _print_stage_metrics("Tree Decoder", pred, od_np, test_mask)
+    tree_train_val = masked_train_val_cpc_metrics(pred, od_np, train_mask, val_mask)
+    print(f"    Train/Val: {format_train_val_cpc_metrics(tree_train_val)}")
 
     save_metrics_to_csv(run_id, run_name, config, mf, mnz, mt,
                         n_params, epoch, status)
@@ -323,8 +353,10 @@ def train(run_id, run_name, config, city_data):
         'metrics_bilinear_full': bilinear_mf,
         'metrics_bilinear_nonzero': bilinear_mnz,
         'metrics_bilinear_test_pairs': bilinear_mt,
+        'metrics_bilinear_train_val': bilinear_train_val,
         'metrics_full': mf,
         'metrics_nonzero': mnz,
         'metrics_test_pairs': mt,
+        'metrics_train_val': tree_train_val,
         'status': status,
     }

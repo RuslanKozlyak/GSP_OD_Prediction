@@ -8,6 +8,7 @@ import lightgbm as lgb
 
 from .config import TrainingConfig, METRICS_CSV, METRICS_RUNS_DIR, WEIGHTS_DIR, device, ensure_dirs
 from .metrics import compute_metrics, cal_od_metrics
+from models.shared.metrics import format_train_val_cpc_metrics, masked_train_val_cpc_metrics
 
 
 def build_lgbm_features(embs, nfs, ds, od, mask):
@@ -127,7 +128,13 @@ def load_lgbm_results(run_id, city_data, return_payload=False):
                 metrics['CPC_test'] = mt['CPC']
                 metrics['MAE_test'] = mt['MAE']
                 metrics['RMSE_test'] = mt['RMSE']
+            train_mask = city_data.get('train_mask')
+            val_mask = city_data.get('val_mask')
+            if train_mask is not None and val_mask is not None:
+                metrics.update(masked_train_val_cpc_metrics(pred, od, train_mask, val_mask))
         print(f"  {run_id}: CPC={metrics['CPC']:.4f}  MAE={metrics['MAE']:.4f}")
+        if 'CPC_full_train' in metrics:
+            print(f"  Train/Val: {format_train_val_cpc_metrics(metrics)}")
         if return_payload:
             return {
                 'metrics': metrics,
@@ -192,10 +199,12 @@ def train_lgbm_from_model(run_id, city_data, donor_model, donor_name):
         mt = dict(mf)
     else:
         mt = compute_metrics(pred[tsm], od[tsm].astype(float))
+    train_val_metrics = masked_train_val_cpc_metrics(pred, od, tm, vm)
 
     print(f"  Full:    CPC={mf['CPC']:.4f}  MAE={mf['MAE']:.4f}")
     print(f"  Nonzero: CPC={mnz['CPC']:.4f}")
     print(f"  Test:    CPC={mt['CPC']:.4f}")
+    print(f"  Train/Val: {format_train_val_cpc_metrics(train_val_metrics)}")
 
     # Save model to disk
     save_lgbm_model(run_id, lgbm_model, donor_name)
@@ -211,6 +220,7 @@ def train_lgbm_from_model(run_id, city_data, donor_model, donor_name):
         'epochs_trained': lgbm_model.best_iteration,
         'CPC_full': mf['CPC'], 'CPC_nz': mnz['CPC'], 'CPC_test': mt['CPC'],
         'MAE_full': mf['MAE'], 'RMSE_full': mf['RMSE'],
+        **train_val_metrics,
     }
     with open(METRICS_CSV, 'a', newline='') as f:
         w = csv.DictWriter(f, fieldnames=row.keys())
@@ -223,6 +233,7 @@ def train_lgbm_from_model(run_id, city_data, donor_model, donor_name):
     return {
         'name': f'LGBM({donor_name})', 'model': lgbm_model,
         'metrics_full': mf, 'metrics_nonzero': mnz, 'metrics_test_pairs': mt,
+        'metrics_train_val': train_val_metrics,
         'pred_matrix': pred,
         'config': TrainingConfig(decoder_type='lgbm', loss_type='mae'),
         'status': 'ok',

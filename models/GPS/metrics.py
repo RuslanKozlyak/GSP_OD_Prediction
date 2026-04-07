@@ -15,7 +15,7 @@ from models.shared.metrics import (
     accuracy, matrix_COS_similarity,
     JSD_inflow, JSD_outflow, JSD_ODflow,
     cal_od_metrics, compute_metrics, average_listed_metrics,
-    citywise_segmented_metrics, num_regions,
+    citywise_segmented_metrics, masked_train_val_cpc_metrics, num_regions,
 )
 
 
@@ -95,6 +95,13 @@ def summarize_prediction_metrics(pred, cd, is_test_city=True):
     combined_metrics['CPC_test'] = test_metrics['CPC']
     combined_metrics['MAE_test'] = test_metrics['MAE']
     combined_metrics['RMSE_test'] = test_metrics['RMSE']
+    if cd.get('split_scope') == 'single_city':
+        train_mask = cd.get('train_mask')
+        val_mask = cd.get('val_mask')
+        if train_mask is not None and val_mask is not None:
+            combined_metrics.update(
+                masked_train_val_cpc_metrics(pred, od, train_mask, val_mask)
+            )
 
     return {
         'full': full_metrics,

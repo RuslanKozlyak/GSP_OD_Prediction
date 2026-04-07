@@ -1,6 +1,8 @@
 from collections import defaultdict
 from numbers import Real
 
+from models.shared.metrics import format_train_val_cpc_metrics
+
 from .config import BASELINE_MODELS, INFERENCE_SEEDS, SINGLE_CITY_IDS, WEIGHTS_DIR, cleanup_gpu
 from .data_utils import split_multi_city_ids
 from .gps_loader import GPSBenchmarkLoader
@@ -286,6 +288,8 @@ def run_multi_city_benchmark(
                     _average_multi_city_metrics(
                         metric_groups["all"],
                         metric_groups.get("test"),
+                        metric_groups.get("train"),
+                        metric_groups.get("val"),
                     )
                 )
         if metric_samples:
@@ -334,14 +338,32 @@ def _average_metrics(metric_dicts):
     }
 
 
-def _average_multi_city_metrics(all_metric_dicts, test_metric_dicts=None):
+def _average_multi_city_metrics(
+    all_metric_dicts,
+    test_metric_dicts=None,
+    train_metric_dicts=None,
+    val_metric_dicts=None,
+):
     averaged = _average_metrics(all_metric_dicts)
     if test_metric_dicts:
         averaged_test = _average_metrics(test_metric_dicts)
         for key in ("CPC_test", "MAE_test", "RMSE_test"):
             if key in averaged_test:
                 averaged[key] = averaged_test[key]
+    _add_split_cpc_metrics(averaged, train_metric_dicts, "train")
+    _add_split_cpc_metrics(averaged, val_metric_dicts, "val")
     return averaged
+
+
+def _add_split_cpc_metrics(target, metric_dicts, prefix):
+    if not metric_dicts:
+        return
+    averaged = _average_metrics(metric_dicts)
+    if "CPC" in averaged:
+        target[f"CPC_full_{prefix}"] = averaged["CPC"]
+    cpc_nz = averaged.get("CPC_nz", averaged.get("CPC_nonzero"))
+    if cpc_nz is not None:
+        target[f"CPC_nz_{prefix}"] = cpc_nz
 
 
 def _summarize_multi_city_per_city(per_city_metric_samples):
@@ -377,6 +399,8 @@ def _print_multi_city_city_summary(run_id, per_city_summary, overall_metrics):
         f"MAE={_fmt_metric(overall_metrics, 'MAE')}  "
         f"RMSE={_fmt_metric(overall_metrics, 'RMSE')}"
     )
+    if "CPC_full_train" in overall_metrics:
+        print(f"  Train/Val: {format_train_val_cpc_metrics(overall_metrics)}")
 
 
 def _fmt_metric(metrics, key, precision=4):
