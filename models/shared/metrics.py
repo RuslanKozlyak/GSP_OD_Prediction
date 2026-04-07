@@ -264,16 +264,16 @@ def cpc_nonzero(pred_matrix, target_matrix, mask=None):
 def masked_train_val_cpc_metrics(pred_matrix, od_matrix, train_mask, val_mask):
     """Common train/val CPC metrics for single-city pair masks.
 
-    CPC_full_* uses the full predicted matrix against the split target matrix;
-    CPC_nz_* is restricted to the split mask entries.
+    CPC_full_* compares the predicted and target split matrices after applying
+    the same pair mask to both; CPC_nz_* is restricted to the split mask entries.
     """
     pred_matrix = np.asarray(pred_matrix)
     od_matrix = np.asarray(od_matrix)
     train_mask = np.asarray(train_mask, dtype=bool)
     val_mask = np.asarray(val_mask, dtype=bool)
     return {
-        'CPC_full_train': cpc_full(pred_matrix, od_matrix * train_mask),
-        'CPC_full_val': cpc_full(pred_matrix, od_matrix * val_mask),
+        'CPC_full_train': cpc_full(pred_matrix * train_mask, od_matrix * train_mask),
+        'CPC_full_val': cpc_full(pred_matrix * val_mask, od_matrix * val_mask),
         'CPC_nz_train': cpc_nonzero(pred_matrix, od_matrix, train_mask),
         'CPC_nz_val': cpc_nonzero(pred_matrix, od_matrix, val_mask),
     }
