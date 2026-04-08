@@ -445,12 +445,16 @@ def _normalize_single_city_ids(single_city_ids):
 
 
 def _average_metrics(metric_dicts):
-    numeric_keys = [
-        key for key, value in metric_dicts[0].items()
+    numeric_keys = sorted({
+        key
+        for metric in metric_dicts
+        for key, value in metric.items()
         if isinstance(value, Real) and not isinstance(value, bool)
-    ]
+    })
     return {
-        key: sum(metric[key] for metric in metric_dicts) / len(metric_dicts)
+        key: sum(metric[key] for metric in metric_dicts if key in metric) / sum(
+            1 for metric in metric_dicts if key in metric
+        )
         for key in numeric_keys
     }
 
@@ -476,11 +480,12 @@ def _add_split_cpc_metrics(target, metric_dicts, prefix):
     if not metric_dicts:
         return
     averaged = _average_metrics(metric_dicts)
-    if "CPC" in averaged:
-        target[f"CPC_{prefix}_full"] = averaged["CPC"]
-    cpc_nz = averaged.get("CPC_nz", averaged.get("CPC_nonzero"))
-    if cpc_nz is not None:
-        target[f"CPC_{prefix}_nz"] = cpc_nz
+    if "CPC_full" in averaged:
+        target[f"CPC_{prefix}_full"] = averaged["CPC_full"]
+    if "CPC_nz" in averaged:
+        target[f"CPC_{prefix}_nz"] = averaged["CPC_nz"]
+    if prefix == "val" and "CPC_val_nz" in target:
+        target["CPC_val"] = target["CPC_val_nz"]
 
 
 def _summarize_multi_city_per_city(per_city_metric_samples):
@@ -502,29 +507,26 @@ def _print_multi_city_city_summary(run_id, per_city_summary, overall_metrics):
         tag = " [test]" if city_metrics.get("is_test_city") else ""
         print(
             f"    {city_id}{tag}: "
-            f"CPC_full={_fmt_metric(city_metrics, 'CPC')}  "
-            f"CPC_nonzero={_fmt_metric(city_metrics, 'CPC_nonzero')}  "
+            f"CPC_full={_fmt_metric(city_metrics, 'CPC_full')}  "
+            f"CPC_nz={_fmt_metric(city_metrics, 'CPC_nz')}  "
             f"CPC_test={_fmt_metric(city_metrics, 'CPC_test')}  "
-            f"MAE={_fmt_metric(city_metrics, 'MAE')}  "
-            f"RMSE={_fmt_metric(city_metrics, 'RMSE')}"
+            f"MAE_full={_fmt_metric(city_metrics, 'MAE_full')}  "
+            f"RMSE_full={_fmt_metric(city_metrics, 'RMSE_full')}"
         )
     print(
         "  Avg all cities: "
-        f"CPC_full={_fmt_metric(overall_metrics, 'CPC')}  "
-        f"CPC_nonzero={_fmt_metric(overall_metrics, 'CPC_nonzero')}  "
+        f"CPC_full={_fmt_metric(overall_metrics, 'CPC_full')}  "
+        f"CPC_nz={_fmt_metric(overall_metrics, 'CPC_nz')}  "
         f"CPC_test={_fmt_metric(overall_metrics, 'CPC_test')}  "
-        f"MAE={_fmt_metric(overall_metrics, 'MAE')}  "
-        f"RMSE={_fmt_metric(overall_metrics, 'RMSE')}"
+        f"MAE_full={_fmt_metric(overall_metrics, 'MAE_full')}  "
+        f"RMSE_full={_fmt_metric(overall_metrics, 'RMSE_full')}"
     )
     if "CPC_train_full" in overall_metrics:
         print(f"  Train/Val: {format_train_val_cpc_metrics(overall_metrics)}")
 
 
 def _fmt_metric(metrics, key, precision=4):
-    aliases = {
-        "CPC_nonzero": ("CPC_nonzero", "CPC_nz"),
-    }
-    candidates = aliases.get(key, (key,))
+    candidates = (key,)
     mean = None
     std = None
     for candidate in candidates:

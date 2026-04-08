@@ -243,6 +243,95 @@ def compute_metrics(p, t):
     }
 
 
+def _nan_quick_metrics():
+    return {'CPC': float('nan'), 'MAE': float('nan'), 'RMSE': float('nan')}
+
+
+def canonical_od_metrics(
+    pred_matrix,
+    od_matrix,
+    *,
+    test_mask=None,
+    train_mask=None,
+    val_mask=None,
+    train_full_mask=None,
+    val_full_mask=None,
+    is_test_city=True,
+):
+    """Return the canonical benchmark metric schema for one OD matrix.
+
+    Canonical keys:
+    - *_full: metrics on the full OD matrix.
+    - *_nz: metrics on nonzero target OD pairs.
+    - *_test: metrics on the test split, or full matrix for test cities.
+    - CPC_train_*/CPC_val_*: split CPC diagnostics when masks are provided.
+    """
+    pred_matrix = np.asarray(pred_matrix)
+    od_matrix = np.asarray(od_matrix)
+    full_metrics = cal_od_metrics(pred_matrix, od_matrix)
+
+    nz_mask = od_matrix > 0
+    nonzero_metrics = (
+        compute_metrics(pred_matrix[nz_mask], od_matrix[nz_mask].astype(float))
+        if np.any(nz_mask) else
+        {'CPC': 0.0, 'MAE': 0.0, 'RMSE': 0.0}
+    )
+
+    if test_mask is not None and np.any(test_mask):
+        test_mask = np.asarray(test_mask, dtype=bool)
+        test_metrics = compute_metrics(
+            pred_matrix[test_mask], od_matrix[test_mask].astype(float)
+        )
+    elif is_test_city:
+        test_metrics = {
+            'CPC': full_metrics['CPC'],
+            'MAE': full_metrics['MAE'],
+            'RMSE': full_metrics['RMSE'],
+        }
+    else:
+        test_metrics = _nan_quick_metrics()
+
+    metrics = {
+        'num_regions': full_metrics['num_regions'],
+        'CPC_full': full_metrics['CPC'],
+        'MAE_full': full_metrics['MAE'],
+        'RMSE_full': full_metrics['RMSE'],
+        'NRMSE_full': full_metrics['NRMSE'],
+        'MAPE_full': full_metrics['MAPE'],
+        'SMAPE_full': full_metrics['SMAPE'],
+        'CPC_nz': nonzero_metrics['CPC'],
+        'MAE_nz': nonzero_metrics['MAE'],
+        'RMSE_nz': nonzero_metrics['RMSE'],
+        'MAPE_nz': full_metrics['MAPE_nonzero'],
+        'SMAPE_nz': full_metrics['SMAPE_nonzero'],
+        'CPC_test': test_metrics['CPC'],
+        'MAE_test': test_metrics['MAE'],
+        'RMSE_test': test_metrics['RMSE'],
+        'accuracy': full_metrics['accuracy'],
+        'matrix_COS_similarity': full_metrics['matrix_COS_similarity'],
+        'JSD_inflow': full_metrics['JSD_inflow'],
+        'JSD_outflow': full_metrics['JSD_outflow'],
+        'JSD_ODflow': full_metrics['JSD_ODflow'],
+    }
+
+    if train_mask is not None and val_mask is not None:
+        metrics.update(
+            masked_train_val_cpc_metrics(
+                pred_matrix,
+                od_matrix,
+                train_mask,
+                val_mask,
+                train_full_mask=train_full_mask,
+                val_full_mask=val_full_mask,
+            )
+        )
+        metrics['CPC_val'] = metrics['CPC_val_nz']
+    elif not np.isnan(metrics['CPC_test']):
+        metrics['CPC_val'] = float('nan')
+
+    return metrics
+
+
 def cpc_full(pred, target):
     """CPC on flattened full matrices."""
     return compute_metrics(
@@ -322,12 +411,21 @@ def format_train_val_cpc_metrics(metrics):
 
 
 def average_listed_metrics(listed_metrics):
-    sums = defaultdict(float)
-    for d in listed_metrics:
-        for key, value in d.items():
-            sums[key] += value
-    averages = {key: value / len(listed_metrics) for key, value in sums.items()}
-    return averages
+    if not listed_metrics:
+        return {}
+    keys = sorted({
+        key
+        for d in listed_metrics
+        for key, value in d.items()
+        if isinstance(value, (int, float, np.number)) and not isinstance(value, bool)
+    })
+    return {
+        key: float(np.mean([
+            d[key] for d in listed_metrics
+            if key in d and isinstance(d[key], (int, float, np.number))
+        ]))
+        for key in keys
+    }
 
 
 def citywise_segmented_metrics(valid_metrics):

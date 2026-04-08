@@ -291,14 +291,18 @@ def _train_loop(run_id, run_name, config, model, city_datas,
     cpc_nz_best_state = best_cpc_nz_state if best_cpc_nz_state is not None else val_loss_best_state
 
     model.load_state_dict(val_loss_best_state)
+    tv_val = _train_val_cpc_metrics()
     mf_val, mnz_val, mt_val, pc_val = eval_all(
         f"Best weights (val_loss @ epoch {best_val_epoch or epoch})"
     )
+    print(f"  Train/Val: {format_train_val_cpc_metrics(tv_val)}")
 
     model.load_state_dict(cpc_nz_best_state)
+    tv_cpc = _train_val_cpc_metrics()
     mf_cpc, mnz_cpc, mt_cpc, pc_cpc = eval_all(
         f"Best weights (CPC_val_nz @ epoch {best_cpc_nz_epoch or best_val_epoch or epoch})"
     )
+    print(f"  Train/Val: {format_train_val_cpc_metrics(tv_cpc)}")
 
     # Save
     save_metrics_to_csv(
@@ -310,6 +314,7 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         selected_epoch=best_val_epoch or epoch,
         selection_metric='val_loss',
         selection_metric_value=best_val_loss,
+        train_val_metrics=tv_val,
     )
     save_metrics_to_csv(
         run_id, run_name, config, mf_cpc, mnz_cpc, mt_cpc,
@@ -320,6 +325,7 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         selected_epoch=best_cpc_nz_epoch or best_val_epoch or epoch,
         selection_metric='CPC_val_nz',
         selection_metric_value=best_cpc_nz_val,
+        train_val_metrics=tv_cpc,
     )
     save_model_weights(run_id, val_loss_best_state, config)
     print(
@@ -333,6 +339,7 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         'metrics_full': mf_cpc, 'metrics_nonzero': mnz_cpc, 'metrics_test_pairs': mt_cpc,
         'metrics_full_val_loss': mf_val, 'metrics_nonzero_val_loss': mnz_val,
         'metrics_test_pairs_val_loss': mt_val,
+        'metrics_train_val': tv_cpc, 'metrics_train_val_loss': tv_val,
         'per_city': pc_cpc, 'per_city_val_loss': pc_val, 'status': status,
         'loss_plot_path': str(saved_plot_path) if saved_plot_path is not None else None,
     }

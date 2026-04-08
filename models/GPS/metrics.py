@@ -15,7 +15,8 @@ from models.shared.metrics import (
     accuracy, matrix_COS_similarity,
     JSD_inflow, JSD_outflow, JSD_ODflow,
     cal_od_metrics, compute_metrics, average_listed_metrics,
-    citywise_segmented_metrics, masked_train_val_cpc_metrics, num_regions,
+    canonical_od_metrics, citywise_segmented_metrics,
+    masked_train_val_cpc_metrics, num_regions,
 )
 
 
@@ -51,10 +52,6 @@ def predict_full_matrix(model, cd, config, dbs=DEST_BATCH_SIZE):
     return pred
 
 
-def _nan_quick_metrics():
-    return {'CPC': float('nan'), 'MAE': float('nan'), 'RMSE': float('nan')}
-
-
 def summarize_prediction_metrics(pred, cd, is_test_city=True):
     """Compute one consistent metric bundle for a predicted city matrix.
 
@@ -71,44 +68,22 @@ def summarize_prediction_metrics(pred, cd, is_test_city=True):
     else:
         nonzero_metrics = {'CPC': 0.0, 'MAE': 0.0, 'RMSE': 0.0}
 
-    if cd.get('split_scope') == 'multi_city':
-        test_metrics = (
-            {
-                'CPC': full_metrics['CPC'],
-                'MAE': full_metrics['MAE'],
-                'RMSE': full_metrics['RMSE'],
-            }
-            if is_test_city else
-            _nan_quick_metrics()
-        )
-    else:
-        test_mask = cd.get('test_mask')
-        if test_mask is not None and np.any(test_mask):
-            test_metrics = compute_metrics(pred[test_mask], od[test_mask].astype(float))
-        else:
-            test_metrics = _nan_quick_metrics()
-
-    combined_metrics = dict(full_metrics)
-    combined_metrics['CPC_nz'] = nonzero_metrics['CPC']
-    combined_metrics['MAE_nz'] = nonzero_metrics['MAE']
-    combined_metrics['RMSE_nz'] = nonzero_metrics['RMSE']
-    combined_metrics['CPC_test'] = test_metrics['CPC']
-    combined_metrics['MAE_test'] = test_metrics['MAE']
-    combined_metrics['RMSE_test'] = test_metrics['RMSE']
-    if cd.get('split_scope') == 'single_city':
-        train_mask = cd.get('train_mask')
-        val_mask = cd.get('val_mask')
-        if train_mask is not None and val_mask is not None:
-            combined_metrics.update(
-                masked_train_val_cpc_metrics(
-                    pred,
-                    od,
-                    train_mask,
-                    val_mask,
-                    train_full_mask=cd.get('train_full_mask'),
-                    val_full_mask=cd.get('val_full_mask'),
-                )
-            )
+    test_mask = None if cd.get('split_scope') == 'multi_city' else cd.get('test_mask')
+    combined_metrics = canonical_od_metrics(
+        pred,
+        od,
+        test_mask=test_mask,
+        train_mask=cd.get('train_mask'),
+        val_mask=cd.get('val_mask'),
+        train_full_mask=cd.get('train_full_mask'),
+        val_full_mask=cd.get('val_full_mask'),
+        is_test_city=is_test_city,
+    )
+    test_metrics = {
+        'CPC': combined_metrics['CPC_test'],
+        'MAE': combined_metrics['MAE_test'],
+        'RMSE': combined_metrics['RMSE_test'],
+    }
 
     return {
         'full': full_metrics,

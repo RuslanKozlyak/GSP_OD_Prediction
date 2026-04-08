@@ -8,7 +8,7 @@ import lightgbm as lgb
 
 from .config import TrainingConfig, METRICS_CSV, METRICS_RUNS_DIR, WEIGHTS_DIR, device, ensure_dirs
 from .metrics import compute_metrics, cal_od_metrics
-from models.shared.metrics import format_train_val_cpc_metrics, masked_train_val_cpc_metrics
+from models.shared.metrics import canonical_od_metrics, format_train_val_cpc_metrics
 
 
 def build_lgbm_features(embs, nfs, ds, od, mask):
@@ -112,36 +112,17 @@ def load_lgbm_results(run_id, city_data, return_payload=False):
         pred = np.zeros((nn_, nn_), dtype=np.float32)
         pred[ao, ad] = pf.astype(np.float32)
 
-        metrics = cal_od_metrics(pred, od)
-        nz = od > 0
-        if np.any(nz):
-            mnz = compute_metrics(pred[nz], od[nz].astype(float))
-            metrics['CPC_nz'] = mnz['CPC']
-        if city_data.get('split_scope') == 'multi_city':
-            metrics['CPC_test'] = metrics['CPC']
-            metrics['MAE_test'] = metrics['MAE']
-            metrics['RMSE_test'] = metrics['RMSE']
-        else:
-            tm = city_data.get('test_mask')
-            if tm is not None and np.any(tm):
-                mt = compute_metrics(pred[tm], od[tm].astype(float))
-                metrics['CPC_test'] = mt['CPC']
-                metrics['MAE_test'] = mt['MAE']
-                metrics['RMSE_test'] = mt['RMSE']
-            train_mask = city_data.get('train_mask')
-            val_mask = city_data.get('val_mask')
-            if train_mask is not None and val_mask is not None:
-                metrics.update(
-                    masked_train_val_cpc_metrics(
-                        pred,
-                        od,
-                        train_mask,
-                        val_mask,
-                        train_full_mask=city_data.get('train_full_mask'),
-                        val_full_mask=city_data.get('val_full_mask'),
-                    )
-                )
-        print(f"  {run_id}: CPC={metrics['CPC']:.4f}  MAE={metrics['MAE']:.4f}")
+        test_mask = None if city_data.get('split_scope') == 'multi_city' else city_data.get('test_mask')
+        metrics = canonical_od_metrics(
+            pred,
+            od,
+            test_mask=test_mask,
+            train_mask=city_data.get('train_mask'),
+            val_mask=city_data.get('val_mask'),
+            train_full_mask=city_data.get('train_full_mask'),
+            val_full_mask=city_data.get('val_full_mask'),
+        )
+        print(f"  {run_id}: CPC_full={metrics['CPC_full']:.4f}  MAE_full={metrics['MAE_full']:.4f}")
         if 'CPC_train_full' in metrics:
             print(f"  Train/Val: {format_train_val_cpc_metrics(metrics)}")
         if return_payload:
@@ -201,25 +182,31 @@ def train_lgbm_from_model(run_id, city_data, donor_model, donor_name):
     pred = np.zeros((nn_, nn_), dtype=np.float32)
     pred[ao, ad] = pf.astype(np.float32)
 
-    mf = compute_metrics(pred.ravel(), od.ravel().astype(float))
+    mf = cal_od_metrics(pred, od)
     nzm = od > 0
     mnz = compute_metrics(pred[nzm], od[nzm].astype(float))
     if city_data.get('split_scope') == 'multi_city':
         mt = dict(mf)
     else:
         mt = compute_metrics(pred[tsm], od[tsm].astype(float))
-    train_val_metrics = masked_train_val_cpc_metrics(
+    canonical_metrics = canonical_od_metrics(
         pred,
         od,
-        tm,
-        vm,
+        test_mask=None if city_data.get('split_scope') == 'multi_city' else tsm,
+        train_mask=tm,
+        val_mask=vm,
         train_full_mask=city_data.get('train_full_mask'),
         val_full_mask=city_data.get('val_full_mask'),
     )
+    train_val_metrics = {
+        key: canonical_metrics[key]
+        for key in ("CPC_train_full", "CPC_val_full", "CPC_train_nz", "CPC_val_nz")
+        if key in canonical_metrics
+    }
 
-    print(f"  Full:    CPC={mf['CPC']:.4f}  MAE={mf['MAE']:.4f}")
-    print(f"  Nonzero: CPC={mnz['CPC']:.4f}")
-    print(f"  Test:    CPC={mt['CPC']:.4f}")
+    print(f"  Full:    CPC={canonical_metrics['CPC_full']:.4f}  MAE={canonical_metrics['MAE_full']:.4f}")
+    print(f"  Nonzero: CPC={canonical_metrics['CPC_nz']:.4f}")
+    print(f"  Test:    CPC={canonical_metrics['CPC_test']:.4f}")
     print(f"  Train/Val: {format_train_val_cpc_metrics(train_val_metrics)}")
 
     # Save model to disk
@@ -234,9 +221,7 @@ def train_lgbm_from_model(run_id, city_data, donor_model, donor_name):
         'prediction_mode': 'raw', 'pe_type': '-', 'gps_norm_type': '-',
         'use_log_transform': False, 'n_params': 0,
         'epochs_trained': lgbm_model.best_iteration,
-        'CPC_full': mf['CPC'], 'CPC_nz': mnz['CPC'], 'CPC_test': mt['CPC'],
-        'MAE_full': mf['MAE'], 'RMSE_full': mf['RMSE'],
-        **train_val_metrics,
+        **canonical_metrics,
     }
     with open(METRICS_CSV, 'a', newline='') as f:
         w = csv.DictWriter(f, fieldnames=row.keys())

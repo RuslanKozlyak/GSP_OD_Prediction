@@ -5,7 +5,7 @@ import pandas as pd
 from .config import RESULT_COLUMNS, RESULTS_DIR
 
 
-def results_to_dataframe(results_dict, model_types=None, sort_by="CPC"):
+def results_to_dataframe(results_dict, model_types=None, sort_by="CPC_full"):
     if not results_dict:
         return pd.DataFrame()
     df = pd.DataFrame(results_dict).T
@@ -36,20 +36,20 @@ def build_combined_summary(single_city_results, multi_city_results):
         row = {"Model": model}
         if model in single_city_results:
             sc = single_city_results[model]
-            row["SC_CPC"] = sc.get("CPC")
-            row["SC_CPC_std"] = sc.get("CPC_std")
-            row["SC_MAE"] = sc.get("MAE")
-            row["SC_MAE_std"] = sc.get("MAE_std")
-            row["SC_RMSE"] = sc.get("RMSE")
-            row["SC_RMSE_std"] = sc.get("RMSE_std")
+            row["SC_CPC_full"] = sc.get("CPC_full")
+            row["SC_CPC_full_std"] = sc.get("CPC_full_std")
+            row["SC_MAE_full"] = sc.get("MAE_full")
+            row["SC_MAE_full_std"] = sc.get("MAE_full_std")
+            row["SC_RMSE_full"] = sc.get("RMSE_full")
+            row["SC_RMSE_full_std"] = sc.get("RMSE_full_std")
         if model in multi_city_results:
             mc = multi_city_results[model]
-            row["MC_CPC"] = mc.get("CPC")
-            row["MC_CPC_std"] = mc.get("CPC_std")
-            row["MC_MAE"] = mc.get("MAE")
-            row["MC_MAE_std"] = mc.get("MAE_std")
-            row["MC_RMSE"] = mc.get("RMSE")
-            row["MC_RMSE_std"] = mc.get("RMSE_std")
+            row["MC_CPC_full"] = mc.get("CPC_full")
+            row["MC_CPC_full_std"] = mc.get("CPC_full_std")
+            row["MC_MAE_full"] = mc.get("MAE_full")
+            row["MC_MAE_full_std"] = mc.get("MAE_full_std")
+            row["MC_RMSE_full"] = mc.get("RMSE_full")
+            row["MC_RMSE_full_std"] = mc.get("RMSE_full_std")
         rows.append(row)
     return pd.DataFrame(rows).set_index("Model")
 
@@ -59,7 +59,7 @@ def plot_comparison(results_dict, title, metrics_to_plot=None):
     if not results_dict:
         print("No results to plot.")
         return
-    metrics_to_plot = metrics_to_plot or ["CPC", "MAE", "RMSE"]
+    metrics_to_plot = metrics_to_plot or ["CPC_full", "MAE_full", "RMSE_full"]
     df = pd.DataFrame(results_dict).T
     available = [metric for metric in metrics_to_plot if metric in df.columns]
     if not available:
@@ -91,7 +91,7 @@ def plot_comparison(results_dict, title, metrics_to_plot=None):
         axes[idx].set_xlabel(metric)
         axes[idx].set_title(metric)
         axes[idx].grid(axis="x", alpha=0.3)
-        best_idx = int(np.argmax(vals) if metric in ("CPC", "accuracy", "matrix_COS_similarity") else np.argmin(vals))
+        best_idx = int(np.argmax(vals) if metric in ("CPC_full", "CPC_nz", "CPC_test", "accuracy", "matrix_COS_similarity") else np.argmin(vals))
         axes[idx].barh(best_idx, vals[best_idx], color="red", alpha=0.7)
 
     fig.suptitle(title, fontsize=14, fontweight="bold")

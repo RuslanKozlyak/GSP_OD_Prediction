@@ -150,10 +150,12 @@ def save_metrics_to_csv(run_id, run_name, config, metrics_full, metrics_nz,
                         metrics_test, n_params, epochs_trained, status='ok',
                         metrics_csv=None, run_suffix=None,
                         checkpoint_selection=None, selected_epoch=None,
-                        selection_metric=None, selection_metric_value=None):
+                        selection_metric=None, selection_metric_value=None,
+                        train_val_metrics=None):
     ensure_dirs()
     metrics_csv = Path(metrics_csv) if metrics_csv is not None else METRICS_CSV
     metrics_csv.parent.mkdir(exist_ok=True)
+    train_val_metrics = train_val_metrics or {}
     row = {
         'timestamp': datetime.now().isoformat(),
         'run_id': run_id, 'name': run_name, 'status': status,
@@ -173,12 +175,18 @@ def save_metrics_to_csv(run_id, run_name, config, metrics_full, metrics_nz,
         'n_params': n_params, 'epochs_trained': epochs_trained,
         'CPC_full': metrics_full.get('CPC'), 'CPC_nz': metrics_nz.get('CPC'),
         'CPC_test': metrics_test.get('CPC'),
+        'CPC_val': train_val_metrics.get('CPC_val_nz'),
+        'CPC_train_full': train_val_metrics.get('CPC_train_full'),
+        'CPC_val_full': train_val_metrics.get('CPC_val_full'),
+        'CPC_train_nz': train_val_metrics.get('CPC_train_nz'),
+        'CPC_val_nz': train_val_metrics.get('CPC_val_nz'),
         'MAE_full': metrics_full.get('MAE'), 'RMSE_full': metrics_full.get('RMSE'),
         # Full metric suite from cal_od_metrics
-        'CPC_nonzero': metrics_full.get('CPC_nonzero'),
-        'NRMSE': metrics_full.get('NRMSE'),
-        'MAPE': metrics_full.get('MAPE'),
-        'SMAPE': metrics_full.get('SMAPE'),
+        'MAE_nz': metrics_nz.get('MAE'),
+        'RMSE_nz': metrics_nz.get('RMSE'),
+        'NRMSE_full': metrics_full.get('NRMSE'),
+        'MAPE_full': metrics_full.get('MAPE'),
+        'SMAPE_full': metrics_full.get('SMAPE'),
         'accuracy': metrics_full.get('accuracy'),
         'matrix_COS_similarity': metrics_full.get('matrix_COS_similarity'),
         'JSD_inflow': metrics_full.get('JSD_inflow'),

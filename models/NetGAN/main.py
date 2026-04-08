@@ -5,7 +5,7 @@ import sys
 import numpy as np
 import torch
 
-from models.shared.metrics import cal_od_metrics, average_listed_metrics
+from models.shared.metrics import canonical_od_metrics
 from models.shared.data_load import load_graph_data, get_scalers, build_dgl_graph
 
 
@@ -158,6 +158,6 @@ def evaluate(trained, test_areas, data_path, device=None):
             od_gen, _, _ = generator.generate_OD_net(g, nf_t, dis_t)
         od_hat = od_scaler.inverse_transform(od_gen.cpu().numpy().reshape(-1, 1)).reshape(od.shape)
         od_hat[od_hat < 0] = 0
-        metrics_all.append(cal_od_metrics(od_hat, od))
+        metrics_all.append(canonical_od_metrics(od_hat, od))
 
     return metrics_all

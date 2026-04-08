@@ -87,7 +87,10 @@ class GPSBenchmarkLoader:
                 pred, city_data, is_test_city=is_test_city
             )['combined']
             if verbose:
-                print(f"  {run_id}: CPC={metrics['CPC']:.4f}  MAE={metrics['MAE']:.4f}")
+                print(
+                    f"  {run_id}: CPC_full={metrics['CPC_full']:.4f}  "
+                    f"MAE_full={metrics['MAE_full']:.4f}"
+                )
                 if 'CPC_train_full' in metrics:
                     print(f"  Train/Val: {format_train_val_cpc_metrics(metrics)}")
             return metrics
@@ -187,7 +190,10 @@ class GPSBenchmarkLoader:
                 inference_seed=inference_seed,
             )
             metrics = summarize_prediction_metrics(pred, city_data)['combined']
-            print(f"  {run_id}: CPC={metrics['CPC']:.4f}  MAE={metrics['MAE']:.4f}")
+            print(
+                f"  {run_id}: CPC_full={metrics['CPC_full']:.4f}  "
+                f"MAE_full={metrics['MAE_full']:.4f}"
+            )
             if 'CPC_train_full' in metrics:
                 print(f"  Train/Val: {format_train_val_cpc_metrics(metrics)}")
             return metrics

@@ -15,7 +15,7 @@ from tqdm.auto import tqdm
 from models.shared.metrics import (
     average_listed_metrics,
     average_matrix_cpc_metrics,
-    cal_od_metrics,
+    canonical_od_metrics,
     compute_metrics,
     format_train_val_cpc_metrics,
     masked_train_val_cpc_metrics,
@@ -57,7 +57,7 @@ def _compute_flat_validation_metrics(model, xs_valid, ys_valid, xs_valid_full, y
 
     return {
         'CPC_val': float(np.mean(cpc_vals)) if cpc_vals else float('nan'),
-        'CPC_full': float(np.mean(cpc_fulls)) if cpc_fulls else float('nan'),
+        'CPC_val_full': float(np.mean(cpc_fulls)) if cpc_fulls else float('nan'),
     }
 
 
@@ -95,6 +95,12 @@ def _print_train_val_metrics(metrics):
     print(f"  Train/Val: {format_train_val_cpc_metrics(metrics)}")
 
 
+def _print_validation_metrics(metrics):
+    cpc_val = metrics.get('CPC_val', float('nan'))
+    cpc_val_full = metrics.get('CPC_val_full', float('nan'))
+    print(f"  Val: CPC_val={cpc_val:.4f}  CPC_val_full={cpc_val_full:.4f}")
+
+
 def _attach_validation_metrics(metrics_all, validation_metrics):
     for metric in metrics_all:
         metric.update(validation_metrics)
@@ -128,7 +134,7 @@ def _compute_gmel_validation_metrics(gmel, decoder, nfeat_scaler, valid_areas, d
         val_mask = single_city_data['val_mask']
         return {
             'CPC_val': compute_metrics(pred[val_mask], od[val_mask])['CPC'],
-            'CPC_full': compute_metrics(pred.ravel(), od.ravel())['CPC'],
+            'CPC_val_full': compute_metrics(pred.ravel(), od.ravel())['CPC'],
         }
 
     nf_valid, adj_valid, dis_valid, od_valid = load_graph_data(valid_areas, data_path)
@@ -137,7 +143,7 @@ def _compute_gmel_validation_metrics(gmel, decoder, nfeat_scaler, valid_areas, d
         pred = _predict_gmel_matrix(gmel, decoder, nfeat_scaler, nf, adj, dis, device)
         cpcs.append(compute_metrics(pred.ravel(), od.ravel())['CPC'])
     avg_cpc = float(np.mean(cpcs)) if cpcs else float('nan')
-    return {'CPC_val': avg_cpc, 'CPC_full': avg_cpc}
+    return {'CPC_val': avg_cpc, 'CPC_val_full': avg_cpc}
 
 
 def _compute_gmel_train_val_metrics(gmel, decoder, nfeat_scaler, train_areas, valid_areas,
@@ -231,16 +237,6 @@ def _load_local_module(module_name, path):
     return module
 
 
-def _enrich_metrics_with_test(mf, pred_matrix, od_matrix, test_mask):
-    """Add benchmark-specific test metrics to a cal_od_metrics dict."""
-    if test_mask is not None and np.any(test_mask):
-        mt = compute_metrics(pred_matrix[test_mask], od_matrix[test_mask].astype(float))
-        mf['CPC_test'] = mt['CPC']
-        mf['MAE_test'] = mt['MAE']
-        mf['RMSE_test'] = mt['RMSE']
-    return mf
-
-
 def _repeat_inference(eval_once, inference_seeds):
     seeds = list(inference_seeds or [None])
     metric_runs = []
@@ -252,12 +248,16 @@ def _repeat_inference(eval_once, inference_seeds):
 
 
 def _average_numeric_metrics(metric_dicts):
-    numeric_keys = [
-        key for key, value in metric_dicts[0].items()
+    numeric_keys = sorted({
+        key
+        for metric in metric_dicts
+        for key, value in metric.items()
         if isinstance(value, Real) and not isinstance(value, bool)
-    ]
+    })
     return {
-        key: sum(metric[key] for metric in metric_dicts) / len(metric_dicts)
+        key: sum(metric[key] for metric in metric_dicts if key in metric) / sum(
+            1 for metric in metric_dicts if key in metric
+        )
         for key in numeric_keys
     }
 
@@ -518,8 +518,8 @@ def train_flat_model(model_name, train_areas, valid_areas, test_areas, data_path
             payload['ys_valid_full'],
         )
         validation_metrics.update(_compute_flat_train_val_metrics(model, payload))
-        print(f"  Val: CPC_val={validation_metrics['CPC_val']:.4f}  "
-              f"CPC_full={validation_metrics['CPC_full']:.4f}")
+        validation_metrics['CPC_val'] = validation_metrics.get('CPC_val_nz', validation_metrics['CPC_val'])
+        _print_validation_metrics(validation_metrics)
         _print_train_val_metrics(validation_metrics)
         _save_flat_model_artifact(module, model_name, run_id, model)
         return run_id
@@ -553,8 +553,8 @@ def infer_flat_model(model_name, train_areas, valid_areas, test_areas, data_path
             payload['ys_valid_full'],
         )
         validation_metrics.update(_compute_flat_train_val_metrics(model, payload))
-        print(f"  Val: CPC_val={validation_metrics['CPC_val']:.4f}  "
-              f"CPC_full={validation_metrics['CPC_full']:.4f}")
+        validation_metrics['CPC_val'] = validation_metrics.get('CPC_val_nz', validation_metrics['CPC_val'])
+        _print_validation_metrics(validation_metrics)
         _print_train_val_metrics(validation_metrics)
 
         def evaluate_once(inference_seed=None):
@@ -570,9 +570,10 @@ def infer_flat_model(model_name, train_areas, valid_areas, test_areas, data_path
                     inference_seed=inference_seed,
                     model_name=model_name,
                 )
-                mf = cal_od_metrics(pred_matrix, payload['od_matrix'])
-                _enrich_metrics_with_test(
-                    mf, pred_matrix, payload['od_matrix'], payload['test_mask']
+                mf = canonical_od_metrics(
+                    pred_matrix,
+                    payload['od_matrix'],
+                    test_mask=payload['test_mask'],
                 )
                 metrics_all = [mf]
             else:
@@ -591,14 +592,14 @@ def infer_flat_model(model_name, train_areas, valid_areas, test_areas, data_path
                         inference_seed=inference_seed,
                         model_name=model_name,
                     )
-                    metrics_all.append(cal_od_metrics(y_hat, y_true))
+                    metrics_all.append(canonical_od_metrics(y_hat, y_true))
             return _attach_validation_metrics(metrics_all, validation_metrics)
 
         metric_runs = _repeat_inference(evaluate_once, inference_seeds)
         if metric_runs:
             avg = average_listed_metrics(metric_runs)
-            print(f"  CPC={avg['CPC']:.4f}  RMSE={avg['RMSE']:.2f}  "
-                  f"MAE={avg['MAE']:.2f}  ({time.time() - t0:.1f}s)")
+            print(f"  CPC_full={avg['CPC_full']:.4f}  RMSE_full={avg['RMSE_full']:.2f}  "
+                  f"MAE_full={avg['MAE_full']:.2f}  ({time.time() - t0:.1f}s)")
         return metric_runs
     finally:
         del payload
@@ -660,8 +661,8 @@ def train_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
                 gmel, decoder, nfeat_scaler, train_areas, valid_areas, data_path,
                 single_city_data=single_city_data, device=device,
             ))
-            print(f"  Val: CPC_val={validation_metrics['CPC_val']:.4f}  "
-                  f"CPC_full={validation_metrics['CPC_full']:.4f}")
+            validation_metrics['CPC_val'] = validation_metrics.get('CPC_val_nz', validation_metrics['CPC_val'])
+            _print_validation_metrics(validation_metrics)
             _print_train_val_metrics(validation_metrics)
             _save_gmel_artifacts(run_id, model_name, gmel, decoder, nfeat_scaler, dis_scaler)
             del gmel, decoder
@@ -724,8 +725,8 @@ def infer_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
                 gmel, decoder, nfeat_scaler, train_areas, valid_areas, data_path,
                 single_city_data=single_city_data, device=device,
             ))
-            print(f"  Val: CPC_val={validation_metrics['CPC_val']:.4f}  "
-                  f"CPC_full={validation_metrics['CPC_full']:.4f}")
+            validation_metrics['CPC_val'] = validation_metrics.get('CPC_val_nz', validation_metrics['CPC_val'])
+            _print_validation_metrics(validation_metrics)
             _print_train_val_metrics(validation_metrics)
 
             def evaluate_once(inference_seed=None):
@@ -744,8 +745,11 @@ def infer_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
                         inference_seed=inference_seed,
                         model_name=model_name,
                     )
-                    mf = cal_od_metrics(od_hat, od_full)
-                    _enrich_metrics_with_test(mf, od_hat, od_full, single_city_data['test_mask'])
+                    mf = canonical_od_metrics(
+                        od_hat,
+                        od_full,
+                        test_mask=single_city_data['test_mask'],
+                    )
                     metrics_all = [mf]
                 else:
                     metrics_all = []
@@ -765,7 +769,7 @@ def infer_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
                             inference_seed=inference_seed,
                             model_name=model_name,
                         )
-                        metrics_all.append(cal_od_metrics(od_hat, od))
+                        metrics_all.append(canonical_od_metrics(od_hat, od))
                 return _attach_validation_metrics(metrics_all, validation_metrics)
 
             metric_runs = _repeat_inference(evaluate_once, inference_seeds)
@@ -779,20 +783,20 @@ def infer_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
             single_city_data = None
             if single_city_split:
                 single_city_data = prepare_single_city_graph(train_areas[0], data_path=data_path)
-                validation_metrics = {'CPC_val': float('nan'), 'CPC_full': float('nan')}
+                validation_metrics = {'CPC_val': float('nan'), 'CPC_val_full': float('nan')}
             else:
                 val_metrics_list = module.evaluate(trained, valid_areas, str(data_path), device=device)
                 val_avg = average_listed_metrics(val_metrics_list) if val_metrics_list else {}
                 validation_metrics = {
-                    'CPC_val': val_avg.get('CPC', float('nan')),
-                    'CPC_full': val_avg.get('CPC', float('nan')),
+                    'CPC_val': val_avg.get('CPC_full', float('nan')),
+                    'CPC_val_full': val_avg.get('CPC_full', float('nan')),
                 }
             validation_metrics.update(_compute_netgan_train_val_metrics(
                 trained, train_areas, valid_areas, data_path,
                 single_city_data=single_city_data, device=device,
             ))
-            print(f"  Val: CPC_val={validation_metrics['CPC_val']:.4f}  "
-                  f"CPC_full={validation_metrics['CPC_full']:.4f}")
+            validation_metrics['CPC_val'] = validation_metrics.get('CPC_val_nz', validation_metrics['CPC_val'])
+            _print_validation_metrics(validation_metrics)
             _print_train_val_metrics(validation_metrics)
 
             def evaluate_once(inference_seed=None):
@@ -821,8 +825,11 @@ def infer_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
                         inference_seed=inference_seed,
                         model_name=model_name,
                     )
-                    mf = cal_od_metrics(od_hat, od_full)
-                    _enrich_metrics_with_test(mf, od_hat, od_full, single_city_data['test_mask'])
+                    mf = canonical_od_metrics(
+                        od_hat,
+                        od_full,
+                        test_mask=single_city_data['test_mask'],
+                    )
                     metrics_all = [mf]
                 else:
                     metrics_all = []
@@ -853,7 +860,7 @@ def infer_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
                             inference_seed=inference_seed,
                             model_name=model_name,
                         )
-                        metrics_all.append(cal_od_metrics(od_hat, od))
+                        metrics_all.append(canonical_od_metrics(od_hat, od))
                 return _attach_validation_metrics(metrics_all, validation_metrics)
 
             metric_runs = _repeat_inference(evaluate_once, inference_seeds)
@@ -864,8 +871,8 @@ def infer_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
 
         if metric_runs:
             avg = average_listed_metrics(metric_runs)
-            print(f"  CPC={avg['CPC']:.4f}  RMSE={avg['RMSE']:.2f}  "
-                  f"MAE={avg['MAE']:.2f}  ({time.time() - t0:.1f}s)")
+            print(f"  CPC_full={avg['CPC_full']:.4f}  RMSE_full={avg['RMSE_full']:.2f}  "
+                  f"MAE_full={avg['MAE_full']:.2f}  ({time.time() - t0:.1f}s)")
         return metric_runs
     finally:
         gc.collect()
@@ -996,18 +1003,15 @@ def infer_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_
                 ):
                     if split_metrics:
                         averaged_split = _average_numeric_metrics(split_metrics)
-                        if "CPC" in averaged_split:
-                            averaged[f"CPC_{prefix}_full"] = averaged_split["CPC"]
-                        cpc_nz = averaged_split.get(
-                            "CPC_nz", averaged_split.get("CPC_nonzero")
-                        )
-                        if cpc_nz is not None:
-                            averaged[f"CPC_{prefix}_nz"] = cpc_nz
+                        if "CPC_full" in averaged_split:
+                            averaged[f"CPC_{prefix}_full"] = averaged_split["CPC_full"]
+                        if "CPC_nz" in averaged_split:
+                            averaged[f"CPC_{prefix}_nz"] = averaged_split["CPC_nz"]
                 metric_runs.append(averaged)
 
     if metric_runs:
         avg = average_listed_metrics(metric_runs)
-        print(f"  CPC={avg.get('CPC', float('nan')):.4f}  ({time.time() - t0:.1f}s)")
+        print(f"  CPC_full={avg.get('CPC_full', float('nan')):.4f}  ({time.time() - t0:.1f}s)")
         if "CPC_train_full" in avg:
             print(f"  Train/Val: {format_train_val_cpc_metrics(avg)}")
     return metric_runs
@@ -1062,11 +1066,20 @@ def run_diffusion_model(model_name, train_areas, valid_areas, test_areas, data_p
                 break
         if dict_lines:
             avg_metrics = json.loads("\n".join(dict_lines).replace("'", '"'))
+            for old, new in (
+                ("CPC", "CPC_full"),
+                ("MAE", "MAE_full"),
+                ("RMSE", "RMSE_full"),
+                ("CPC_nonzero", "CPC_nz"),
+                ("MAE_nonzero", "MAE_nz"),
+                ("RMSE_nonzero", "RMSE_nz"),
+            ):
+                if old in avg_metrics and new not in avg_metrics:
+                    avg_metrics[new] = avg_metrics.pop(old)
             avg_metrics.setdefault("CPC_val", float('nan'))
-            avg_metrics.setdefault("CPC_full", float('nan'))
             for key in ("CPC_train_full", "CPC_val_full", "CPC_train_nz", "CPC_val_nz"):
                 avg_metrics.setdefault(key, float('nan'))
-            print(f"  CPC={avg_metrics.get('CPC', 'N/A')}  ({time.time() - t0:.1f}s)")
+            print(f"  CPC_full={avg_metrics.get('CPC_full', 'N/A')}  ({time.time() - t0:.1f}s)")
             repeats = list(inference_seeds or [None])
             return [dict(avg_metrics) for _ in repeats]
     except Exception as exc:
