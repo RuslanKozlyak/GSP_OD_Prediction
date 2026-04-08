@@ -97,6 +97,9 @@ def compute_loss_for_city(model, cd, config, origin_batch_indices=None):
         elif lt == 'multitask':
             pr = regression_prediction_from_scores(sc, config, pm, use_log_flow, use_log_norm)
             rl = F.mse_loss(pr, tt)
+        elif lt == 'mae':
+            pr = regression_prediction_from_scores(sc, config, pm, use_log_flow, use_log_norm)
+            rl = F.l1_loss(pr, tt)
         elif lt == 'zinb':
             mu = F.softplus(sc) + 1e-4
             th = torch.ones_like(mu) * 10.0
