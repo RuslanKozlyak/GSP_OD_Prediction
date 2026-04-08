@@ -101,6 +101,7 @@ class TrainingConfig:
     mc_epochs:          int   = MC_EPOCHS
     # GAN training (ODGN / GAT-GAN style adversarial topology loss)
     training_mode:      Literal['supervised', 'gan'] = 'supervised'
+    gan_only:           bool  = False
     adv_weight:         float = 0.05
     discriminator_lr:   float = LEARNING_RATE
     gan_gp_lambda:      float = 10.0
@@ -143,6 +144,8 @@ class TrainingConfig:
                 )
         if self.adv_weight < 0:
             raise ValueError("TrainingConfig.adv_weight must be non-negative")
+        if self.gan_only and self.training_mode != 'gan':
+            raise ValueError("TrainingConfig.gan_only=True requires training_mode='gan'")
         if self.discriminator_lr <= 0:
             raise ValueError("TrainingConfig.discriminator_lr must be positive")
         if self.gan_gp_lambda < 0:
@@ -182,6 +185,8 @@ class TrainingConfig:
                 f"GAN adv={self.adv_weight:g} ncritic={self.gan_n_critic} "
                 f"walk={self.gan_walk_batch_size}x{self.gan_walk_len}"
             )
+            if self.gan_only:
+                parts.append("gan_only")
         parts.append(f"zeros={self.include_zero_pairs} samp={self.use_dest_sampling}")
         return " | ".join(parts)
 
@@ -214,6 +219,7 @@ def save_metrics_to_csv(run_id, run_name, config, metrics_full, metrics_nz,
         'encoder_type': config.encoder_type,
         'decoder': config.decoder_type, 'loss_type': config.loss_type,
         'training_mode': config.training_mode,
+        'gan_only': config.gan_only,
         'prediction_mode': config.prediction_mode,
         'pe_type': config.pe_type, 'gps_norm_type': config.gps_norm_type,
         'use_log_transform': config.use_log_transform,

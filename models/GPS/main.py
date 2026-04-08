@@ -167,24 +167,30 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         epoch_gan_gps = []
         nan_count = 0
         total_batches = 0
+        gan_only_epoch = (
+            discriminator is not None
+            and config.gan_only
+            and epoch > config.gan_pretrain_epochs
+        )
 
         for cid in city_ids_shuffled:
             cd = train_cds[cid]
             cc = replace(config, n_dest_sample=cd.get('city_n_dest', config.n_dest_sample)) if is_multi else config
-            origins = np.array(list(cd['nonzero_dest_dict'].keys()))
-            np.random.shuffle(origins)
-            for bs in range(0, len(origins), ORIGIN_BATCH_SIZE):
-                batch = origins[bs:bs + ORIGIN_BATCH_SIZE].tolist()
-                optimizer.zero_grad()
-                loss = compute_loss_for_city(model, cd, cc, origin_batch_indices=batch)
-                total_batches += 1
-                if torch.isnan(loss) or torch.isinf(loss):
-                    nan_count += 1
-                    continue
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                optimizer.step()
-                epoch_losses.append(loss.item())
+            if not gan_only_epoch:
+                origins = np.array(list(cd['nonzero_dest_dict'].keys()))
+                np.random.shuffle(origins)
+                for bs in range(0, len(origins), ORIGIN_BATCH_SIZE):
+                    batch = origins[bs:bs + ORIGIN_BATCH_SIZE].tolist()
+                    optimizer.zero_grad()
+                    loss = compute_loss_for_city(model, cd, cc, origin_batch_indices=batch)
+                    total_batches += 1
+                    if torch.isnan(loss) or torch.isinf(loss):
+                        nan_count += 1
+                        continue
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    optimizer.step()
+                    epoch_losses.append(loss.item())
 
             if discriminator is not None and epoch > config.gan_pretrain_epochs:
                 gan_stats = gan_step_for_city(
@@ -257,6 +263,7 @@ def _train_loop(run_id, run_name, config, model, city_datas,
 
         if epoch % 5 == 0 or epoch == 1:
             nan_str = f" NaN:{nan_count}" if nan_count > 0 else ""
+            train_text = "gan_only" if gan_only_epoch else f"{train_loss:.4f}"
             gan_str = ""
             if discriminator is not None:
                 if epoch <= config.gan_pretrain_epochs:
@@ -265,7 +272,7 @@ def _train_loop(run_id, run_name, config, model, city_datas,
                     d_text = "-" if np.isnan(gan_d_loss) else f"{gan_d_loss:.4f}"
                     g_text = "-" if np.isnan(gan_g_loss) else f"{gan_g_loss:.4f}"
                     gan_str = f" gan_g={g_text} gan_d={d_text}"
-            print(f"  {epoch:3d}/{max_epochs}  train={train_loss:.4f}  val={avg_val_loss:.4f}  "
+            print(f"  {epoch:3d}/{max_epochs}  train={train_text}  val={avg_val_loss:.4f}  "
                   f"{format_train_val_cpc_metrics(train_val_cpc)}  "
                   f"{time.time()-t0:.1f}s{flag}{nan_str}{gan_str}")
         if patience_count >= config.patience:
