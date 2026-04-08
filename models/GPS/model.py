@@ -124,6 +124,64 @@ class TransFlowerDecoder(nn.Module):
         return self.ph(self.tf(fe.unsqueeze(0)).squeeze(0)).squeeze(-1)
 
 
+class GravityGuidedDecoder(nn.Module):
+    """ODGN-style gravity decoder for GPS embeddings.
+
+    It returns log-gravity scores:
+        log T_ij = log G + l1 log M_out(i) + l2 log M_in(j) - l3 log(1 + r_ij)
+
+    The role-specific masses keep OD directionality, while the learned latent
+    locations provide the gravity distance term from the paper. A small learned
+    weight can also mix in the scaled geographic distance already used by GPS.
+    """
+    def __init__(self, hd, loc_dim=None, extra_dim=0, eps=1e-6):
+        super().__init__()
+        loc_dim = loc_dim or max(2, min(16, hd // 2))
+        self.eps = eps
+        self.origin_mass = Sequential(Linear(hd, hd), ReLU(), Linear(hd, 1))
+        self.dest_mass = Sequential(Linear(hd, hd), ReLU(), Linear(hd, 1))
+        self.location = Linear(hd, loc_dim)
+        self.log_g = nn.Parameter(torch.zeros(()))
+        self.lambda_origin = nn.Parameter(torch.ones(()))
+        self.lambda_dest = nn.Parameter(torch.ones(()))
+        self.lambda_dist = nn.Parameter(torch.ones(()))
+        self.geo_scale = nn.Parameter(torch.zeros(()))
+        self.extra_bias = Linear(extra_dim, 1) if extra_dim else None
+        if self.extra_bias is not None:
+            nn.init.zeros_(self.extra_bias.weight)
+            nn.init.zeros_(self.extra_bias.bias)
+
+    def forward(self, oe, de, d=None, extra=None):
+        mo = F.softplus(self.origin_mass(oe)).squeeze(-1) + self.eps
+        md = F.softplus(self.dest_mass(de)).squeeze(-1) + self.eps
+        lo = self.location(oe)
+        ld = self.location(de)
+        dist = torch.linalg.vector_norm(lo - ld, dim=-1)
+        if d is not None:
+            # Distances are MinMax-scaled in data_load and may be negative off
+            # the train range, so clamp before using them as a gravity radius.
+            dist = dist + F.softplus(self.geo_scale) * d.squeeze(-1).clamp_min(0.0)
+        dist = dist.clamp_min(self.eps)
+
+        l1 = F.softplus(self.lambda_origin) + self.eps
+        l2 = F.softplus(self.lambda_dest) + self.eps
+        l3 = F.softplus(self.lambda_dist) + self.eps
+        score = self.log_g + l1 * torch.log(mo) + l2 * torch.log(md) - l3 * torch.log1p(dist)
+        if self.extra_bias is not None and extra is not None:
+            score = score + self.extra_bias(extra).squeeze(-1)
+        return score
+
+
+def make_pair_decoder(dt, hd, th=4, tl=2, tdo=0.1, extra_dim=0):
+    if dt == 'bilinear':
+        return BilinearDecoder(hd)
+    if dt == 'transflower':
+        return TransFlowerDecoder(hd, th, tl, tdo, extra_dim=extra_dim)
+    if dt == 'gravity_guided':
+        return GravityGuidedDecoder(hd, extra_dim=extra_dim)
+    raise ValueError(dt)
+
+
 class MLPEncoder(nn.Module):
     def __init__(self, idim, hd):
         super().__init__()
@@ -142,12 +200,7 @@ class GPSODModel(nn.Module):
         self.hidden_dim = hd
         self.rle = rle
         rle_dim = rle.out_dim if rle else 0
-        if dt == 'bilinear':
-            self.decoder = BilinearDecoder(hd)
-        elif dt == 'transflower':
-            self.decoder = TransFlowerDecoder(hd, th, tl, tdo, extra_dim=rle_dim)
-        else:
-            raise ValueError(dt)
+        self.decoder = make_pair_decoder(dt, hd, th, tl, tdo, extra_dim=rle_dim)
         self.outflow_head = Linear(hd, 1)
         self.inflow_head = Linear(hd, 1)
 
@@ -173,13 +226,14 @@ class GPSODModel(nn.Module):
 
 
 class TransFlowerODModel(nn.Module):
-    """TransFlower: MLP encoder (no graph) + TransFlowerDecoder + optional RLE."""
-    def __init__(self, idim, hd, nh=4, nl=2, do=0.1, rle=None):
+    """MLP encoder (no graph) with a pair decoder and optional RLE."""
+    def __init__(self, idim, hd, nh=4, nl=2, do=0.1, rle=None, decoder_type='transflower'):
         super().__init__()
         self.encoder = MLPEncoder(idim, hd)
         self.rle = rle
+        self.decoder_type = decoder_type
         rle_dim = rle.out_dim if rle else 0
-        self.decoder = TransFlowerDecoder(hd, nh, nl, do, extra_dim=rle_dim)
+        self.decoder = make_pair_decoder(decoder_type, hd, nh, nl, do, extra_dim=rle_dim)
         self.outflow_head = Linear(hd, 1)
         self.inflow_head = Linear(hd, 1)
 
@@ -221,7 +275,8 @@ def make_model(config, input_dim=None, edge_dim=None, graph_data_ref=None):
     if config.encoder_type == 'mlp':
         assert input_dim is not None
         return TransFlowerODModel(
-            input_dim, HIDDEN_DIM, TF_HEADS, TF_LAYERS, TF_DROPOUT, rle=rle
+            input_dim, HIDDEN_DIM, TF_HEADS, TF_LAYERS, TF_DROPOUT,
+            rle=rle, decoder_type=config.decoder_type,
         ).to(device)
     else:  # 'gps'
         assert input_dim and edge_dim

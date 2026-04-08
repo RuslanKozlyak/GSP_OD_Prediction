@@ -75,7 +75,7 @@ class TrainingConfig:
     # fmt: off
     # ── Architecture ──────────────────────────────────────────────────────────
     encoder_type:       Literal['gps', 'mlp']                               = 'gps'
-    decoder_type:       Literal['bilinear', 'transflower', 'lgbm', 'gbrt']  = 'transflower'
+    decoder_type:       Literal['bilinear', 'transflower', 'gravity_guided', 'lgbm', 'gbrt'] = 'transflower'
     pe_type:            Optional[Literal['rwpe', 'spe', 'rrwp', 'lape']]    = 'rwpe'
     gps_norm_type:      Literal['batch_norm', 'graph_norm']                 = 'batch_norm'
     # ── Loss ──────────────────────────────────────────────────────────────────
@@ -112,7 +112,7 @@ class TrainingConfig:
     def __post_init__(self):
         _valid = {
             'encoder_type':    ('gps', 'mlp'),
-            'decoder_type':    ('bilinear', 'transflower', 'lgbm', 'gbrt'),
+            'decoder_type':    ('bilinear', 'transflower', 'gravity_guided', 'lgbm', 'gbrt'),
             'pe_type':         ('rwpe', 'spe', 'rrwp', 'lape', None),
             'gps_norm_type':   ('batch_norm', 'graph_norm'),
             'loss_type':       ('huber', 'ce', 'ce_old', 'multitask', 'zinb', 'focal', 'mae'),
