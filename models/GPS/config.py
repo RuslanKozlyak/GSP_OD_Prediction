@@ -24,7 +24,7 @@ METRICS_CPC_NZ_BEST_CSV = RESULTS_DIR / "metrics_cpc_nz_best.csv"
 METRICS_RUNS_DIR = RESULTS_DIR / "metrics_runs"
 
 SINGLE_CITY_ID = "48201"
-MULTI_CITY_IDS = ["17031","48201","04013","06073","06059","36047","12086","48113","06065","36081"]
+MULTI_CITY_IDS = ["17031","48201","04013","06073","06059","36047","12086","48113","06065","36081", "32003", "42003"]
 SINGLE_CITY_IDS = [SINGLE_CITY_ID] + [cid for cid in MULTI_CITY_IDS if cid != SINGLE_CITY_ID][:2]
 
 # ─── Architecture ─────────────────────────────────────────────────────────────
