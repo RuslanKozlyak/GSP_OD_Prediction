@@ -27,6 +27,7 @@ def train(x_train, y_train, xs_valid=None, ys_valid=None, **kwargs):
         ('scaler', StandardScaler(copy=False)),
         ('svr', LinearSVR(
             C=kwargs.get('C', 100),
+            loss=kwargs.get('loss', 'squared_epsilon_insensitive'),
             max_iter=kwargs.get('max_iter', 10_000),
             dual=kwargs.get('dual', False),
             random_state=kwargs.get('random_state', 42),

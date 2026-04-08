@@ -76,6 +76,7 @@ BASELINE_HYPERPARAMS = {
     },
     "SVR": {
         "C": 100,
+        "loss": "squared_epsilon_insensitive",
         "max_iter": 10_000,
         "dual": False,
         "verbose": 1,
