@@ -1,6 +1,7 @@
 from collections import defaultdict
 import multiprocessing as mp
 from numbers import Real
+from pathlib import Path
 
 from models.shared.metrics import format_train_val_cpc_metrics
 
@@ -145,6 +146,33 @@ def _infer_baseline_model(model_name, train_areas, valid_areas, test_areas, data
     raise ValueError(f"Unknown model: {model_name}")
 
 
+def _missing_single_city_gps_weights(base_run_id, single_city_ids, weights_dir):
+    weights_dir = Path(WEIGHTS_DIR if weights_dir is None else weights_dir)
+    missing = []
+    for city_id in single_city_ids:
+        run_id = single_city_run_id(base_run_id, city_id)
+        weight_path = weights_dir / f"{run_id}.pt"
+        if not weight_path.exists():
+            missing.append((city_id, weight_path))
+    return missing
+
+
+def _skip_if_single_city_gps_incomplete(base_run_id, single_city_ids, weights_dir):
+    missing = _missing_single_city_gps_weights(base_run_id, single_city_ids, weights_dir)
+    if not missing:
+        return False
+    missing_preview = ", ".join(city_id for city_id, _ in missing[:5])
+    if len(missing) > 5:
+        missing_preview += ", ..."
+    print(
+        f"  [SKIP] {base_run_id}: missing GPS weights for "
+        f"{len(missing)}/{len(single_city_ids)} cities ({missing_preview}). "
+        "Train these city-suffixed runs in gps_od.ipynb first."
+    )
+    print(f"         first missing path: {missing[0][1]}")
+    return True
+
+
 def train_single_city_benchmark_models(
     single_city_ids,
     data_path,
@@ -157,6 +185,9 @@ def train_single_city_benchmark_models(
 
     trained = {}
     print("\n[Baseline training - single city]")
+    if not baseline_models:
+        print("  SKIP: no baseline models configured (BASELINE_MODELS is empty)")
+        return trained
     for model_name in baseline_models:
         try:
             if model_name in ("DiffODGen", "WeDAN"):
@@ -195,6 +226,9 @@ def train_multi_city_benchmark_models(
 
     trained = {}
     print("\n[Baseline training - multi city]")
+    if not baseline_models:
+        print("  SKIP: no baseline models configured (BASELINE_MODELS is empty)")
+        return trained, {"train": mc_train, "valid": mc_valid, "test": mc_test}
     for model_name in baseline_models:
         try:
             if model_name in ("DiffODGen", "WeDAN"):
@@ -241,6 +275,8 @@ def run_single_city_benchmark(
 
     print("\n[Our Model - GPS variants]")
     for base_run_id in gps_run_ids:
+        if _skip_if_single_city_gps_incomplete(base_run_id, single_city_ids, gps_weights_dir):
+            continue
         metric_samples = []
         for city_id in single_city_ids:
             run_id = single_city_run_id(base_run_id, city_id)

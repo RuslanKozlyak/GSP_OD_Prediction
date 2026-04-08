@@ -283,6 +283,10 @@ def _meta_path(run_id):
     return WEIGHTS_DIR / f"{run_id}_meta.joblib"
 
 
+def _ensure_weights_dir():
+    WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
 def _prepare_flat_payload(train_areas, valid_areas, test_areas, data_path, feature_mode):
     single_city_split = _is_single_city_split(train_areas, valid_areas, test_areas)
     payload = {
@@ -354,6 +358,7 @@ def _flat_model_path(model_name, run_id):
 
 
 def _save_flat_model_artifact(module, model_name, run_id, model):
+    _ensure_weights_dir()
     path = _flat_model_path(model_name, run_id)
     if hasattr(module, 'save_model'):
         module.save_model(model, str(path))
@@ -374,6 +379,7 @@ def _load_flat_model_artifact(module, model_name, run_id):
 
 
 def _save_gmel_artifacts(run_id, model_name, gmel, decoder, nfeat_scaler, dis_scaler=None):
+    _ensure_weights_dir()
     encoder_path = WEIGHTS_DIR / f"{run_id}.pt"
     meta_path = _meta_path(run_id)
     decoder_type = "lgbm" if model_name == "GMEL_LGBM" else "gbrt"
@@ -430,6 +436,7 @@ def _load_gmel_artifacts(run_id):
 
 
 def _save_netgan_artifacts(run_id, trained):
+    _ensure_weights_dir()
     generator_path = WEIGHTS_DIR / f"{run_id}.pt"
     meta_path = _meta_path(run_id)
     torch.save(
