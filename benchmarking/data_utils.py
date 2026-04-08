@@ -37,11 +37,18 @@ def split_areas(areas, seed=SEED):
 
 
 
-def split_multi_city_ids(city_ids=None, seed=SEED):
+def split_multi_city_ids(city_ids=None, seed=SEED, val_size=2, test_size=2):
     ids = list(city_ids or MULTI_CITY_IDS)
     rng = np.random.RandomState(seed)
     rng.shuffle(ids)
-    return ids[:8], ids[8:9], ids[9:]
+    n_total = len(ids)
+    if n_total <= val_size + test_size:
+        raise ValueError(
+            f"Need more than {val_size + test_size} cities for "
+            f"train/val/test split, got {n_total}"
+        )
+    n_train = n_total - val_size - test_size
+    return ids[:n_train], ids[n_train:n_train + val_size], ids[n_train + val_size:]
 
 
 

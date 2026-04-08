@@ -266,13 +266,20 @@ def load_multi_city_raw(city_ids=None, data_path=DATA_PATH):
     return multi_city_raw
 
 
-def split_multi_city(multi_city_raw, seed=42):
+def split_multi_city(multi_city_raw, seed=42, val_size=2, test_size=2):
     mc_city_ids = list(multi_city_raw.keys())
     np.random.seed(seed)
     np.random.shuffle(mc_city_ids)
-    train_city_ids = mc_city_ids[:8]
-    val_city_ids = mc_city_ids[8:9]
-    test_city_ids = mc_city_ids[9:]
+    n_total = len(mc_city_ids)
+    if n_total <= val_size + test_size:
+        raise ValueError(
+            f"Need more than {val_size + test_size} cities for "
+            f"train/val/test split, got {n_total}"
+        )
+    n_train = n_total - val_size - test_size
+    train_city_ids = mc_city_ids[:n_train]
+    val_city_ids = mc_city_ids[n_train:n_train + val_size]
+    test_city_ids = mc_city_ids[n_train + val_size:]
     return mc_city_ids, train_city_ids, val_city_ids, test_city_ids
 
 
