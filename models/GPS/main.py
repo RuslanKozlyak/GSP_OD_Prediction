@@ -53,7 +53,11 @@ def _train_loop(run_id, run_name, config, model, city_datas,
     if od_train is not None:
         print(f"  [diag] od_train_hash={hashlib.md5(np.ascontiguousarray(od_train).tobytes()).hexdigest()[:8]}")
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate, weight_decay=1e-5)
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=config.learning_rate,
+        weight_decay=config.weight_decay,
+    )
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5, min_lr=1e-5)
 
     max_epochs = config.mc_epochs if is_multi else config.epochs

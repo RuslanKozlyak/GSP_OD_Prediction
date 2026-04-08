@@ -41,6 +41,7 @@ TF_DROPOUT = 0.1
 # ─── Training ─────────────────────────────────────────────────────────────────
 EPOCHS = 200
 LEARNING_RATE = 3e-4
+WEIGHT_DECAY = 1e-5
 PATIENCE = 30
 ORIGIN_BATCH_SIZE = 32
 DEST_BATCH_SIZE = 256
@@ -95,6 +96,7 @@ class TrainingConfig:
     # ── Training schedule ─────────────────────────────────────────────────────
     epochs:             int   = EPOCHS
     learning_rate:      float = LEARNING_RATE
+    weight_decay:       float = WEIGHT_DECAY
     patience:           int   = PATIENCE
     mc_epochs:          int   = MC_EPOCHS
     # ── RLE (Relative Location Encoder) ───────────────────────────────────────
@@ -177,6 +179,8 @@ def save_metrics_to_csv(run_id, run_name, config, metrics_full, metrics_nz,
         'include_zero_pairs': config.include_zero_pairs,
         'zero_pair_ratio': config.zero_pair_ratio,
         'use_rle': config.use_rle,
+        'learning_rate': config.learning_rate,
+        'weight_decay': config.weight_decay,
         'n_params': n_params, 'epochs_trained': epochs_trained,
         'CPC_full': metrics_full.get('CPC'), 'CPC_nz': metrics_nz.get('CPC'),
         'CPC_test': metrics_test.get('CPC'),
