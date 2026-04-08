@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import BatchNorm1d, Linear, ModuleList, ReLU, Sequential
 
-from torch_geometric.nn import GINEConv, GPSConv
+from torch_geometric.nn import GATConv, GINEConv, GPSConv
 
 from .config import (
     HIDDEN_DIM, PE_DIM, PE_WALK_LEN, GPS_HEADS, GPS_LAYERS, GPS_DROPOUT,
@@ -97,6 +97,72 @@ class GPSEncoder(nn.Module):
         return h
 
 
+def _make_gat_conv(hd, nh, do, ed):
+    if hd % nh != 0:
+        raise ValueError(f"GAT hidden_dim={hd} must be divisible by heads={nh}")
+    kwargs = dict(heads=nh, concat=True, dropout=do)
+    if ed is not None and ed > 0:
+        try:
+            return GATConv(hd, hd // nh, edge_dim=ed, **kwargs), True
+        except TypeError:
+            pass
+    return GATConv(hd, hd // nh, **kwargs), False
+
+
+class GATEncoder(nn.Module):
+    """GAT encoder used for the original-style GAT-GAN ablation."""
+    def __init__(self, idim, hd, ped, ed, nl, nh=4, do=0.1, pe_type=None, norm_type='batch_norm'):
+        super().__init__()
+        self.pe_type = pe_type
+        self.use_pe = pe_type is not None
+        self.norm_type = norm_type
+        self.dropout = do
+        npd = hd - ped if self.use_pe else hd
+        self.node_proj = Sequential(Linear(idim, npd), ReLU(), Linear(npd, npd))
+        if self.use_pe:
+            pid = PE_WALK_LEN
+            self.pe_norm = BatchNorm1d(pid)
+            self.pe_proj = Linear(pid, ped)
+        else:
+            self.pe_norm = None
+            self.pe_proj = None
+
+        self.gat_layers = ModuleList()
+        self.gat_uses_edge_attr = []
+        self.norms = ModuleList()
+        for _ in range(nl):
+            conv, use_edge_attr = _make_gat_conv(hd, nh, do, ed)
+            self.gat_layers.append(conv)
+            self.gat_uses_edge_attr.append(use_edge_attr)
+            if norm_type == 'graph_norm':
+                self.norms.append(GraphNormLayer(hd))
+            elif norm_type == 'batch_norm':
+                self.norms.append(BatchNorm1d(hd))
+            else:
+                self.norms.append(nn.Identity())
+
+    def forward(self, gd):
+        h = self.node_proj(gd.x)
+        if self.use_pe:
+            pe = self.pe_proj(self.pe_norm(gd.pe))
+            h = torch.cat([h, pe], dim=-1)
+
+        batch = torch.zeros(gd.x.size(0), dtype=torch.long, device=gd.x.device)
+        edge_attr = getattr(gd, 'edge_attr', None)
+        for conv, use_edge_attr, norm in zip(self.gat_layers, self.gat_uses_edge_attr, self.norms):
+            if use_edge_attr and edge_attr is not None:
+                h = conv(h, gd.edge_index, edge_attr=edge_attr)
+            else:
+                h = conv(h, gd.edge_index)
+            h = F.elu(h)
+            if isinstance(norm, GraphNormLayer):
+                h = norm(h, batch)
+            else:
+                h = norm(h)
+            h = F.dropout(h, p=self.dropout, training=self.training)
+        return h
+
+
 class BilinearDecoder(nn.Module):
     def __init__(self, hd):
         super().__init__()
@@ -104,6 +170,20 @@ class BilinearDecoder(nn.Module):
 
     def forward(self, oe, de, d=None, extra=None):
         return (oe * (de @ self.W.T)).sum(-1)
+
+
+class LinearPairDecoder(nn.Module):
+    def __init__(self, hd, extra_dim=0):
+        super().__init__()
+        self.net = Sequential(Linear(hd * 2 + 1 + extra_dim, hd), ReLU(), Linear(hd, 1))
+
+    def forward(self, oe, de, d=None, extra=None):
+        if d is None:
+            d = torch.zeros(oe.size(0), 1, device=oe.device, dtype=oe.dtype)
+        parts = [oe, de, d]
+        if extra is not None:
+            parts.append(extra)
+        return self.net(torch.cat(parts, dim=-1)).squeeze(-1)
 
 
 class TransFlowerDecoder(nn.Module):
@@ -175,6 +255,8 @@ class GravityGuidedDecoder(nn.Module):
 def make_pair_decoder(dt, hd, th=4, tl=2, tdo=0.1, extra_dim=0):
     if dt == 'bilinear':
         return BilinearDecoder(hd)
+    if dt == 'linear':
+        return LinearPairDecoder(hd, extra_dim=extra_dim)
     if dt == 'transflower':
         return TransFlowerDecoder(hd, th, tl, tdo, extra_dim=extra_dim)
     if dt == 'gravity_guided':
@@ -196,6 +278,40 @@ class GPSODModel(nn.Module):
                  dt='bilinear', th=4, tl=2, tdo=0.1, pe_type='rwpe', nt='batch_norm', rle=None):
         super().__init__()
         self.encoder = GPSEncoder(idim, hd, ped, ed, gl, gh, gdo, pe_type=pe_type, norm_type=nt)
+        self.decoder_type = dt
+        self.hidden_dim = hd
+        self.rle = rle
+        rle_dim = rle.out_dim if rle else 0
+        self.decoder = make_pair_decoder(dt, hd, th, tl, tdo, extra_dim=rle_dim)
+        self.outflow_head = Linear(hd, 1)
+        self.inflow_head = Linear(hd, 1)
+
+    def encode(self, gd):
+        return self.encoder(gd)
+
+    def decode_row(self, ne, oi, di, dm, coords=None):
+        D = di.size(0)
+        oe = ne[oi].unsqueeze(0).expand(D, -1)
+        de = ne[di]
+        dist = dm[oi, di].unsqueeze(-1)
+        extra = None
+        if self.rle is not None:
+            if coords is not None:
+                rel = coords[oi].unsqueeze(0).expand(D, -1) - coords[di]
+                extra = self.rle(rel)
+            else:
+                extra = torch.zeros(D, self.rle.out_dim, device=ne.device)
+        return self.decoder(oe, de, dist, extra)
+
+    def predict_node_flows(self, ne):
+        return self.outflow_head(ne).squeeze(-1), self.inflow_head(ne).squeeze(-1)
+
+
+class GATODModel(nn.Module):
+    def __init__(self, idim, hd, ped, ed, gl, gh, gdo,
+                 dt='linear', th=4, tl=2, tdo=0.1, pe_type=None, nt='batch_norm', rle=None):
+        super().__init__()
+        self.encoder = GATEncoder(idim, hd, ped, ed, gl, gh, gdo, pe_type=pe_type, norm_type=nt)
         self.decoder_type = dt
         self.hidden_dim = hd
         self.rle = rle
@@ -277,6 +393,13 @@ def make_model(config, input_dim=None, edge_dim=None, graph_data_ref=None):
         return TransFlowerODModel(
             input_dim, HIDDEN_DIM, TF_HEADS, TF_LAYERS, TF_DROPOUT,
             rle=rle, decoder_type=config.decoder_type,
+        ).to(device)
+    if config.encoder_type == 'gat':
+        assert input_dim and edge_dim
+        return GATODModel(
+            input_dim, HIDDEN_DIM, PE_DIM, edge_dim, GPS_LAYERS, GPS_HEADS, GPS_DROPOUT,
+            config.decoder_type, TF_HEADS, TF_LAYERS, TF_DROPOUT,
+            config.pe_type, config.gps_norm_type, rle=rle,
         ).to(device)
     else:  # 'gps'
         assert input_dim and edge_dim

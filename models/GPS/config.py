@@ -75,8 +75,8 @@ def cleanup_gpu():
 class TrainingConfig:
     # fmt: off
     # ── Architecture ──────────────────────────────────────────────────────────
-    encoder_type:       Literal['gps', 'mlp']                               = 'gps'
-    decoder_type:       Literal['bilinear', 'transflower', 'gravity_guided', 'lgbm', 'gbrt'] = 'transflower'
+    encoder_type:       Literal['gps', 'mlp', 'gat']                        = 'gps'
+    decoder_type:       Literal['bilinear', 'linear', 'transflower', 'gravity_guided', 'lgbm', 'gbrt'] = 'transflower'
     pe_type:            Optional[Literal['rwpe', 'spe', 'rrwp', 'lape']]    = 'rwpe'
     gps_norm_type:      Literal['batch_norm', 'graph_norm']                 = 'batch_norm'
     # ── Loss ──────────────────────────────────────────────────────────────────
@@ -127,8 +127,8 @@ class TrainingConfig:
 
     def __post_init__(self):
         _valid = {
-            'encoder_type':    ('gps', 'mlp'),
-            'decoder_type':    ('bilinear', 'transflower', 'gravity_guided', 'lgbm', 'gbrt'),
+            'encoder_type':    ('gps', 'mlp', 'gat'),
+            'decoder_type':    ('bilinear', 'linear', 'transflower', 'gravity_guided', 'lgbm', 'gbrt'),
             'pe_type':         ('rwpe', 'spe', 'rrwp', 'lape', None),
             'gps_norm_type':   ('batch_norm', 'graph_norm'),
             'loss_type':       ('huber', 'ce', 'ce_old', 'multitask', 'zinb', 'focal', 'mae'),
@@ -168,7 +168,7 @@ class TrainingConfig:
             raise ValueError("TrainingConfig.gan_disc_dropout must be in [0, 1)")
 
     def describe(self):
-        enc = 'MLP' if self.encoder_type == 'mlp' else 'GPS'
+        enc = {'mlp': 'MLP', 'gat': 'GAT'}.get(self.encoder_type, 'GPS')
         pe_name = 'none' if self.pe_type is None else self.pe_type
         parts = [f"{enc}+{self.decoder_type}+{self.loss_type}+{self.prediction_mode}",
                  f"pe={pe_name}", f"norm={self.gps_norm_type}"]
