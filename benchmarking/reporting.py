@@ -30,26 +30,25 @@ def save_results_table(df, filename):
 
 
 def build_combined_summary(single_city_results, multi_city_results):
+    summary_metrics = [
+        "CPC_full", "CPC_nz", "CPC_test", "CPC_val",
+        "CPC_train_full", "CPC_val_full", "CPC_train_nz", "CPC_val_nz",
+        "MAE_full", "RMSE_full",
+    ]
     all_models = sorted(set(single_city_results) | set(multi_city_results))
     rows = []
     for model in all_models:
         row = {"Model": model}
         if model in single_city_results:
             sc = single_city_results[model]
-            row["SC_CPC_full"] = sc.get("CPC_full")
-            row["SC_CPC_full_std"] = sc.get("CPC_full_std")
-            row["SC_MAE_full"] = sc.get("MAE_full")
-            row["SC_MAE_full_std"] = sc.get("MAE_full_std")
-            row["SC_RMSE_full"] = sc.get("RMSE_full")
-            row["SC_RMSE_full_std"] = sc.get("RMSE_full_std")
+            for metric in summary_metrics:
+                row[f"SC_{metric}"] = sc.get(metric)
+                row[f"SC_{metric}_std"] = sc.get(f"{metric}_std")
         if model in multi_city_results:
             mc = multi_city_results[model]
-            row["MC_CPC_full"] = mc.get("CPC_full")
-            row["MC_CPC_full_std"] = mc.get("CPC_full_std")
-            row["MC_MAE_full"] = mc.get("MAE_full")
-            row["MC_MAE_full_std"] = mc.get("MAE_full_std")
-            row["MC_RMSE_full"] = mc.get("RMSE_full")
-            row["MC_RMSE_full_std"] = mc.get("RMSE_full_std")
+            for metric in summary_metrics:
+                row[f"MC_{metric}"] = mc.get(metric)
+                row[f"MC_{metric}_std"] = mc.get(f"{metric}_std")
         rows.append(row)
     return pd.DataFrame(rows).set_index("Model")
 
@@ -91,8 +90,17 @@ def plot_comparison(results_dict, title, metrics_to_plot=None):
         axes[idx].set_xlabel(metric)
         axes[idx].set_title(metric)
         axes[idx].grid(axis="x", alpha=0.3)
-        best_idx = int(np.argmax(vals) if metric in ("CPC_full", "CPC_nz", "CPC_test", "accuracy", "matrix_COS_similarity") else np.argmin(vals))
-        axes[idx].barh(best_idx, vals[best_idx], color="red", alpha=0.7)
+        finite = np.isfinite(vals)
+        if finite.any():
+            selector_vals = np.where(finite, vals, -np.inf)
+            if metric not in ("CPC_full", "CPC_nz", "CPC_test", "accuracy", "matrix_COS_similarity"):
+                selector_vals = np.where(finite, vals, np.inf)
+            best_idx = int(
+                np.argmax(selector_vals)
+                if metric in ("CPC_full", "CPC_nz", "CPC_test", "accuracy", "matrix_COS_similarity")
+                else np.argmin(selector_vals)
+            )
+            axes[idx].barh(best_idx, vals[best_idx], color="red", alpha=0.7)
 
     fig.suptitle(title, fontsize=14, fontweight="bold")
     plt.tight_layout()

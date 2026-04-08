@@ -189,6 +189,8 @@ def save_metrics_to_csv(run_id, run_name, config, metrics_full, metrics_nz,
         # Full metric suite from cal_od_metrics
         'MAE_nz': metrics_nz.get('MAE'),
         'RMSE_nz': metrics_nz.get('RMSE'),
+        'MAE_test': metrics_test.get('MAE'),
+        'RMSE_test': metrics_test.get('RMSE'),
         'NRMSE_full': metrics_full.get('NRMSE'),
         'MAPE_full': metrics_full.get('MAPE'),
         'SMAPE_full': metrics_full.get('SMAPE'),
@@ -198,17 +200,41 @@ def save_metrics_to_csv(run_id, run_name, config, metrics_full, metrics_nz,
         'JSD_outflow': metrics_full.get('JSD_outflow'),
         'JSD_ODflow': metrics_full.get('JSD_ODflow'),
     }
-    file_exists = metrics_csv.exists()
-    with open(metrics_csv, 'a', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=row.keys())
-        if not file_exists: writer.writeheader()
-        writer.writerow(row)
+    _append_metrics_row(metrics_csv, row)
     print(f"  -> Metrics saved to {metrics_csv}")
     suffix = f"__{run_suffix}" if run_suffix else ""
     metrics_path = METRICS_RUNS_DIR / f"{run_id}{suffix}.json"
     with open(metrics_path, 'w') as f:
         json.dump(row, f, indent=2)
     print(f"  -> Metrics saved to {metrics_path}")
+
+
+def _append_metrics_row(metrics_csv, row):
+    fieldnames = list(row.keys())
+    if metrics_csv.exists() and metrics_csv.stat().st_size > 0:
+        with open(metrics_csv, newline='') as f:
+            reader = csv.DictReader(f)
+            existing_fields = list(reader.fieldnames or [])
+            existing_rows = list(reader)
+        if existing_fields and existing_fields != fieldnames:
+            merged_fields = existing_fields + [
+                key for key in fieldnames if key not in existing_fields
+            ]
+            with open(metrics_csv, 'w', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=merged_fields)
+                writer.writeheader()
+                for old_row in existing_rows:
+                    old_row.pop(None, None)
+                    writer.writerow(old_row)
+                writer.writerow(row)
+            return
+
+    file_exists = metrics_csv.exists() and metrics_csv.stat().st_size > 0
+    with open(metrics_csv, 'a', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(row)
 
 
 def save_model_weights(run_id, model_or_state, config=None, weights_dir=WEIGHTS_DIR):

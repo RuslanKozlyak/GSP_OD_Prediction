@@ -31,9 +31,11 @@ def aggregate_metric_samples(metric_samples):
         values = [
             float(sample[key])
             for sample in metric_samples
-            if key in sample and _is_numeric(sample[key])
+            if key in sample and _is_numeric(sample[key]) and float(sample[key]) == float(sample[key])
         ]
         if not values:
+            aggregated[key] = float('nan')
+            aggregated[f"{key}_std"] = float('nan')
             continue
         arr = np.asarray(values, dtype=float)
         aggregated[key] = float(np.mean(arr))

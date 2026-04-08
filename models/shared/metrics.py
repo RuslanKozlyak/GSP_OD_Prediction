@@ -56,7 +56,10 @@ def CPC(a, b):
     if ((a < 0).sum() + (b < 0).sum()) > 0:
         raise ValueError("OD flow should not be less than zero.")
     mn = np.minimum(a, b) if isinstance(a, np.ndarray) else __import__('torch').minimum(a, b)
-    return 2 * mn.sum() / (a.sum() + b.sum())
+    denom = a.sum() + b.sum()
+    if isinstance(a, np.ndarray):
+        return 0.0 if float(denom) <= 1e-10 else 2 * mn.sum() / denom
+    return a.new_tensor(0.0) if float(denom.detach().cpu()) <= 1e-10 else 2 * mn.sum() / denom
 
 
 # ─── Nonzero variants ────────────────────────────────────────────────────────

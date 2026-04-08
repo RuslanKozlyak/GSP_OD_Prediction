@@ -253,6 +253,14 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         all_mt = []
         per_city = []
         test_eval_ids = set(test_eval_cities)
+
+        def fmt(v):
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                return "-"
+            return "-" if np.isnan(v) else f"{v:.4f}"
+
         for ecid, ecd in full_eval_cities.items():
             pred, mf, mnz = evaluate_full_matrix(model, ecd, config, dest_batch_size=DEST_BATCH_SIZE)
 
@@ -281,7 +289,10 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         )
         print(f"\n  === {label} ===")
         for pc in per_city:
-            print(f"    {pc['city_id']}: CPC_full={pc['CPC_full']:.4f}  CPC_nz={pc['CPC_nz']:.4f}  CPC_test={pc['CPC_test']:.4f}")
+            print(
+                f"    {pc['city_id']}: CPC_full={fmt(pc['CPC_full'])}  "
+                f"CPC_nz={fmt(pc['CPC_nz'])}  CPC_test={fmt(pc['CPC_test'])}"
+            )
         print(f"  Avg: CPC_full={avg_mf['CPC']:.4f}  CPC_nz={avg_mnz['CPC']:.4f}  CPC_test={avg_mt['CPC']:.4f}  MAE={avg_mf['MAE']:.4f}")
         return avg_mf, avg_mnz, avg_mt, per_city
 

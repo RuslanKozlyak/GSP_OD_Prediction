@@ -3,6 +3,8 @@ import multiprocessing as mp
 from numbers import Real
 from pathlib import Path
 
+import numpy as np
+
 from models.shared.metrics import format_train_val_cpc_metrics
 
 from .config import (
@@ -451,12 +453,18 @@ def _average_metrics(metric_dicts):
         for key, value in metric.items()
         if isinstance(value, Real) and not isinstance(value, bool)
     })
-    return {
-        key: sum(metric[key] for metric in metric_dicts if key in metric) / sum(
-            1 for metric in metric_dicts if key in metric
-        )
-        for key in numeric_keys
-    }
+    averaged = {}
+    for key in numeric_keys:
+        values = [
+            float(metric[key])
+            for metric in metric_dicts
+            if key in metric
+            and isinstance(metric[key], Real)
+            and not isinstance(metric[key], bool)
+            and float(metric[key]) == float(metric[key])
+        ]
+        averaged[key] = float(np.mean(values)) if values else float('nan')
+    return averaged
 
 
 def _average_multi_city_metrics(
