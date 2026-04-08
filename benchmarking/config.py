@@ -61,6 +61,11 @@ FLAT_CHUNK_SIZE = 200
 FLAT_SGD_EPOCHS = 5
 FLAT_BATCH_SIZE = 10_000
 
+# LinearSVR/liblinear can allocate a lot of RAM on multi-city flat OD matrices.
+# Cap the multi-city training set before fitting so the subprocess cannot OOM
+# the notebook/VS Code host. Set to None or <= 0 to use all pairs.
+SVR_MULTI_CITY_MAX_TRAIN_SAMPLES = 250_000
+
 # ─── Baseline model hyperparameters ──────────────────────────────────────────
 BASELINE_HYPERPARAMS = {
     "RF": {
@@ -72,6 +77,7 @@ BASELINE_HYPERPARAMS = {
     "SVR": {
         "C": 100,
         "max_iter": 10_000,
+        "dual": False,
         "verbose": 1,
     },
     "GBRT": {

@@ -24,10 +24,12 @@ def train(x_train, y_train, xs_valid=None, ys_valid=None, **kwargs):
     if verbose:
         print(f'  SVR: {n_samples:,} samples, fitting LinearSVR...')
     model = Pipeline([
-        ('scaler', StandardScaler()),
+        ('scaler', StandardScaler(copy=False)),
         ('svr', LinearSVR(
             C=kwargs.get('C', 100),
             max_iter=kwargs.get('max_iter', 10_000),
+            dual=kwargs.get('dual', False),
+            random_state=kwargs.get('random_state', 42),
             verbose=verbose,
         )),
     ])

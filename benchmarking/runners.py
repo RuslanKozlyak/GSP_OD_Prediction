@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 from numbers import Real
+from pathlib import Path
 
 import joblib
 import numpy as np
@@ -36,6 +37,8 @@ from .config import (
     device,
     get_baseline_hyperparams,
     set_global_seed,
+    SEED,
+    SVR_MULTI_CITY_MAX_TRAIN_SAMPLES,
 )
 
 
@@ -44,6 +47,97 @@ def _predict_flat_array(model, x):
     pred = np.asarray(pred).reshape(-1)
     pred[pred < 0] = 0
     return pred
+
+
+def _subsample_flat_training(xs, ys, max_samples, seed=SEED):
+    total = int(sum(y.shape[0] for y in ys))
+    if max_samples is None or max_samples <= 0 or total <= max_samples:
+        return np.concatenate(xs, axis=0), np.concatenate(ys, axis=0), total, total
+
+    sizes = np.array([y.shape[0] for y in ys], dtype=np.int64)
+    raw = sizes.astype(float) * (float(max_samples) / float(total))
+    quotas = np.floor(raw).astype(np.int64)
+    if max_samples >= len(sizes):
+        quotas = np.maximum(quotas, 1)
+    quotas = np.minimum(quotas, sizes)
+
+    remaining = int(max_samples - quotas.sum())
+    if remaining > 0:
+        order = np.argsort(raw - np.floor(raw))[::-1]
+        for idx in order:
+            if remaining <= 0:
+                break
+            add = min(int(sizes[idx] - quotas[idx]), remaining)
+            quotas[idx] += add
+            remaining -= add
+
+    rng = np.random.default_rng(seed)
+    sampled_x, sampled_y = [], []
+    for x_one, y_one, quota in zip(xs, ys, quotas):
+        quota = int(quota)
+        if quota <= 0:
+            continue
+        if quota >= y_one.shape[0]:
+            sampled_x.append(x_one)
+            sampled_y.append(y_one)
+        else:
+            idx = rng.choice(y_one.shape[0], quota, replace=False)
+            sampled_x.append(x_one[idx])
+            sampled_y.append(y_one[idx])
+
+    sampled = int(sum(y.shape[0] for y in sampled_y))
+    return np.concatenate(sampled_x, axis=0), np.concatenate(sampled_y, axis=0), sampled, total
+
+
+def _flat_pair_counts(areas, data_path):
+    root = Path(data_path)
+    counts = []
+    for area in areas:
+        od = np.load(root / area / "od.npy", mmap_mode='r')
+        counts.append(int(od.shape[0] * od.shape[1]))
+    return np.array(counts, dtype=np.int64)
+
+
+def _stream_subsample_flat_training(areas, data_path, feature_mode, max_samples, seed=SEED):
+    counts = _flat_pair_counts(areas, data_path)
+    total = int(counts.sum())
+    if max_samples is None or max_samples <= 0 or total <= max_samples:
+        xs, ys = construct_flat_features(areas, data_path, feature_mode)
+        return np.concatenate(xs, axis=0), np.concatenate(ys, axis=0), total, total
+
+    raw = counts.astype(float) * (float(max_samples) / float(total))
+    quotas = np.floor(raw).astype(np.int64)
+    if max_samples >= len(counts):
+        quotas = np.maximum(quotas, 1)
+    quotas = np.minimum(quotas, counts)
+    remaining = int(max_samples - quotas.sum())
+    if remaining > 0:
+        order = np.argsort(raw - np.floor(raw))[::-1]
+        for idx in order:
+            if remaining <= 0:
+                break
+            add = min(int(counts[idx] - quotas[idx]), remaining)
+            quotas[idx] += add
+            remaining -= add
+
+    rng = np.random.default_rng(seed)
+    sampled_x, sampled_y = [], []
+    for area, quota in zip(areas, quotas):
+        quota = int(quota)
+        if quota <= 0:
+            continue
+        xs_one, ys_one = construct_flat_features([area], data_path, feature_mode)
+        x_one, y_one = xs_one[0], ys_one[0]
+        if quota < y_one.shape[0]:
+            idx = rng.choice(y_one.shape[0], quota, replace=False)
+            x_one = x_one[idx]
+            y_one = y_one[idx]
+        sampled_x.append(x_one)
+        sampled_y.append(y_one)
+        del xs_one, ys_one
+
+    sampled = int(sum(y.shape[0] for y in sampled_y))
+    return np.concatenate(sampled_x, axis=0), np.concatenate(sampled_y, axis=0), sampled, total
 
 
 def _compute_flat_validation_metrics(model, xs_valid, ys_valid, xs_valid_full, ys_valid_full):
@@ -79,13 +173,30 @@ def _compute_flat_train_val_metrics(model, payload):
         ('train', 'xs_train_eval', 'ys_train_eval'),
         ('val', 'xs_valid_full', 'ys_valid_full'),
     ):
-        pred_matrices = []
-        od_matrices = []
-        for x_one, y_one in zip(payload[xs_key], payload[ys_key]):
+        cpc_fulls = []
+        cpc_nzs = []
+        if xs_key in payload and ys_key in payload:
+            pairs = zip(payload[xs_key], payload[ys_key])
+        elif prefix == 'train' and 'train_eval_areas' in payload:
+            def _iter_train_pairs():
+                for area in payload['train_eval_areas']:
+                    xs_one, ys_one = construct_flat_features(
+                        [area], payload['data_path'], payload['feature_mode']
+                    )
+                    yield xs_one[0], ys_one[0]
+            pairs = _iter_train_pairs()
+        else:
+            pairs = []
+        for x_one, y_one in pairs:
             n = int(np.sqrt(y_one.shape[0]))
-            pred_matrices.append(_predict_flat_array(model, x_one).reshape(n, n))
-            od_matrices.append(y_one.reshape(n, n))
-        metrics.update(average_matrix_cpc_metrics(pred_matrices, od_matrices, prefix))
+            pred_matrix = _predict_flat_array(model, x_one).reshape(n, n)
+            od_matrix = y_one.reshape(n, n)
+            one = average_matrix_cpc_metrics([pred_matrix], [od_matrix], prefix)
+            cpc_fulls.append(one[f'CPC_{prefix}_full'])
+            cpc_nzs.append(one[f'CPC_{prefix}_nz'])
+            del pred_matrix, od_matrix
+        metrics[f'CPC_{prefix}_full'] = float(np.mean(cpc_fulls)) if cpc_fulls else float('nan')
+        metrics[f'CPC_{prefix}_nz'] = float(np.mean(cpc_nzs)) if cpc_nzs else float('nan')
     return metrics
 
 
@@ -287,11 +398,14 @@ def _ensure_weights_dir():
     WEIGHTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _prepare_flat_payload(train_areas, valid_areas, test_areas, data_path, feature_mode):
+def _prepare_flat_payload(train_areas, valid_areas, test_areas, data_path, feature_mode,
+                          train_sample_max=None, keep_train_eval=True,
+                          include_train_fit=True):
     single_city_split = _is_single_city_split(train_areas, valid_areas, test_areas)
     payload = {
         'single_city_split': single_city_split,
         'feature_mode': feature_mode,
+        'data_path': data_path,
         'od_matrix': None,
         'test_mask': None,
         'n_nodes': None,
@@ -327,11 +441,36 @@ def _prepare_flat_payload(train_areas, valid_areas, test_areas, data_path, featu
         })
         return payload
 
-    xs_tr, ys_tr = construct_flat_features(train_areas, data_path, feature_mode)
-    payload['xs_train_eval'] = xs_tr
-    payload['ys_train_eval'] = ys_tr
-    payload['x_train'] = np.concatenate(xs_tr, axis=0)
-    payload['y_train'] = np.concatenate(ys_tr, axis=0)
+    payload['train_eval_areas'] = list(train_areas)
+    if include_train_fit and not keep_train_eval and train_sample_max is not None and train_sample_max > 0:
+        x_train, y_train, sampled, total = _stream_subsample_flat_training(
+            train_areas, data_path, feature_mode, train_sample_max, seed=SEED
+        )
+        if sampled < total:
+            print(
+                f"  Flat train subsample: {sampled:,}/{total:,} pairs "
+                f"(cap={train_sample_max:,})"
+            )
+        payload['x_train'] = x_train
+        payload['y_train'] = y_train
+    elif include_train_fit or keep_train_eval:
+        xs_tr, ys_tr = construct_flat_features(train_areas, data_path, feature_mode)
+        if keep_train_eval:
+            payload['xs_train_eval'] = xs_tr
+            payload['ys_train_eval'] = ys_tr
+        if include_train_fit:
+            x_train, y_train, sampled, total = _subsample_flat_training(
+                xs_tr, ys_tr, train_sample_max, seed=SEED
+            )
+            if sampled < total:
+                print(
+                    f"  Flat train subsample: {sampled:,}/{total:,} pairs "
+                    f"(cap={train_sample_max:,})"
+                )
+            payload['x_train'] = x_train
+            payload['y_train'] = y_train
+        if not keep_train_eval:
+            del xs_tr, ys_tr
 
     xs_valid, ys_valid = construct_flat_features(valid_areas, data_path, feature_mode)
     xs_test, ys_test = construct_flat_features(test_areas, data_path, feature_mode)
@@ -478,7 +617,17 @@ def train_flat_model(model_name, train_areas, valid_areas, test_areas, data_path
     set_global_seed()
     run_id = run_id or _benchmark_run_id(model_name, train_areas, valid_areas, test_areas)
     feature_mode = "gravity" if model_name in ("GM_E", "GM_P") else "full"
-    payload = _prepare_flat_payload(train_areas, valid_areas, test_areas, data_path, feature_mode)
+    multi_city_split = not _is_single_city_split(train_areas, valid_areas, test_areas)
+    cap_svr = model_name == "SVR" and multi_city_split
+    payload = _prepare_flat_payload(
+        train_areas,
+        valid_areas,
+        test_areas,
+        data_path,
+        feature_mode,
+        train_sample_max=SVR_MULTI_CITY_MAX_TRAIN_SAMPLES if cap_svr else None,
+        keep_train_eval=not cap_svr,
+    )
     module = load_model_main(model_name)
     hp = get_baseline_hyperparams(model_name)
     model = None
@@ -538,7 +687,17 @@ def infer_flat_model(model_name, train_areas, valid_areas, test_areas, data_path
     t0 = time.time()
     run_id = run_id or _benchmark_run_id(model_name, train_areas, valid_areas, test_areas)
     feature_mode = "gravity" if model_name in ("GM_E", "GM_P") else "full"
-    payload = _prepare_flat_payload(train_areas, valid_areas, test_areas, data_path, feature_mode)
+    multi_city_split = not _is_single_city_split(train_areas, valid_areas, test_areas)
+    cap_svr = model_name == "SVR" and multi_city_split
+    payload = _prepare_flat_payload(
+        train_areas,
+        valid_areas,
+        test_areas,
+        data_path,
+        feature_mode,
+        keep_train_eval=not cap_svr,
+        include_train_fit=False,
+    )
     module = load_model_main(model_name)
     model = None
     try:
