@@ -24,7 +24,8 @@ def predict_full_matrix(model, cd, config, dbs=DEST_BATCH_SIZE):
     """Run GPS model encode+decode to produce full N×N OD prediction matrix."""
     model.eval()
     pm = config.prediction_mode
-    ul = config.use_log_transform
+    use_log_flow = config.use_log_transform and config.loss_type in ('huber', 'multitask', 'mae')
+    use_log_norm = use_log_flow and pm == 'normalized'
     nn_ = cd['num_nodes']
     of = cd['outflow_full']
     pred = np.zeros((nn_, nn_), dtype=np.float32)
@@ -42,11 +43,15 @@ def predict_full_matrix(model, cd, config, dbs=DEST_BATCH_SIZE):
             if config.loss_type == 'zinb':
                 row = np.log1p(np.exp(row))
             elif pm == 'normalized':
-                row = np.exp(row - row.max())
-                row = row / (row.sum() + 1e-10) * of[oi]
+                if use_log_norm:
+                    prob = 1.0 / (1.0 + np.exp(-np.clip(row, -60, 60)))
+                    row = np.expm1(prob * np.log1p(max(float(of[oi]), 0.0)))
+                else:
+                    row = np.exp(row - row.max())
+                    row = row / (row.sum() + 1e-10) * of[oi]
             else:
                 row = np.maximum(row, 0)
-            if ul and config.loss_type not in ('ce', 'zinb'):
+            if use_log_flow and pm != 'normalized':
                 row = np.expm1(np.maximum(row, 0))
             pred[oi] = row
     return pred

@@ -131,7 +131,12 @@ class TrainingConfig:
         pe_name = 'none' if self.pe_type is None else self.pe_type
         parts = [f"{enc}+{self.decoder_type}+{self.loss_type}+{self.prediction_mode}",
                  f"pe={pe_name}", f"norm={self.gps_norm_type}"]
-        if self.use_log_transform: parts.append("log")
+        if self.use_log_transform:
+            parts.append(
+                "log_norm"
+                if self.prediction_mode == 'normalized' and self.loss_type in ('huber', 'multitask', 'mae')
+                else "log"
+            )
         if self.use_rle: parts.append("RLE")
         if self.loss_type == 'focal': parts.append(f"γ={self.focal_gamma}")
         parts.append(f"zeros={self.include_zero_pairs} samp={self.use_dest_sampling}")

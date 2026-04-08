@@ -24,7 +24,8 @@ def sample_destinations(oi, nzd, nn, use_sampling=True, n_dest=128, inc_zeros=Tr
 def compute_loss_for_city(model, cd, config, origin_batch_indices=None):
     lt = config.loss_type
     pm = config.prediction_mode
-    ul = config.use_log_transform
+    use_log_flow = config.use_log_transform and lt in ('huber', 'multitask', 'mae')
+    use_log_norm = use_log_flow and pm == 'normalized'
     ne = model.encode(cd['graph_data'])
     nn_ = cd['num_nodes']
     od = cd['od_matrix_train']
@@ -44,19 +45,22 @@ def compute_loss_for_city(model, cd, config, origin_batch_indices=None):
             continue
         dt = torch.LongTensor(di).to(device)
         rf = od[oi, di].astype(float)
-        tr = np.log1p(rf) if ul and lt != 'ce' else rf.copy()
+        tr = np.log1p(rf) if use_log_flow else rf.copy()
         if pm == 'normalized':
             oof = of[oi]
             if oof < 1:
                 continue
-            tv = tr / (np.log1p(oof) + 1e-8) if ul and lt != 'ce' else tr / (oof + 1e-8)
+            tv = tr / (np.log1p(oof) + 1e-8) if use_log_norm else tr / (oof + 1e-8)
         else:
             tv = tr
         tt = torch.FloatTensor(tv).to(device)
         sc = model.decode_row(ne, oi, dt, cd['distance_matrix'], coords=cd.get('coords_tensor'))
 
         if lt == 'huber':
-            pr = F.softmax(sc, dim=0) if pm == 'normalized' else F.relu(sc)
+            if use_log_norm:
+                pr = torch.sigmoid(sc)
+            else:
+                pr = F.softmax(sc, dim=0) if pm == 'normalized' else F.relu(sc)
             w = torch.FloatTensor(
                 interpolate_huber_weights(rf, cd['huber_flow_grid'], cd['huber_weight_table'])
             ).to(device)
@@ -78,7 +82,10 @@ def compute_loss_for_city(model, cd, config, origin_batch_indices=None):
             ct = torch.FloatTensor(rf / (of[oi] + 1e-8)).to(device)
             rl = -torch.sum(ct * (1.0 - p).pow(config.focal_gamma) * log_p)
         elif lt == 'multitask':
-            pr = F.softmax(sc, dim=0) if pm == 'normalized' else F.relu(sc)
+            if use_log_norm:
+                pr = torch.sigmoid(sc)
+            else:
+                pr = F.softmax(sc, dim=0) if pm == 'normalized' else F.relu(sc)
             rl = F.mse_loss(pr, tt)
         elif lt == 'zinb':
             mu = F.softplus(sc) + 1e-4
@@ -104,7 +111,13 @@ def compute_loss_for_city(model, cd, config, origin_batch_indices=None):
 
     if lt == 'multitask':
         po, pi_ = model.predict_node_flows(ne)
-        if pm == 'normalized':
+        if use_log_norm:
+            tf_ = float(od.sum()) + 1e-8
+            to_ = torch.FloatTensor(np.log1p(of) / (np.log1p(tf_) + 1e-8)).to(device)
+            ti_ = torch.FloatTensor(np.log1p(inf_) / (np.log1p(tf_) + 1e-8)).to(device)
+            po = torch.sigmoid(po)
+            pi_ = torch.sigmoid(pi_)
+        elif pm == 'normalized':
             tf_ = float(od.sum()) + 1e-8
             to_ = torch.FloatTensor(of / tf_).to(device)
             ti_ = torch.FloatTensor(inf_ / tf_).to(device)
@@ -115,7 +128,10 @@ def compute_loss_for_city(model, cd, config, origin_batch_indices=None):
         il = F.mse_loss(pi_, ti_)
         if config.normalize_multitask:
             nzf = od[od > 0].astype(float)
-            tva = nzf / (od.sum() + 1e-8) if pm == 'normalized' else nzf
+            if use_log_norm:
+                tva = np.log1p(nzf) / (np.log1p(float(od.sum())) + 1e-8)
+            else:
+                tva = nzf / (od.sum() + 1e-8) if pm == 'normalized' else nzf
             dm = (torch.FloatTensor(tva).to(device) ** 2).mean() + 1e-8
             do_ = (to_ ** 2).mean() + 1e-8
             di_ = (ti_ ** 2).mean() + 1e-8
