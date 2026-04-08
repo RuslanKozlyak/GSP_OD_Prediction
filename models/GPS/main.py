@@ -13,6 +13,7 @@ from .model import make_model
 from .loss import compute_loss_for_city
 from .metrics import evaluate_full_matrix, summarize_prediction_metrics
 from .data_load import prepare_single_city_data, prepare_multi_city_data
+from .gan import ODSequenceDiscriminator, gan_step_for_city
 from models.shared.metrics import (
     average_matrix_cpc_metrics,
     format_train_val_cpc_metrics,
@@ -31,8 +32,9 @@ def _train_loop(run_id, run_name, config, model, city_datas,
     city_datas: dict {city_id: city_data}
     """
     print(f"\n{'='*70}\n  {run_name}\n  {config.describe()}\n{'='*70}")
-    n_params = sum(p.numel() for p in model.parameters())
-    print(f"  Params: {n_params:,}")
+    n_params_model = sum(p.numel() for p in model.parameters())
+    n_params = n_params_model
+    print(f"  Params: {n_params_model:,}")
 
     # Diagnostic: verify config actually differs between runs
     import hashlib
@@ -53,11 +55,35 @@ def _train_loop(run_id, run_name, config, model, city_datas,
     if od_train is not None:
         print(f"  [diag] od_train_hash={hashlib.md5(np.ascontiguousarray(od_train).tobytes()).hexdigest()[:8]}")
 
+    discriminator = None
+    discriminator_optimizer = None
+    if config.training_mode == 'gan':
+        disc_input_dim = sample_cd['graph_data'].x.size(-1) + 1
+        discriminator = ODSequenceDiscriminator(
+            disc_input_dim,
+            hidden_dim=config.gan_disc_hidden_dim,
+            n_layers=config.gan_disc_layers,
+            dropout=config.gan_disc_dropout,
+        ).to(device)
+        n_params_disc = sum(p.numel() for p in discriminator.parameters())
+        n_params += n_params_disc
+        print(
+            f"  GAN: discriminator_params={n_params_disc:,} "
+            f"pretrain={config.gan_pretrain_epochs} epochs "
+            f"ncritic={config.gan_n_critic} adv_weight={config.adv_weight:g}"
+        )
+
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=config.learning_rate,
         weight_decay=config.weight_decay,
     )
+    if discriminator is not None:
+        discriminator_optimizer = torch.optim.Adam(
+            discriminator.parameters(),
+            lr=config.discriminator_lr,
+            betas=(0.5, 0.9),
+        )
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5, min_lr=1e-5)
 
     max_epochs = config.mc_epochs if is_multi else config.epochs
@@ -68,6 +94,9 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         'train_cpc_nz': [],
         'val_cpc_full': [],
         'val_cpc_nz': [],
+        'gan_g_loss': [],
+        'gan_d_loss': [],
+        'gan_gp': [],
     }
     best_val_loss = float('inf')
     patience_count = 0
@@ -133,6 +162,9 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         city_ids_shuffled = list(train_cds.keys())
         np.random.shuffle(city_ids_shuffled)
         epoch_losses = []
+        epoch_gan_g_losses = []
+        epoch_gan_d_losses = []
+        epoch_gan_gps = []
         nan_count = 0
         total_batches = 0
 
@@ -154,6 +186,24 @@ def _train_loop(run_id, run_name, config, model, city_datas,
                 optimizer.step()
                 epoch_losses.append(loss.item())
 
+            if discriminator is not None and epoch > config.gan_pretrain_epochs:
+                gan_stats = gan_step_for_city(
+                    model,
+                    discriminator,
+                    cd,
+                    cc,
+                    optimizer,
+                    discriminator_optimizer,
+                )
+                for key, target in (
+                    ('gan_g_loss', epoch_gan_g_losses),
+                    ('gan_d_loss', epoch_gan_d_losses),
+                    ('gan_gp', epoch_gan_gps),
+                ):
+                    value = gan_stats.get(key, float('nan'))
+                    if not np.isnan(value):
+                        target.append(value)
+
         # Divergence check
         if total_batches > 0 and nan_count / total_batches > NAN_BATCH_THRESHOLD:
             print(f"  NaN divergence @ epoch {epoch} ({nan_count}/{total_batches} NaN batches)")
@@ -161,6 +211,9 @@ def _train_loop(run_id, run_name, config, model, city_datas,
             break
 
         train_loss = np.mean(epoch_losses) if epoch_losses else float('nan')
+        gan_g_loss = np.mean(epoch_gan_g_losses) if epoch_gan_g_losses else float('nan')
+        gan_d_loss = np.mean(epoch_gan_d_losses) if epoch_gan_d_losses else float('nan')
+        gan_gp = np.mean(epoch_gan_gps) if epoch_gan_gps else float('nan')
 
         # Validation loss + split-specific train/val CPC diagnostics.
         model.eval()
@@ -179,6 +232,9 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         history['train_cpc_nz'].append(train_val_cpc['CPC_train_nz'])
         history['val_cpc_full'].append(train_val_cpc['CPC_val_full'])
         history['val_cpc_nz'].append(train_val_cpc['CPC_val_nz'])
+        history['gan_g_loss'].append(gan_g_loss)
+        history['gan_d_loss'].append(gan_d_loss)
+        history['gan_gp'].append(gan_gp)
 
         if not np.isnan(avg_val_loss):
             scheduler.step(avg_val_loss)
@@ -201,9 +257,17 @@ def _train_loop(run_id, run_name, config, model, city_datas,
 
         if epoch % 5 == 0 or epoch == 1:
             nan_str = f" NaN:{nan_count}" if nan_count > 0 else ""
+            gan_str = ""
+            if discriminator is not None:
+                if epoch <= config.gan_pretrain_epochs:
+                    gan_str = " gan=pretrain"
+                else:
+                    d_text = "-" if np.isnan(gan_d_loss) else f"{gan_d_loss:.4f}"
+                    g_text = "-" if np.isnan(gan_g_loss) else f"{gan_g_loss:.4f}"
+                    gan_str = f" gan_g={g_text} gan_d={d_text}"
             print(f"  {epoch:3d}/{max_epochs}  train={train_loss:.4f}  val={avg_val_loss:.4f}  "
                   f"{format_train_val_cpc_metrics(train_val_cpc)}  "
-                  f"{time.time()-t0:.1f}s{flag}{nan_str}")
+                  f"{time.time()-t0:.1f}s{flag}{nan_str}{gan_str}")
         if patience_count >= config.patience:
             print(f"  Early stop @ epoch {epoch}")
             break
@@ -233,6 +297,7 @@ def _train_loop(run_id, run_name, config, model, city_datas,
             )
         return {
             'name': run_name, 'model': model, 'config': config, 'history': history,
+            'discriminator': discriminator,
             'metrics_full': dummy, 'metrics_nonzero': dummy, 'metrics_test_pairs': dummy,
             'pred_matrix': None, 'status': status,
             'loss_plot_path': str(saved_plot_path) if saved_plot_path is not None else None,
@@ -351,6 +416,7 @@ def _train_loop(run_id, run_name, config, model, city_datas,
 
     return {
         'name': run_name, 'model': model, 'config': config, 'history': history,
+        'discriminator': discriminator,
         'metrics_full': mf_cpc, 'metrics_nonzero': mnz_cpc, 'metrics_test_pairs': mt_cpc,
         'metrics_full_val_loss': mf_val, 'metrics_nonzero_val_loss': mnz_val,
         'metrics_test_pairs_val_loss': mt_val,

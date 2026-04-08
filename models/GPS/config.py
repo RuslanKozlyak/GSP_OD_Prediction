@@ -99,6 +99,19 @@ class TrainingConfig:
     weight_decay:       float = WEIGHT_DECAY
     patience:           int   = PATIENCE
     mc_epochs:          int   = MC_EPOCHS
+    # GAN training (ODGN / GAT-GAN style adversarial topology loss)
+    training_mode:      Literal['supervised', 'gan'] = 'supervised'
+    adv_weight:         float = 0.05
+    discriminator_lr:   float = LEARNING_RATE
+    gan_gp_lambda:      float = 10.0
+    gan_n_critic:       int   = 1
+    gan_pretrain_epochs: int  = 20
+    gan_walk_len:       int   = 64
+    gan_walk_batch_size: int  = 64
+    gan_tau:            float = 1.0
+    gan_disc_hidden_dim: int  = 64
+    gan_disc_layers:    int   = 4
+    gan_disc_dropout:   float = 0.05
     # ── RLE (Relative Location Encoder) ───────────────────────────────────────
     use_rle:            bool  = False
     rle_freq:           int   = 16
@@ -119,6 +132,7 @@ class TrainingConfig:
             'gps_norm_type':   ('batch_norm', 'graph_norm'),
             'loss_type':       ('huber', 'ce', 'ce_old', 'multitask', 'zinb', 'focal', 'mae'),
             'prediction_mode': ('raw', 'normalized'),
+            'training_mode':   ('supervised', 'gan'),
         }
         for attr, choices in _valid.items():
             val = getattr(self, attr)
@@ -127,6 +141,28 @@ class TrainingConfig:
                     f"TrainingConfig.{attr}={val!r} is invalid. "
                     f"Valid options: {choices}"
                 )
+        if self.adv_weight < 0:
+            raise ValueError("TrainingConfig.adv_weight must be non-negative")
+        if self.discriminator_lr <= 0:
+            raise ValueError("TrainingConfig.discriminator_lr must be positive")
+        if self.gan_gp_lambda < 0:
+            raise ValueError("TrainingConfig.gan_gp_lambda must be non-negative")
+        if self.gan_n_critic < 1:
+            raise ValueError("TrainingConfig.gan_n_critic must be >= 1")
+        if self.gan_pretrain_epochs < 0:
+            raise ValueError("TrainingConfig.gan_pretrain_epochs must be >= 0")
+        if self.gan_walk_len < 1:
+            raise ValueError("TrainingConfig.gan_walk_len must be >= 1")
+        if self.gan_walk_batch_size < 1:
+            raise ValueError("TrainingConfig.gan_walk_batch_size must be >= 1")
+        if self.gan_tau <= 0:
+            raise ValueError("TrainingConfig.gan_tau must be positive")
+        if self.gan_disc_hidden_dim < 1:
+            raise ValueError("TrainingConfig.gan_disc_hidden_dim must be >= 1")
+        if self.gan_disc_layers < 1:
+            raise ValueError("TrainingConfig.gan_disc_layers must be >= 1")
+        if not 0 <= self.gan_disc_dropout < 1:
+            raise ValueError("TrainingConfig.gan_disc_dropout must be in [0, 1)")
 
     def describe(self):
         enc = 'MLP' if self.encoder_type == 'mlp' else 'GPS'
@@ -141,6 +177,11 @@ class TrainingConfig:
             )
         if self.use_rle: parts.append("RLE")
         if self.loss_type == 'focal': parts.append(f"γ={self.focal_gamma}")
+        if self.training_mode == 'gan':
+            parts.append(
+                f"GAN adv={self.adv_weight:g} ncritic={self.gan_n_critic} "
+                f"walk={self.gan_walk_batch_size}x{self.gan_walk_len}"
+            )
         parts.append(f"zeros={self.include_zero_pairs} samp={self.use_dest_sampling}")
         return " | ".join(parts)
 
@@ -172,6 +213,7 @@ def save_metrics_to_csv(run_id, run_name, config, metrics_full, metrics_nz,
         'selection_metric_value': selection_metric_value,
         'encoder_type': config.encoder_type,
         'decoder': config.decoder_type, 'loss_type': config.loss_type,
+        'training_mode': config.training_mode,
         'prediction_mode': config.prediction_mode,
         'pe_type': config.pe_type, 'gps_norm_type': config.gps_norm_type,
         'use_log_transform': config.use_log_transform,
@@ -180,7 +222,14 @@ def save_metrics_to_csv(run_id, run_name, config, metrics_full, metrics_nz,
         'zero_pair_ratio': config.zero_pair_ratio,
         'use_rle': config.use_rle,
         'learning_rate': config.learning_rate,
+        'discriminator_lr': config.discriminator_lr,
         'weight_decay': config.weight_decay,
+        'adv_weight': config.adv_weight,
+        'gan_gp_lambda': config.gan_gp_lambda,
+        'gan_n_critic': config.gan_n_critic,
+        'gan_pretrain_epochs': config.gan_pretrain_epochs,
+        'gan_walk_len': config.gan_walk_len,
+        'gan_walk_batch_size': config.gan_walk_batch_size,
         'n_params': n_params, 'epochs_trained': epochs_trained,
         'CPC_full': metrics_full.get('CPC'), 'CPC_nz': metrics_nz.get('CPC'),
         'CPC_test': metrics_test.get('CPC'),
