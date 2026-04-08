@@ -6,6 +6,22 @@ from .config import device
 from .data_load import interpolate_huber_weights
 
 
+def regression_prediction_from_scores(sc, config, pm, use_log_flow, use_log_norm):
+    """Map decoder scores to the target scale used by Huber/Multitask.
+
+    The gravity-guided decoder emits log-flow scores. Using ReLU on those scores
+    can kill gradients when the initial log-flow is negative, so raw regression
+    needs an explicit log-score transform instead.
+    """
+    if use_log_norm:
+        return torch.sigmoid(sc)
+    if pm == 'normalized':
+        return F.softmax(sc, dim=0)
+    if getattr(config, 'decoder_type', None) == 'gravity_guided':
+        return F.softplus(sc) if use_log_flow else torch.exp(torch.clamp(sc, max=20.0))
+    return F.relu(sc)
+
+
 def sample_destinations(oi, nzd, nn, use_sampling=True, n_dest=128, inc_zeros=True, zr=0.3):
     nz = nzd.get(oi, np.array([], dtype=int))
     if not use_sampling:
@@ -57,10 +73,7 @@ def compute_loss_for_city(model, cd, config, origin_batch_indices=None):
         sc = model.decode_row(ne, oi, dt, cd['distance_matrix'], coords=cd.get('coords_tensor'))
 
         if lt == 'huber':
-            if use_log_norm:
-                pr = torch.sigmoid(sc)
-            else:
-                pr = F.softmax(sc, dim=0) if pm == 'normalized' else F.relu(sc)
+            pr = regression_prediction_from_scores(sc, config, pm, use_log_flow, use_log_norm)
             w = torch.FloatTensor(
                 interpolate_huber_weights(rf, cd['huber_flow_grid'], cd['huber_weight_table'])
             ).to(device)
@@ -82,10 +95,7 @@ def compute_loss_for_city(model, cd, config, origin_batch_indices=None):
             ct = torch.FloatTensor(rf / (of[oi] + 1e-8)).to(device)
             rl = -torch.sum(ct * (1.0 - p).pow(config.focal_gamma) * log_p)
         elif lt == 'multitask':
-            if use_log_norm:
-                pr = torch.sigmoid(sc)
-            else:
-                pr = F.softmax(sc, dim=0) if pm == 'normalized' else F.relu(sc)
+            pr = regression_prediction_from_scores(sc, config, pm, use_log_flow, use_log_norm)
             rl = F.mse_loss(pr, tt)
         elif lt == 'zinb':
             mu = F.softplus(sc) + 1e-4

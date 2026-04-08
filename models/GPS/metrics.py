@@ -20,12 +20,18 @@ from models.shared.metrics import (
 )
 
 
+def _softplus_np(x):
+    x = np.clip(x, -60.0, 20.0)
+    return np.log1p(np.exp(-np.abs(x))) + np.maximum(x, 0.0)
+
+
 def predict_full_matrix(model, cd, config, dbs=DEST_BATCH_SIZE):
     """Run GPS model encode+decode to produce full N×N OD prediction matrix."""
     model.eval()
     pm = config.prediction_mode
     use_log_flow = config.use_log_transform and config.loss_type in ('huber', 'multitask', 'mae')
     use_log_norm = use_log_flow and pm == 'normalized'
+    is_gravity = getattr(config, 'decoder_type', None) == 'gravity_guided'
     nn_ = cd['num_nodes']
     of = cd['outflow_full']
     pred = np.zeros((nn_, nn_), dtype=np.float32)
@@ -50,7 +56,10 @@ def predict_full_matrix(model, cd, config, dbs=DEST_BATCH_SIZE):
                     row = np.exp(row - row.max())
                     row = row / (row.sum() + 1e-10) * of[oi]
             else:
-                row = np.maximum(row, 0)
+                if is_gravity:
+                    row = _softplus_np(row) if use_log_flow else np.exp(np.clip(row, -60.0, 20.0))
+                else:
+                    row = np.maximum(row, 0)
             if use_log_flow and pm != 'normalized':
                 row = np.expm1(np.maximum(row, 0))
             pred[oi] = row
