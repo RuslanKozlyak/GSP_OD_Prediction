@@ -79,6 +79,8 @@ class TrainingConfig:
     decoder_type:       Literal['bilinear', 'linear', 'transflower', 'gravity_guided', 'lgbm', 'gbrt'] = 'transflower'
     pe_type:            Optional[Literal['rwpe', 'spe', 'rrwp', 'lape']]    = 'rwpe'
     gps_norm_type:      Literal['batch_norm', 'graph_norm']                 = 'batch_norm'
+    gnn_layers:         Optional[int] = None
+    gnn_heads:          Optional[int] = None
     # ── Loss ──────────────────────────────────────────────────────────────────
     loss_type:          Literal['huber', 'ce', 'ce_old', 'multitask', 'zinb', 'focal', 'mae'] = 'huber'
     prediction_mode:    Literal['raw', 'normalized']                        = 'raw'
@@ -110,6 +112,11 @@ class TrainingConfig:
     gan_walk_len:       int   = 64
     gan_walk_batch_size: int  = 64
     gan_tau:            float = 1.0
+    gan_regularizer:    Literal['gp', 'clip'] = 'gp'
+    gan_clip_value:     float = 0.01
+    gan_n_critic_after_epoch: int = 0
+    gan_n_critic_after: int   = 1
+    gan_noise_dim:      int   = 0
     gan_disc_hidden_dim: int  = 64
     gan_disc_layers:    int   = 4
     gan_disc_dropout:   float = 0.05
@@ -134,6 +141,7 @@ class TrainingConfig:
             'loss_type':       ('huber', 'ce', 'ce_old', 'multitask', 'zinb', 'focal', 'mae'),
             'prediction_mode': ('raw', 'normalized'),
             'training_mode':   ('supervised', 'gan'),
+            'gan_regularizer':  ('gp', 'clip'),
         }
         for attr, choices in _valid.items():
             val = getattr(self, attr)
@@ -166,12 +174,28 @@ class TrainingConfig:
             raise ValueError("TrainingConfig.gan_disc_layers must be >= 1")
         if not 0 <= self.gan_disc_dropout < 1:
             raise ValueError("TrainingConfig.gan_disc_dropout must be in [0, 1)")
+        if self.gnn_layers is not None and self.gnn_layers < 1:
+            raise ValueError("TrainingConfig.gnn_layers must be >= 1 when set")
+        if self.gnn_heads is not None and self.gnn_heads < 1:
+            raise ValueError("TrainingConfig.gnn_heads must be >= 1 when set")
+        if self.gan_clip_value <= 0:
+            raise ValueError("TrainingConfig.gan_clip_value must be positive")
+        if self.gan_n_critic_after_epoch < 0:
+            raise ValueError("TrainingConfig.gan_n_critic_after_epoch must be >= 0")
+        if self.gan_n_critic_after < 1:
+            raise ValueError("TrainingConfig.gan_n_critic_after must be >= 1")
+        if self.gan_noise_dim < 0:
+            raise ValueError("TrainingConfig.gan_noise_dim must be >= 0")
 
     def describe(self):
         enc = {'mlp': 'MLP', 'gat': 'GAT'}.get(self.encoder_type, 'GPS')
         pe_name = 'none' if self.pe_type is None else self.pe_type
         parts = [f"{enc}+{self.decoder_type}+{self.loss_type}+{self.prediction_mode}",
                  f"pe={pe_name}", f"norm={self.gps_norm_type}"]
+        if self.gnn_layers is not None or self.gnn_heads is not None:
+            layers = self.gnn_layers if self.gnn_layers is not None else "default"
+            heads = self.gnn_heads if self.gnn_heads is not None else "default"
+            parts.append(f"gnn={layers}L/{heads}H")
         if self.use_log_transform:
             parts.append(
                 "log_norm"
@@ -185,6 +209,12 @@ class TrainingConfig:
                 f"GAN adv={self.adv_weight:g} ncritic={self.gan_n_critic} "
                 f"walk={self.gan_walk_batch_size}x{self.gan_walk_len}"
             )
+            if self.gan_regularizer == 'clip':
+                parts.append(f"WGAN-clip={self.gan_clip_value:g}")
+            if self.gan_n_critic_after_epoch:
+                parts.append(f"ncritic_after={self.gan_n_critic_after}@{self.gan_n_critic_after_epoch}")
+            if self.gan_noise_dim:
+                parts.append(f"noise={self.gan_noise_dim}")
             if self.gan_only:
                 parts.append("gan_only")
         parts.append(f"zeros={self.include_zero_pairs} samp={self.use_dest_sampling}")
@@ -231,8 +261,15 @@ def save_metrics_to_csv(run_id, run_name, config, metrics_full, metrics_nz,
         'discriminator_lr': config.discriminator_lr,
         'weight_decay': config.weight_decay,
         'adv_weight': config.adv_weight,
+        'gnn_layers': config.gnn_layers,
+        'gnn_heads': config.gnn_heads,
+        'gan_regularizer': config.gan_regularizer,
+        'gan_clip_value': config.gan_clip_value,
         'gan_gp_lambda': config.gan_gp_lambda,
         'gan_n_critic': config.gan_n_critic,
+        'gan_n_critic_after_epoch': config.gan_n_critic_after_epoch,
+        'gan_n_critic_after': config.gan_n_critic_after,
+        'gan_noise_dim': config.gan_noise_dim,
         'gan_pretrain_epochs': config.gan_pretrain_epochs,
         'gan_walk_len': config.gan_walk_len,
         'gan_walk_batch_size': config.gan_walk_batch_size,

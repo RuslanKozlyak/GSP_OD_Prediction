@@ -111,14 +111,28 @@ def _make_gat_conv(hd, nh, do, ed):
 
 class GATEncoder(nn.Module):
     """GAT encoder used for the original-style GAT-GAN ablation."""
-    def __init__(self, idim, hd, ped, ed, nl, nh=4, do=0.1, pe_type=None, norm_type='batch_norm'):
+    def __init__(
+        self,
+        idim,
+        hd,
+        ped,
+        ed,
+        nl,
+        nh=4,
+        do=0.1,
+        pe_type=None,
+        norm_type='batch_norm',
+        noise_dim=0,
+    ):
         super().__init__()
         self.pe_type = pe_type
         self.use_pe = pe_type is not None
         self.norm_type = norm_type
         self.dropout = do
+        self.noise_dim = noise_dim
+        self.force_noise = False
         npd = hd - ped if self.use_pe else hd
-        self.node_proj = Sequential(Linear(idim, npd), ReLU(), Linear(npd, npd))
+        self.node_proj = Sequential(Linear(idim + noise_dim, npd), ReLU(), Linear(npd, npd))
         if self.use_pe:
             pid = PE_WALK_LEN
             self.pe_norm = BatchNorm1d(pid)
@@ -142,7 +156,14 @@ class GATEncoder(nn.Module):
                 self.norms.append(nn.Identity())
 
     def forward(self, gd):
-        h = self.node_proj(gd.x)
+        x = gd.x
+        if self.noise_dim:
+            if self.training or self.force_noise:
+                noise = torch.randn(x.size(0), self.noise_dim, device=x.device, dtype=x.dtype)
+            else:
+                noise = torch.zeros(x.size(0), self.noise_dim, device=x.device, dtype=x.dtype)
+            x = torch.cat([x, noise], dim=-1)
+        h = self.node_proj(x)
         if self.use_pe:
             pe = self.pe_proj(self.pe_norm(gd.pe))
             h = torch.cat([h, pe], dim=-1)
@@ -309,9 +330,13 @@ class GPSODModel(nn.Module):
 
 class GATODModel(nn.Module):
     def __init__(self, idim, hd, ped, ed, gl, gh, gdo,
-                 dt='linear', th=4, tl=2, tdo=0.1, pe_type=None, nt='batch_norm', rle=None):
+                 dt='linear', th=4, tl=2, tdo=0.1, pe_type=None, nt='batch_norm', rle=None,
+                 noise_dim=0):
         super().__init__()
-        self.encoder = GATEncoder(idim, hd, ped, ed, gl, gh, gdo, pe_type=pe_type, norm_type=nt)
+        self.encoder = GATEncoder(
+            idim, hd, ped, ed, gl, gh, gdo,
+            pe_type=pe_type, norm_type=nt, noise_dim=noise_dim,
+        )
         self.decoder_type = dt
         self.hidden_dim = hd
         self.rle = rle
@@ -394,17 +419,19 @@ def make_model(config, input_dim=None, edge_dim=None, graph_data_ref=None):
             input_dim, HIDDEN_DIM, TF_HEADS, TF_LAYERS, TF_DROPOUT,
             rle=rle, decoder_type=config.decoder_type,
         ).to(device)
+    gnn_layers = config.gnn_layers or GPS_LAYERS
+    gnn_heads = config.gnn_heads or GPS_HEADS
     if config.encoder_type == 'gat':
         assert input_dim and edge_dim
         return GATODModel(
-            input_dim, HIDDEN_DIM, PE_DIM, edge_dim, GPS_LAYERS, GPS_HEADS, GPS_DROPOUT,
+            input_dim, HIDDEN_DIM, PE_DIM, edge_dim, gnn_layers, gnn_heads, GPS_DROPOUT,
             config.decoder_type, TF_HEADS, TF_LAYERS, TF_DROPOUT,
-            config.pe_type, config.gps_norm_type, rle=rle,
+            config.pe_type, config.gps_norm_type, rle=rle, noise_dim=config.gan_noise_dim,
         ).to(device)
     else:  # 'gps'
         assert input_dim and edge_dim
         return GPSODModel(
-            input_dim, HIDDEN_DIM, PE_DIM, edge_dim, GPS_LAYERS, GPS_HEADS, GPS_DROPOUT,
+            input_dim, HIDDEN_DIM, PE_DIM, edge_dim, gnn_layers, gnn_heads, GPS_DROPOUT,
             config.decoder_type, TF_HEADS, TF_LAYERS, TF_DROPOUT,
             config.pe_type, config.gps_norm_type, rle=rle,
         ).to(device)

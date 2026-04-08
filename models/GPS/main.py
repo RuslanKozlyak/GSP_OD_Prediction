@@ -70,8 +70,18 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         print(
             f"  GAN: discriminator_params={n_params_disc:,} "
             f"pretrain={config.gan_pretrain_epochs} epochs "
-            f"ncritic={config.gan_n_critic} adv_weight={config.adv_weight:g}"
+            f"ncritic={config.gan_n_critic} adv_weight={config.adv_weight:g} "
+            f"regularizer={config.gan_regularizer}"
         )
+        if config.gan_regularizer == 'clip':
+            print(f"       WGAN clip={config.gan_clip_value:g}")
+        if config.gan_n_critic_after_epoch:
+            print(
+                f"       ncritic schedule: {config.gan_n_critic} through epoch "
+                f"{config.gan_n_critic_after_epoch}, then {config.gan_n_critic_after}"
+            )
+        if config.gan_noise_dim:
+            print(f"       generator_noise_dim={config.gan_noise_dim}")
 
     optimizer = torch.optim.Adam(
         model.parameters(),
@@ -200,6 +210,7 @@ def _train_loop(run_id, run_name, config, model, city_datas,
                     cc,
                     optimizer,
                     discriminator_optimizer,
+                    epoch=epoch,
                 )
                 for key, target in (
                     ('gan_g_loss', epoch_gan_g_losses),

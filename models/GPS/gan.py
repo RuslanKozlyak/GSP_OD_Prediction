@@ -141,8 +141,8 @@ def compute_gradient_penalty(discriminator, real_samples, fake_samples):
     return ((gradients.norm(2, dim=1) - 1.0) ** 2).mean()
 
 
-def gan_step_for_city(model, discriminator, cd, config, generator_optimizer, discriminator_optimizer):
-    """Run one ODGN-style WGAN-GP update for a city."""
+def gan_step_for_city(model, discriminator, cd, config, generator_optimizer, discriminator_optimizer, epoch=None):
+    """Run one ODGN-style WGAN update for a city."""
     node_features = cd['graph_data'].x.detach()
     real_od = torch.as_tensor(cd['od_matrix_train'], dtype=torch.float32, device=node_features.device)
     if real_od.sum().item() <= 0:
@@ -154,7 +154,8 @@ def gan_step_for_city(model, discriminator, cd, config, generator_optimizer, dis
 
     discriminator.train()
     _set_requires_grad(discriminator, True)
-    for _ in range(config.gan_n_critic):
+    n_critic = _effective_n_critic(config, epoch)
+    for _ in range(n_critic):
         discriminator_optimizer.zero_grad()
         fake_od = _detached_generated_od_matrix(model, cd, config)
         real_seq = sample_walk_sequences(
@@ -177,13 +178,19 @@ def gan_step_for_city(model, discriminator, cd, config, generator_optimizer, dis
         )
         real_score = discriminator(real_seq)
         fake_score = discriminator(fake_seq)
-        gp = compute_gradient_penalty(discriminator, real_seq, fake_seq)
-        loss_d = fake_score.mean() - real_score.mean() + config.gan_gp_lambda * gp
+        if config.gan_regularizer == 'gp':
+            gp = compute_gradient_penalty(discriminator, real_seq, fake_seq)
+            loss_d = fake_score.mean() - real_score.mean() + config.gan_gp_lambda * gp
+        else:
+            gp = torch.zeros((), device=real_seq.device)
+            loss_d = fake_score.mean() - real_score.mean()
         if torch.isnan(loss_d) or torch.isinf(loss_d):
             continue
         loss_d.backward()
         torch.nn.utils.clip_grad_norm_(discriminator.parameters(), 1.0)
         discriminator_optimizer.step()
+        if config.gan_regularizer == 'clip':
+            _clip_weights(discriminator, config.gan_clip_value)
         d_losses.append(float(loss_d.detach().cpu()))
         gp_losses.append(float(gp.detach().cpu()))
 
@@ -246,8 +253,12 @@ def _scores_to_flow(scores, outflow, config):
 def _detached_generated_od_matrix(model, cd, config):
     was_training = model.training
     model.eval()
-    with torch.no_grad():
-        fake_od = generated_od_matrix(model, cd, config).detach()
+    noise_states = _set_force_noise(model, True)
+    try:
+        with torch.no_grad():
+            fake_od = generated_od_matrix(model, cd, config).detach()
+    finally:
+        _restore_force_noise(noise_states)
     if was_training:
         model.train()
     return fake_od
@@ -264,3 +275,30 @@ def _real_flow_scale(cd, target_device):
 def _set_requires_grad(module, enabled):
     for param in module.parameters():
         param.requires_grad_(enabled)
+
+
+def _effective_n_critic(config, epoch):
+    switch_epoch = getattr(config, 'gan_n_critic_after_epoch', 0)
+    if switch_epoch and epoch is not None and epoch > switch_epoch:
+        return config.gan_n_critic_after
+    return config.gan_n_critic
+
+
+def _clip_weights(module, clip_value):
+    with torch.no_grad():
+        for param in module.parameters():
+            param.clamp_(-clip_value, clip_value)
+
+
+def _set_force_noise(module, enabled):
+    states = []
+    for child in module.modules():
+        if hasattr(child, 'force_noise'):
+            states.append((child, child.force_noise))
+            child.force_noise = enabled
+    return states
+
+
+def _restore_force_noise(states):
+    for module, previous in states:
+        module.force_noise = previous
