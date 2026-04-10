@@ -22,6 +22,14 @@ from models.shared.metrics import (
 from models.shared.plotting import save_loss_plot
 
 
+_NAN_TRAIN_VAL_CPC = {
+    'CPC_train_full': float('nan'),
+    'CPC_val_full': float('nan'),
+    'CPC_train_nz': float('nan'),
+    'CPC_val_nz': float('nan'),
+}
+
+
 # ─── Unified training loop ───────────────────────────────────────────────────
 
 def _train_loop(run_id, run_name, config, model, city_datas,
@@ -95,6 +103,7 @@ def _train_loop(run_id, run_name, config, model, city_datas,
             betas=(0.5, 0.9),
         )
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5, min_lr=1e-5)
+    use_supervised_monitoring = discriminator is None or config.gan_use_supervised_monitoring
 
     max_epochs = config.mc_epochs if is_multi else config.epochs
     history = {
@@ -232,17 +241,20 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         gan_d_loss = np.mean(epoch_gan_d_losses) if epoch_gan_d_losses else float('nan')
         gan_gp = np.mean(epoch_gan_gps) if epoch_gan_gps else float('nan')
 
-        # Validation loss + split-specific train/val CPC diagnostics.
-        model.eval()
-        val_losses = []
-        with torch.no_grad():
-            for vcid, vcd in val_cds.items():
-                vl = compute_loss_for_city(model, vcd, config)
-                if not (torch.isnan(vl) or torch.isinf(vl)):
-                    val_losses.append(vl.item())
-            train_val_cpc = _train_val_cpc_metrics()
-
-        avg_val_loss = np.mean(val_losses) if val_losses else float('nan')
+        # Paper-style pure GAN runs can disable supervised validation/checkpointing.
+        if use_supervised_monitoring:
+            model.eval()
+            val_losses = []
+            with torch.no_grad():
+                for vcid, vcd in val_cds.items():
+                    vl = compute_loss_for_city(model, vcd, config)
+                    if not (torch.isnan(vl) or torch.isinf(vl)):
+                        val_losses.append(vl.item())
+                train_val_cpc = _train_val_cpc_metrics()
+            avg_val_loss = np.mean(val_losses) if val_losses else float('nan')
+        else:
+            train_val_cpc = dict(_NAN_TRAIN_VAL_CPC)
+            avg_val_loss = float('nan')
         history['train_loss'].append(train_loss)
         history['val_loss'].append(avg_val_loss)
         history['train_cpc_full'].append(train_val_cpc['CPC_train_full'])
@@ -253,24 +265,27 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         history['gan_d_loss'].append(gan_d_loss)
         history['gan_gp'].append(gan_gp)
 
-        if not np.isnan(avg_val_loss):
+        if use_supervised_monitoring and not np.isnan(avg_val_loss):
             scheduler.step(avg_val_loss)
 
-        if avg_val_loss < best_val_loss:
+        if use_supervised_monitoring and avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             best_state = {k: v.clone() for k, v in model.state_dict().items()}
             best_val_epoch = epoch
             patience_count = 0
             flag = ' *'
-        else:
+        elif use_supervised_monitoring:
             patience_count += 1
             flag = ''
+        else:
+            flag = ''
 
-        cpc_nz_val = train_val_cpc['CPC_val_nz']
-        if not np.isnan(cpc_nz_val) and cpc_nz_val > best_cpc_nz_val:
-            best_cpc_nz_val = cpc_nz_val
-            best_cpc_nz_state = {k: v.clone() for k, v in model.state_dict().items()}
-            best_cpc_nz_epoch = epoch
+        if use_supervised_monitoring:
+            cpc_nz_val = train_val_cpc['CPC_val_nz']
+            if not np.isnan(cpc_nz_val) and cpc_nz_val > best_cpc_nz_val:
+                best_cpc_nz_val = cpc_nz_val
+                best_cpc_nz_state = {k: v.clone() for k, v in model.state_dict().items()}
+                best_cpc_nz_epoch = epoch
 
         if epoch % 5 == 0 or epoch == 1:
             nan_str = f" NaN:{nan_count}" if nan_count > 0 else ""
@@ -283,10 +298,14 @@ def _train_loop(run_id, run_name, config, model, city_datas,
                     d_text = "-" if np.isnan(gan_d_loss) else f"{gan_d_loss:.4f}"
                     g_text = "-" if np.isnan(gan_g_loss) else f"{gan_g_loss:.4f}"
                     gan_str = f" gan_g={g_text} gan_d={d_text}"
-            print(f"  {epoch:3d}/{max_epochs}  train={train_text}  val={avg_val_loss:.4f}  "
-                  f"{format_train_val_cpc_metrics(train_val_cpc)}  "
+            monitor_text = (
+                f"val={avg_val_loss:.4f}  {format_train_val_cpc_metrics(train_val_cpc)}"
+                if use_supervised_monitoring else
+                "val=off  CPC_train/val=off"
+            )
+            print(f"  {epoch:3d}/{max_epochs}  train={train_text}  {monitor_text}  "
                   f"{time.time()-t0:.1f}s{flag}{nan_str}{gan_str}")
-        if patience_count >= config.patience:
+        if use_supervised_monitoring and patience_count >= config.patience:
             print(f"  Early stop @ epoch {epoch}")
             break
 
@@ -388,19 +407,26 @@ def _train_loop(run_id, run_name, config, model, city_datas,
     val_loss_best_state = best_state if best_state is not None else last_state
     cpc_nz_best_state = best_cpc_nz_state if best_cpc_nz_state is not None else val_loss_best_state
 
-    model.load_state_dict(val_loss_best_state)
-    tv_val = _train_val_cpc_metrics()
-    mf_val, mnz_val, mt_val, pc_val = eval_all(
-        f"Best weights (val_loss @ epoch {best_val_epoch or epoch})"
-    )
-    print(f"  Train/Val: {format_train_val_cpc_metrics(tv_val)}")
+    if use_supervised_monitoring:
+        model.load_state_dict(val_loss_best_state)
+        tv_val = _train_val_cpc_metrics()
+        mf_val, mnz_val, mt_val, pc_val = eval_all(
+            f"Best weights (val_loss @ epoch {best_val_epoch or epoch})"
+        )
+        print(f"  Train/Val: {format_train_val_cpc_metrics(tv_val)}")
 
-    model.load_state_dict(cpc_nz_best_state)
-    tv_cpc = _train_val_cpc_metrics()
-    mf_cpc, mnz_cpc, mt_cpc, pc_cpc = eval_all(
-        f"Best weights (CPC_val_nz @ epoch {best_cpc_nz_epoch or best_val_epoch or epoch})"
-    )
-    print(f"  Train/Val: {format_train_val_cpc_metrics(tv_cpc)}")
+        model.load_state_dict(cpc_nz_best_state)
+        tv_cpc = _train_val_cpc_metrics()
+        mf_cpc, mnz_cpc, mt_cpc, pc_cpc = eval_all(
+            f"Best weights (CPC_val_nz @ epoch {best_cpc_nz_epoch or best_val_epoch or epoch})"
+        )
+        print(f"  Train/Val: {format_train_val_cpc_metrics(tv_cpc)}")
+    else:
+        model.load_state_dict(last_state)
+        tv_val = dict(_NAN_TRAIN_VAL_CPC)
+        tv_cpc = dict(_NAN_TRAIN_VAL_CPC)
+        mf_val, mnz_val, mt_val, pc_val = eval_all("Final weights (pure GAN)")
+        mf_cpc, mnz_cpc, mt_cpc, pc_cpc = mf_val, mnz_val, mt_val, pc_val
 
     # Save
     save_metrics_to_csv(
@@ -408,10 +434,10 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         n_params, epoch, status,
         metrics_csv=METRICS_VAL_LOSS_CSV,
         run_suffix='val_loss',
-        checkpoint_selection='val_loss_best',
+        checkpoint_selection='val_loss_best' if use_supervised_monitoring else 'last_epoch',
         selected_epoch=best_val_epoch or epoch,
-        selection_metric='val_loss',
-        selection_metric_value=best_val_loss,
+        selection_metric='val_loss' if use_supervised_monitoring else None,
+        selection_metric_value=best_val_loss if use_supervised_monitoring else None,
         train_val_metrics=tv_val,
     )
     save_metrics_to_csv(
@@ -419,17 +445,20 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         n_params, epoch, status,
         metrics_csv=METRICS_CPC_NZ_BEST_CSV,
         run_suffix='cpc_nz',
-        checkpoint_selection='cpc_nz_best',
+        checkpoint_selection='cpc_nz_best' if use_supervised_monitoring else 'last_epoch',
         selected_epoch=best_cpc_nz_epoch or best_val_epoch or epoch,
-        selection_metric='CPC_val_nz',
-        selection_metric_value=best_cpc_nz_val,
+        selection_metric='CPC_val_nz' if use_supervised_monitoring else None,
+        selection_metric_value=best_cpc_nz_val if use_supervised_monitoring else None,
         train_val_metrics=tv_cpc,
     )
     save_model_weights(run_id, val_loss_best_state, config)
-    print(
-        "  -> CPC_nz-best checkpoint source: "
-        f"epoch {best_cpc_nz_epoch or best_val_epoch or epoch}"
-    )
+    if use_supervised_monitoring:
+        print(
+            "  -> CPC_nz-best checkpoint source: "
+            f"epoch {best_cpc_nz_epoch or best_val_epoch or epoch}"
+        )
+    else:
+        print(f"  -> Pure GAN checkpoint source: final epoch {epoch}")
     save_model_weights(run_id, cpc_nz_best_state, config, weights_dir=WEIGHTS_CPC_BEST_DIR)
 
     return {

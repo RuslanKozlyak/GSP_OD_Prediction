@@ -78,7 +78,7 @@ class TrainingConfig:
     encoder_type:       Literal['gps', 'mlp', 'gat']                        = 'gps'
     decoder_type:       Literal['bilinear', 'linear', 'transflower', 'gravity_guided', 'lgbm', 'gbrt'] = 'transflower'
     pe_type:            Optional[Literal['rwpe', 'spe', 'rrwp', 'lape']]    = 'rwpe'
-    gps_norm_type:      Literal['batch_norm', 'graph_norm']                 = 'batch_norm'
+    gps_norm_type:      Literal['batch_norm', 'graph_norm', 'none']         = 'batch_norm'
     gnn_layers:         Optional[int] = None
     gnn_heads:          Optional[int] = None
     # ── Loss ──────────────────────────────────────────────────────────────────
@@ -120,6 +120,7 @@ class TrainingConfig:
     gan_disc_hidden_dim: int  = 64
     gan_disc_layers:    int   = 4
     gan_disc_dropout:   float = 0.05
+    gan_use_supervised_monitoring: bool = True
     # ── RLE (Relative Location Encoder) ───────────────────────────────────────
     use_rle:            bool  = False
     rle_freq:           int   = 16
@@ -137,7 +138,7 @@ class TrainingConfig:
             'encoder_type':    ('gps', 'mlp', 'gat'),
             'decoder_type':    ('bilinear', 'linear', 'transflower', 'gravity_guided', 'lgbm', 'gbrt'),
             'pe_type':         ('rwpe', 'spe', 'rrwp', 'lape', None),
-            'gps_norm_type':   ('batch_norm', 'graph_norm'),
+            'gps_norm_type':   ('batch_norm', 'graph_norm', 'none'),
             'loss_type':       ('huber', 'ce', 'ce_old', 'multitask', 'zinb', 'focal', 'mae'),
             'prediction_mode': ('raw', 'normalized'),
             'training_mode':   ('supervised', 'gan'),
@@ -217,6 +218,8 @@ class TrainingConfig:
                 parts.append(f"noise={self.gan_noise_dim}")
             if self.gan_only:
                 parts.append("gan_only")
+            if not self.gan_use_supervised_monitoring:
+                parts.append("supmon=off")
         parts.append(f"zeros={self.include_zero_pairs} samp={self.use_dest_sampling}")
         return " | ".join(parts)
 
