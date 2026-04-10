@@ -28,6 +28,7 @@ from models.shared.data_load import (
 
 from .artifacts import save_od_artifacts
 from .config import (
+    DEFAULT_FEATURE_MODE,
     DATA_PATH,
     PROJECT_ROOT,
     WEIGHTS_DIR,
@@ -248,7 +249,9 @@ def _compute_gmel_validation_metrics(gmel, decoder, nfeat_scaler, valid_areas, d
             'CPC_val_full': compute_metrics(pred.ravel(), od.ravel())['CPC'],
         }
 
-    nf_valid, adj_valid, dis_valid, od_valid = load_graph_data(valid_areas, data_path)
+    nf_valid, adj_valid, dis_valid, od_valid = load_graph_data(
+        valid_areas, data_path, feature_mode=DEFAULT_FEATURE_MODE
+    )
     cpcs = []
     for nf, adj, dis, od in zip(nf_valid, adj_valid, dis_valid, od_valid):
         pred = _predict_gmel_matrix(gmel, decoder, nfeat_scaler, nf, adj, dis, device)
@@ -276,7 +279,9 @@ def _compute_gmel_train_val_metrics(gmel, decoder, nfeat_scaler, train_areas, va
 
     metrics = {}
     for prefix, areas in (('train', train_areas), ('val', valid_areas)):
-        nf_list, adj_list, dis_list, od_list = load_graph_data(areas, data_path)
+        nf_list, adj_list, dis_list, od_list = load_graph_data(
+            areas, data_path, feature_mode=DEFAULT_FEATURE_MODE
+        )
         pred_matrices = [
             _predict_gmel_matrix(gmel, decoder, nfeat_scaler, nf, adj, dis, device)
             for nf, adj, dis in zip(nf_list, adj_list, dis_list)
@@ -323,7 +328,9 @@ def _compute_netgan_train_val_metrics(trained, train_areas, valid_areas, data_pa
 
     metrics = {}
     for prefix, areas in (('train', train_areas), ('val', valid_areas)):
-        nf_list, adj_list, dis_list, od_list = load_graph_data(areas, data_path)
+        nf_list, adj_list, dis_list, od_list = load_graph_data(
+            areas, data_path, feature_mode=DEFAULT_FEATURE_MODE
+        )
         pred_matrices = [
             _predict_netgan_matrix(trained, nf, adj, dis, device)
             for nf, adj, dis in zip(nf_list, adj_list, dis_list)
@@ -616,7 +623,7 @@ def train_flat_model(model_name, train_areas, valid_areas, test_areas, data_path
     print(f"\n{'=' * 60}\n  Training: {model_name}\n{'=' * 60}")
     set_global_seed()
     run_id = run_id or _benchmark_run_id(model_name, train_areas, valid_areas, test_areas)
-    feature_mode = "gravity" if model_name in ("GM_E", "GM_P") else "full"
+    feature_mode = "gravity" if model_name in ("GM_E", "GM_P") else DEFAULT_FEATURE_MODE
     multi_city_split = not _is_single_city_split(train_areas, valid_areas, test_areas)
     cap_svr = model_name == "SVR" and multi_city_split
     payload = _prepare_flat_payload(
@@ -686,7 +693,7 @@ def infer_flat_model(model_name, train_areas, valid_areas, test_areas, data_path
     print(f"\n{'=' * 60}\n  Loading: {model_name}\n{'=' * 60}")
     t0 = time.time()
     run_id = run_id or _benchmark_run_id(model_name, train_areas, valid_areas, test_areas)
-    feature_mode = "gravity" if model_name in ("GM_E", "GM_P") else "full"
+    feature_mode = "gravity" if model_name in ("GM_E", "GM_P") else DEFAULT_FEATURE_MODE
     multi_city_split = not _is_single_city_split(train_areas, valid_areas, test_areas)
     cap_svr = model_name == "SVR" and multi_city_split
     payload = _prepare_flat_payload(
@@ -789,7 +796,9 @@ def train_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
     if single_city_split:
         nfeat_scaler = dis_scaler = od_scaler = None
     else:
-        nf_train, _, dis_train, od_train = load_graph_data(train_areas, data_path)
+        nf_train, _, dis_train, od_train = load_graph_data(
+            train_areas, data_path, feature_mode=DEFAULT_FEATURE_MODE
+        )
         nfeat_scaler, dis_scaler, od_scaler = get_scalers(nf_train, dis_train, od_train)
 
     try:
@@ -797,13 +806,16 @@ def train_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
             module = load_model_main("GMEL")
             single_city_data = None
             if single_city_split:
-                single_city_data = prepare_single_city_graph(train_areas[0], data_path=data_path)
+                single_city_data = prepare_single_city_graph(
+                    train_areas[0], data_path=data_path, feature_mode=DEFAULT_FEATURE_MODE
+                )
             hp = get_baseline_hyperparams(model_name)
             gmel, decoder, nfeat_scaler, dis_scaler = module.train(
                 train_areas, valid_areas, str(data_path),
                 device=device,
                 nfeat_scaler=nfeat_scaler, dis_scaler=dis_scaler, od_scaler=od_scaler,
                 single_city_data=single_city_data,
+                feature_mode=DEFAULT_FEATURE_MODE,
                 decoder_type=hp.get('decoder_type', 'gbrt'),
                 max_epochs=hp.get('encoder_max_epochs', 10_000),
                 patience=hp.get('encoder_patience', 100),
@@ -831,13 +843,16 @@ def train_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
             module = load_model_main("NetGAN")
             single_city_data = None
             if single_city_split:
-                single_city_data = prepare_single_city_graph(train_areas[0], data_path=data_path)
+                single_city_data = prepare_single_city_graph(
+                    train_areas[0], data_path=data_path, feature_mode=DEFAULT_FEATURE_MODE
+                )
             hp = get_baseline_hyperparams(model_name)
             trained = module.train(
                 train_areas, valid_areas, str(data_path),
                 device=device,
                 nfeat_scaler=nfeat_scaler, dis_scaler=dis_scaler, od_scaler=od_scaler,
                 single_city_data=single_city_data,
+                feature_mode=DEFAULT_FEATURE_MODE,
                 n_epochs=hp.get('n_epochs', 2),
                 lr=hp.get('lr', 3e-4),
                 gp_lambda=hp.get('gp_lambda', 10),
@@ -875,7 +890,9 @@ def infer_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
             gmel, decoder, nfeat_scaler, _ = loaded
             single_city_data = None
             if single_city_split:
-                single_city_data = prepare_single_city_graph(train_areas[0], data_path=data_path)
+                single_city_data = prepare_single_city_graph(
+                    train_areas[0], data_path=data_path, feature_mode=DEFAULT_FEATURE_MODE
+                )
             validation_metrics = _compute_gmel_validation_metrics(
                 gmel, decoder, nfeat_scaler, valid_areas, data_path,
                 single_city_data=single_city_data, device=device,
@@ -912,7 +929,9 @@ def infer_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
                     metrics_all = [mf]
                 else:
                     metrics_all = []
-                    nf_test, adj_test, dis_test, od_test = load_graph_data(test_areas, data_path)
+                    nf_test, adj_test, dis_test, od_test = load_graph_data(
+                        test_areas, data_path, feature_mode=DEFAULT_FEATURE_MODE
+                    )
                     gmel.eval()
                     for area_id, nf, adj, dis, od in tqdm(
                         zip(test_areas, nf_test, adj_test, dis_test, od_test),
@@ -941,10 +960,15 @@ def infer_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
             module = load_model_main("NetGAN")
             single_city_data = None
             if single_city_split:
-                single_city_data = prepare_single_city_graph(train_areas[0], data_path=data_path)
+                single_city_data = prepare_single_city_graph(
+                    train_areas[0], data_path=data_path, feature_mode=DEFAULT_FEATURE_MODE
+                )
                 validation_metrics = {'CPC_val': float('nan'), 'CPC_val_full': float('nan')}
             else:
-                val_metrics_list = module.evaluate(trained, valid_areas, str(data_path), device=device)
+                val_metrics_list = module.evaluate(
+                    trained, valid_areas, str(data_path),
+                    device=device, feature_mode=DEFAULT_FEATURE_MODE,
+                )
                 val_avg = average_listed_metrics(val_metrics_list) if val_metrics_list else {}
                 validation_metrics = {
                     'CPC_val': val_avg.get('CPC_full', float('nan')),
@@ -992,7 +1016,9 @@ def infer_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
                     metrics_all = [mf]
                 else:
                     metrics_all = []
-                    nf_test, adj_test, dis_test, od_test = load_graph_data(test_areas, data_path)
+                    nf_test, adj_test, dis_test, od_test = load_graph_data(
+                        test_areas, data_path, feature_mode=DEFAULT_FEATURE_MODE
+                    )
                     gen = trained['generator']
                     gen.eval()
                     for area_id, nf, adj, dis, od in zip(

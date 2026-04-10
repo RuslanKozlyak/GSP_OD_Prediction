@@ -6,6 +6,7 @@ import torch
 from sklearn.preprocessing import MinMaxScaler
 
 from .config import DATA_PATH, FLAT_CHUNK_SIZE, MULTI_CITY_IDS, SEED
+from models.GPS.config import split_configured_multi_city_ids
 
 
 def load_area_raw(area_id, data_path=DATA_PATH):
@@ -39,16 +40,20 @@ def split_areas(areas, seed=SEED):
 
 def split_multi_city_ids(city_ids=None, seed=SEED, val_size=2, test_size=2):
     ids = list(city_ids or MULTI_CITY_IDS)
-    rng = np.random.RandomState(seed)
-    rng.shuffle(ids)
-    n_total = len(ids)
-    if n_total <= val_size + test_size:
-        raise ValueError(
-            f"Need more than {val_size + test_size} cities for "
-            f"train/val/test split, got {n_total}"
-        )
-    n_train = n_total - val_size - test_size
-    return ids[:n_train], ids[n_train:n_train + val_size], ids[n_train + val_size:]
+    try:
+        _, train_ids, val_ids, test_ids = split_configured_multi_city_ids(ids)
+        return train_ids, val_ids, test_ids
+    except ValueError:
+        rng = np.random.RandomState(seed)
+        rng.shuffle(ids)
+        n_total = len(ids)
+        if n_total <= val_size + test_size:
+            raise ValueError(
+                f"Need more than {val_size + test_size} cities for "
+                f"train/val/test split, got {n_total}"
+            )
+        n_train = n_total - val_size - test_size
+        return ids[:n_train], ids[n_train:n_train + val_size], ids[n_train + val_size:]
 
 
 

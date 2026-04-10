@@ -91,17 +91,41 @@ def _predict_bilinear_matrix(model, city_data, od_scaler):
     return pred
 
 
-def _print_stage_metrics(stage_name, pred, od_np, test_mask):
+def _print_stage_metrics(stage_name, pred, od_np, test_mask, test_full_mask=None):
     nz = od_np > 0
     mf = cal_od_metrics(pred, od_np)
     mnz = compute_metrics(pred[nz], od_np[nz]) if np.any(nz) else {'CPC': 0.0, 'MAE': 0.0, 'RMSE': 0.0}
-    mt = compute_metrics(pred[test_mask], od_np[test_mask]) if np.any(test_mask) else {'CPC': 0.0, 'MAE': 0.0, 'RMSE': 0.0}
+    if test_full_mask is None:
+        test_full_mask = test_mask
+    mt_full = (
+        compute_metrics(pred[test_full_mask], od_np[test_full_mask])
+        if np.any(test_full_mask) else
+        {'CPC': 0.0, 'MAE': 0.0, 'RMSE': 0.0}
+    )
+    mt_nz = (
+        compute_metrics(pred[test_mask], od_np[test_mask])
+        if np.any(test_mask) else
+        {'CPC': 0.0, 'MAE': 0.0, 'RMSE': 0.0}
+    )
+    mt = {
+        'CPC_full': mt_full['CPC'],
+        'MAE_full': mt_full['MAE'],
+        'RMSE_full': mt_full['RMSE'],
+        'CPC_nz': mt_nz['CPC'],
+        'MAE_nz': mt_nz['MAE'],
+        'RMSE_nz': mt_nz['RMSE'],
+        'CPC': mt_nz['CPC'],
+        'MAE': mt_full['MAE'],
+        'RMSE': mt_full['RMSE'],
+    }
     print(f"\n  === {stage_name} ===")
     print(f"    CPC_full={mf['CPC']:.4f}  CPC_nz={mnz['CPC']:.4f}  "
-          f"CPC_test={mt['CPC']:.4f}  MAE={mf['MAE']:.4f}  RMSE={mf['RMSE']:.4f}")
+          f"CPC_test_full={mt['CPC_full']:.4f}  CPC_test_nz={mt['CPC_nz']:.4f}  "
+          f"MAE={mf['MAE']:.4f}  RMSE={mf['RMSE']:.4f}")
     print(f"    Full metrics: {mf}")
     print(f"    Nonzero metrics: {mnz}")
-    print(f"    Test-pair metrics: {mt}")
+    print(f"    Test-full metrics: {mt_full}")
+    print(f"    Test-nz metrics: {mt_nz}")
     return mf, mnz, mt
 
 
@@ -272,7 +296,7 @@ def train(run_id, run_name, config, city_data):
 
     bilinear_pred = _predict_bilinear_matrix(model, city_data, od_scaler)
     bilinear_mf, bilinear_mnz, bilinear_mt = _print_stage_metrics(
-        "Bilinear Head", bilinear_pred, od_np, test_mask
+        "Bilinear Head", bilinear_pred, od_np, test_mask, city_data.get('test_full_mask')
     )
     bilinear_train_val = masked_train_val_cpc_metrics(
         bilinear_pred,
@@ -345,7 +369,9 @@ def train(run_id, run_name, config, city_data):
 
     # ── Evaluation ───────────────────────────────────────────────────────────
     pred = predict_gmel_gps(model, decoder, city_data, device)
-    mf, mnz, mt = _print_stage_metrics("Tree Decoder", pred, od_np, test_mask)
+    mf, mnz, mt = _print_stage_metrics(
+        "Tree Decoder", pred, od_np, test_mask, city_data.get('test_full_mask')
+    )
     tree_train_val = masked_train_val_cpc_metrics(
         pred,
         od_np,
@@ -357,7 +383,7 @@ def train(run_id, run_name, config, city_data):
     print(f"    Train/Val: {format_train_val_cpc_metrics(tree_train_val)}")
 
     save_metrics_to_csv(run_id, run_name, config, mf, mnz, mt,
-                        n_params, epoch, status)
+                        n_params, epoch, status, train_val_metrics=tree_train_val)
     save_model_weights(run_id, model, config)
 
     return {

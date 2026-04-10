@@ -3,7 +3,7 @@
 All models should use these functions for consistent data splits.
 Supports two evaluation modes:
 - Single city: one city, nonzero OD pairs split 80/10/10
-- Multi city: 10 cities, split by city 8/1/1
+- Multi city: configured city set split into fixed train/val/test groups
 """
 import os
 from pathlib import Path
@@ -11,15 +11,13 @@ from pathlib import Path
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
 
+from models.GPS.config import MULTI_CITY_IDS, SINGLE_CITY_ID, split_configured_multi_city_ids
+from models.GPS.features import build_feature_matrix
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-DEFAULT_DATA_PATH = PROJECT_ROOT / "data"
-
-SINGLE_CITY_ID = "48201"
-MULTI_CITY_IDS = [
-    "17031", "48201", "04013", "06073", "06059",
-    "36047", "12086", "48113", "06065", "36081",
-]
+_DEFAULT_DATA_PATH_WITH_LU = PROJECT_ROOT / "data_lu" / "data"
+DEFAULT_DATA_PATH = _DEFAULT_DATA_PATH_WITH_LU if _DEFAULT_DATA_PATH_WITH_LU.exists() else (PROJECT_ROOT / "data")
 
 
 # ─── Core loading ────────────────────────────────────────────────────────────
@@ -29,9 +27,13 @@ def load_area_raw(area_id, data_path=None):
     if data_path is None:
         data_path = DEFAULT_DATA_PATH
     area_path = Path(data_path) / area_id
+    lu_path = area_path / "lu.npy"
+    jobs_path = area_path / "jobs.npy"
     return {
         "demos": np.load(area_path / "demos.npy"),
         "pois": np.load(area_path / "pois.npy"),
+        "lu": np.load(lu_path) if lu_path.exists() else None,
+        "jobs": np.load(jobs_path) if jobs_path.exists() else None,
         "adj": np.load(area_path / "adj.npy"),
         "dis": np.load(area_path / "dis.npy"),
         "od": np.load(area_path / "od.npy"),
@@ -46,6 +48,19 @@ def get_all_areas(data_path=None):
     return sorted(p.name for p in data_root.iterdir() if p.is_dir())
 
 
+def _select_node_features(raw, feature_mode="full"):
+    if feature_mode == "gravity":
+        return raw["demos"][:, :1].astype(np.float32)
+    if feature_mode == "full":
+        return build_feature_matrix(raw, feature_preset="all")
+    if feature_mode == "reduced":
+        return build_feature_matrix(raw, feature_preset="reduced")
+    raise ValueError(
+        f"Unknown feature_mode={feature_mode!r}. "
+        "Valid options: 'full', 'reduced', 'gravity'"
+    )
+
+
 # ─── Flat feature construction ───────────────────────────────────────────────
 
 def construct_flat_features(areas, data_path=None, feature_mode="full"):
@@ -54,7 +69,9 @@ def construct_flat_features(areas, data_path=None, feature_mode="full"):
     Args:
         areas: list of area ID strings
         data_path: path to data directory
-        feature_mode: "full" for demos+pois, "gravity" for demos[:,0] only
+        feature_mode: "full" for all configured node features,
+            "reduced" for the previous demo subset,
+            "gravity" for demos[:,0] only
 
     Returns:
         xs: list of (N^2, F) arrays — one per area
@@ -63,10 +80,7 @@ def construct_flat_features(areas, data_path=None, feature_mode="full"):
     xs, ys = [], []
     for area in areas:
         raw = load_area_raw(area, data_path)
-        if feature_mode == "gravity":
-            feat = raw["demos"][:, :1].astype(np.float32)
-        else:
-            feat = np.concatenate([raw["demos"], raw["pois"]], axis=1).astype(np.float32)
+        feat = _select_node_features(raw, feature_mode)
         dis = raw["dis"].astype(np.float32)
         n_nodes = feat.shape[0]
         feat_o = feat.reshape(n_nodes, 1, feat.shape[1]).repeat(n_nodes, axis=1)
@@ -144,10 +158,7 @@ def prepare_single_city_flat(area_id=None, data_path=None, seed=42, feature_mode
         od, train_mask, val_mask, test_mask, seed
     )
 
-    if feature_mode == "gravity":
-        feat = raw["demos"][:, :1].astype(np.float32)
-    else:
-        feat = np.concatenate([raw["demos"], raw["pois"]], axis=1).astype(np.float32)
+    feat = _select_node_features(raw, feature_mode)
     dis = raw["dis"].astype(np.float32)
     n = feat.shape[0]
 
@@ -185,7 +196,7 @@ def prepare_single_city_flat(area_id=None, data_path=None, seed=42, feature_mode
     }
 
 
-def prepare_single_city_graph(area_id=None, data_path=None, seed=42):
+def prepare_single_city_graph(area_id=None, data_path=None, seed=42, feature_mode="full"):
     """Prepare raw graph inputs for a single city with 80/10/10 pair masks."""
     if area_id is None:
         area_id = SINGLE_CITY_ID
@@ -199,7 +210,7 @@ def prepare_single_city_graph(area_id=None, data_path=None, seed=42):
 
     return {
         'area_id': area_id,
-        'nfeat': np.concatenate([raw["demos"], raw["pois"]], axis=1).astype(np.float32),
+        'nfeat': _select_node_features(raw, feature_mode),
         'adj': raw["adj"],
         'dis': raw["dis"].astype(np.float32),
         'od': od,
@@ -218,24 +229,31 @@ def prepare_single_city_graph(area_id=None, data_path=None, seed=42):
 # ─── Multi-city split ────────────────────────────────────────────────────────
 
 def split_multi_city_ids(city_ids=None, seed=42):
-    """Split city IDs into train/val/test (8/1/1)."""
+    """Split city IDs into train/val/test using the configured fixed hold-out cities."""
     if city_ids is None:
         city_ids = list(MULTI_CITY_IDS)
     else:
         city_ids = list(city_ids)
-    rng = np.random.RandomState(seed)
-    rng.shuffle(city_ids)
-    return city_ids[:8], city_ids[8:9], city_ids[9:]
+    try:
+        _, train_city_ids, val_city_ids, test_city_ids = split_configured_multi_city_ids(city_ids)
+        return train_city_ids, val_city_ids, test_city_ids
+    except ValueError:
+        rng = np.random.RandomState(seed)
+        rng.shuffle(city_ids)
+        n_total = len(city_ids)
+        if n_total < 3:
+            raise ValueError(f"Need at least 3 cities for train/val/test split, got {n_total}")
+        return city_ids[:-2], city_ids[-2:-1], city_ids[-1:]
 
 
 # ─── Graph data helpers (for GMEL, NetGAN) ──────────────────────────────────
 
-def load_graph_data(areas, data_path=None):
+def load_graph_data(areas, data_path=None, feature_mode="full"):
     """Load graph data for multiple areas."""
     nfeats, adjs, dises, ods = [], [], [], []
     for area in areas:
         raw = load_area_raw(area, data_path)
-        nfeats.append(np.concatenate([raw["demos"], raw["pois"]], axis=1))
+        nfeats.append(_select_node_features(raw, feature_mode))
         adjs.append(raw["adj"])
         dises.append(raw["dis"])
         ods.append(raw["od"])
@@ -276,8 +294,8 @@ def build_pyg_graph(adj, dev):
     return graph.to(dev)
 
 
-def iter_graph_areas(areas, data_path=None):
+def iter_graph_areas(areas, data_path=None, feature_mode="full"):
     """Yield (nfeat, adj, dis, od) for each area."""
     for area in areas:
         raw = load_area_raw(area, data_path)
-        yield np.concatenate([raw["demos"], raw["pois"]], axis=1), raw["adj"], raw["dis"], raw["od"]
+        yield _select_node_features(raw, feature_mode), raw["adj"], raw["dis"], raw["od"]

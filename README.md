@@ -54,8 +54,8 @@ benchmarking/
 - GPS supports optional `include_zero_pairs` flag for training on zero-flow pairs
 
 ### Multi-city
-- 10 cities: 17031, 48201, 04013, 06073, 06059, 36047, 12086, 48113, 06065, 36081
-- Cities split **8/1/1** (train/val/test) with seed=42
+- 8 cities: 36061, 06059, 17031, 48201, 06075, 53033, 11001, 47157
+- Cities split **4/2/2** (train/val/test), with New York City and Memphis fixed as the multi-city test areas
 
 All models use identical data splits and the same canonical metrics from `models/shared/metrics.py`.
 

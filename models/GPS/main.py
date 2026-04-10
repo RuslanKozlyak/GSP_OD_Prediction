@@ -11,11 +11,12 @@ from .config import (
 )
 from .model import make_model
 from .loss import compute_loss_for_city
-from .metrics import evaluate_full_matrix, summarize_prediction_metrics
+from .metrics import evaluate_full_matrix
 from .data_load import prepare_single_city_data, prepare_multi_city_data
 from .gan import ODSequenceDiscriminator, gan_step_for_city
 from models.shared.metrics import (
     average_matrix_cpc_metrics,
+    compute_metrics,
     format_train_val_cpc_metrics,
     masked_train_val_cpc_metrics,
 )
@@ -356,7 +357,8 @@ def _train_loop(run_id, run_name, config, model, city_datas,
     def eval_all(label):
         all_mf = []
         all_mnz = []
-        all_mt = []
+        all_mt_full = []
+        all_mt_nz = []
         per_city = []
         test_eval_ids = set(test_eval_cities)
 
@@ -369,37 +371,74 @@ def _train_loop(run_id, run_name, config, model, city_datas,
 
         for ecid, ecd in full_eval_cities.items():
             pred, mf, mnz = evaluate_full_matrix(model, ecd, config, dest_batch_size=DEST_BATCH_SIZE)
-
-            metric_bundle = summarize_prediction_metrics(
-                pred, ecd, is_test_city=ecid in test_eval_ids
-            )
-            mt = metric_bundle['test']
             if is_multi:
                 if ecid in test_eval_ids:
-                    all_mt.append(mt)
+                    mt_full = {'CPC': mf['CPC'], 'MAE': mf['MAE'], 'RMSE': mf['RMSE']}
+                    mt_nz = dict(mnz)
+                    all_mt_full.append(mt_full)
+                    all_mt_nz.append(mt_nz)
+                else:
+                    mt_full = {'CPC': float('nan'), 'MAE': float('nan'), 'RMSE': float('nan')}
+                    mt_nz = {'CPC': float('nan'), 'MAE': float('nan'), 'RMSE': float('nan')}
             else:
-                all_mt.append(mt)
+                od_np = ecd['od_matrix_np']
+                test_full_mask = ecd.get('test_full_mask')
+                test_nz_mask = ecd.get('test_mask')
+                mt_full = (
+                    compute_metrics(pred[test_full_mask], od_np[test_full_mask].astype(float))
+                    if test_full_mask is not None and np.any(test_full_mask) else
+                    {'CPC': float('nan'), 'MAE': float('nan'), 'RMSE': float('nan')}
+                )
+                mt_nz = (
+                    compute_metrics(pred[test_nz_mask], od_np[test_nz_mask].astype(float))
+                    if test_nz_mask is not None and np.any(test_nz_mask) else
+                    {'CPC': float('nan'), 'MAE': float('nan'), 'RMSE': float('nan')}
+                )
+                all_mt_full.append(mt_full)
+                all_mt_nz.append(mt_nz)
             all_mf.append(mf)
             all_mnz.append(mnz)
             per_city.append({
                 'city_id': ecid, 'CPC_full': mf['CPC'], 'CPC_nz': mnz['CPC'],
                 'MAE': mf['MAE'], 'RMSE': mf['RMSE'],
-                'CPC_test': mt['CPC'] if mt is not None else float('nan'),
+                'CPC_test_full': mt_full['CPC'],
+                'CPC_test_nz': mt_nz['CPC'],
             })
         avg_mf = {k: np.mean([m[k] for m in all_mf]) for k in all_mf[0]}
         avg_mnz = {k: np.mean([m[k] for m in all_mnz]) for k in all_mnz[0]}
-        avg_mt = (
-            {k: np.mean([m[k] for m in all_mt]) for k in all_mt[0]}
-            if all_mt else
-            {'CPC': avg_mf['CPC'], 'MAE': avg_mf['MAE'], 'RMSE': avg_mf['RMSE']}
-        )
+        avg_mt = {
+            'CPC_full': (
+                np.mean([m['CPC'] for m in all_mt_full]) if all_mt_full else float('nan')
+            ),
+            'MAE_full': (
+                np.mean([m['MAE'] for m in all_mt_full]) if all_mt_full else float('nan')
+            ),
+            'RMSE_full': (
+                np.mean([m['RMSE'] for m in all_mt_full]) if all_mt_full else float('nan')
+            ),
+            'CPC_nz': (
+                np.mean([m['CPC'] for m in all_mt_nz]) if all_mt_nz else float('nan')
+            ),
+            'MAE_nz': (
+                np.mean([m['MAE'] for m in all_mt_nz]) if all_mt_nz else float('nan')
+            ),
+            'RMSE_nz': (
+                np.mean([m['RMSE'] for m in all_mt_nz]) if all_mt_nz else float('nan')
+            ),
+        }
         print(f"\n  === {label} ===")
         for pc in per_city:
             print(
                 f"    {pc['city_id']}: CPC_full={fmt(pc['CPC_full'])}  "
-                f"CPC_nz={fmt(pc['CPC_nz'])}  CPC_test={fmt(pc['CPC_test'])}"
+                f"CPC_nz={fmt(pc['CPC_nz'])}  "
+                f"CPC_test_full={fmt(pc['CPC_test_full'])}  "
+                f"CPC_test_nz={fmt(pc['CPC_test_nz'])}"
             )
-        print(f"  Avg: CPC_full={avg_mf['CPC']:.4f}  CPC_nz={avg_mnz['CPC']:.4f}  CPC_test={avg_mt['CPC']:.4f}  MAE={avg_mf['MAE']:.4f}")
+        print(
+            f"  Avg: CPC_full={avg_mf['CPC']:.4f}  CPC_nz={avg_mnz['CPC']:.4f}  "
+            f"CPC_test_full={avg_mt['CPC_full']:.4f}  "
+            f"CPC_test_nz={avg_mt['CPC_nz']:.4f}  MAE={avg_mf['MAE']:.4f}"
+        )
         return avg_mf, avg_mnz, avg_mt, per_city
 
     last_state = {k: v.detach().clone() for k, v in model.state_dict().items()}

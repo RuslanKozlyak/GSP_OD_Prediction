@@ -1,4 +1,6 @@
-from .config import USE_LU_FEATURES, USE_JOBS_FEATURES
+import numpy as np
+
+from .config import FEATURE_PRESET, USE_LU_FEATURES, USE_JOBS_FEATURES
 
 ALL_DEMO_FEATURE_NAMES = [
     "pop_total","pop_male","pop_female",
@@ -51,18 +53,78 @@ ALL_JOBS_FEATURE_NAMES = ["jobs_total"]
 assert len(ALL_DEMO_FEATURE_NAMES) == 97
 assert len(ALL_POI_FEATURE_NAMES) == 34
 
-SELECTED_DEMO = ["pop_total","pop_male","pop_female","median_age_total","median_age_male","median_age_female","mean_travel_time_min"]
-SELECTED_POI = ALL_POI_FEATURE_NAMES
-SELECTED_LU = ALL_LU_FEATURE_NAMES
-SELECTED_JOBS = ALL_JOBS_FEATURE_NAMES
+REDUCED_DEMO_FEATURE_NAMES = [
+    "pop_total","pop_male","pop_female",
+    "median_age_total","median_age_male","median_age_female",
+    "mean_travel_time_min",
+]
 
-DEMO_COL_IDX = [ALL_DEMO_FEATURE_NAMES.index(n) for n in SELECTED_DEMO]
-POI_COL_IDX = [ALL_POI_FEATURE_NAMES.index(n) for n in SELECTED_POI]
-LU_COL_IDX = [ALL_LU_FEATURE_NAMES.index(n) for n in SELECTED_LU]
-JOBS_COL_IDX = [ALL_JOBS_FEATURE_NAMES.index(n) for n in SELECTED_JOBS]
+FEATURE_PRESET_OPTIONS = ("all", "reduced")
 
-FEATURE_NAMES = SELECTED_DEMO + SELECTED_POI
-if USE_LU_FEATURES:
-    FEATURE_NAMES += SELECTED_LU
-if USE_JOBS_FEATURES:
-    FEATURE_NAMES += SELECTED_JOBS
+
+def _normalize_feature_preset(feature_preset=None):
+    feature_preset = FEATURE_PRESET if feature_preset is None else feature_preset
+    if feature_preset not in FEATURE_PRESET_OPTIONS:
+        raise ValueError(
+            f"Unknown feature_preset={feature_preset!r}. "
+            f"Valid options: {FEATURE_PRESET_OPTIONS}"
+        )
+    return feature_preset
+
+
+def get_feature_spec(feature_preset=None, use_lu=USE_LU_FEATURES, use_jobs=USE_JOBS_FEATURES):
+    feature_preset = _normalize_feature_preset(feature_preset)
+
+    selected_demo = (
+        list(ALL_DEMO_FEATURE_NAMES)
+        if feature_preset == "all"
+        else list(REDUCED_DEMO_FEATURE_NAMES)
+    )
+    selected_poi = list(ALL_POI_FEATURE_NAMES)
+    selected_lu = list(ALL_LU_FEATURE_NAMES)
+    selected_jobs = list(ALL_JOBS_FEATURE_NAMES)
+
+    feature_names = selected_demo + selected_poi
+    if use_lu:
+        feature_names += selected_lu
+    if use_jobs:
+        feature_names += selected_jobs
+
+    return {
+        "feature_preset": feature_preset,
+        "selected_demo": selected_demo,
+        "selected_poi": selected_poi,
+        "selected_lu": selected_lu,
+        "selected_jobs": selected_jobs,
+        "demo_idx": [ALL_DEMO_FEATURE_NAMES.index(name) for name in selected_demo],
+        "poi_idx": [ALL_POI_FEATURE_NAMES.index(name) for name in selected_poi],
+        "lu_idx": [ALL_LU_FEATURE_NAMES.index(name) for name in selected_lu],
+        "jobs_idx": [ALL_JOBS_FEATURE_NAMES.index(name) for name in selected_jobs],
+        "feature_names": feature_names,
+    }
+
+
+def build_feature_matrix(raw, feature_preset=None, use_lu=USE_LU_FEATURES, use_jobs=USE_JOBS_FEATURES):
+    spec = get_feature_spec(feature_preset=feature_preset, use_lu=use_lu, use_jobs=use_jobs)
+    parts = [
+        raw["demos"][:, spec["demo_idx"]],
+        raw["pois"][:, spec["poi_idx"]],
+    ]
+    if use_lu and raw.get("lu") is not None:
+        parts.append(raw["lu"][:, spec["lu_idx"]])
+    if use_jobs and raw.get("jobs") is not None:
+        parts.append(raw["jobs"][:, spec["jobs_idx"]])
+    return np.concatenate(parts, axis=1).astype(np.float32, copy=False)
+
+
+ACTIVE_FEATURE_SPEC = get_feature_spec()
+SELECTED_DEMO = ACTIVE_FEATURE_SPEC["selected_demo"]
+SELECTED_POI = ACTIVE_FEATURE_SPEC["selected_poi"]
+SELECTED_LU = ACTIVE_FEATURE_SPEC["selected_lu"]
+SELECTED_JOBS = ACTIVE_FEATURE_SPEC["selected_jobs"]
+
+DEMO_COL_IDX = ACTIVE_FEATURE_SPEC["demo_idx"]
+POI_COL_IDX = ACTIVE_FEATURE_SPEC["poi_idx"]
+LU_COL_IDX = ACTIVE_FEATURE_SPEC["lu_idx"]
+JOBS_COL_IDX = ACTIVE_FEATURE_SPEC["jobs_idx"]
+FEATURE_NAMES = ACTIVE_FEATURE_SPEC["feature_names"]

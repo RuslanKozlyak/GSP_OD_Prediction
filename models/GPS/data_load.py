@@ -10,9 +10,9 @@ from scipy.stats import gaussian_kde
 
 from .config import (
     DATA_PATH, SHP_PATH, PE_WALK_LEN, HUBER_KDE_BW, HUBER_MIN_PROB,
-    N_DEST_SAMPLE, USE_LU_FEATURES, USE_JOBS_FEATURES, device,
+    N_DEST_SAMPLE, device, split_configured_multi_city_ids,
 )
-from .features import DEMO_COL_IDX, POI_COL_IDX, LU_COL_IDX, JOBS_COL_IDX
+from .features import build_feature_matrix
 
 
 def precompute_coords(data_path=DATA_PATH, shp_path=SHP_PATH):
@@ -37,19 +37,19 @@ def precompute_coords(data_path=DATA_PATH, shp_path=SHP_PATH):
 def load_area(area_id, data_path=DATA_PATH):
     ap = os.path.join(data_path, area_id)
     try:
-        fp = [
-            np.load(os.path.join(ap, "demos.npy"))[:, DEMO_COL_IDX],
-            np.load(os.path.join(ap, "pois.npy"))[:, POI_COL_IDX],
-        ]
-        if USE_LU_FEATURES:
-            lp = os.path.join(ap, "lu.npy")
-            if os.path.exists(lp):
-                fp.append(np.load(lp)[:, LU_COL_IDX])
-        if USE_JOBS_FEATURES:
-            jp = os.path.join(ap, "jobs.npy")
-            if os.path.exists(jp):
-                fp.append(np.load(jp)[:, JOBS_COL_IDX])
-        nf = np.concatenate(fp, axis=1)
+        raw = {
+            "demos": np.load(os.path.join(ap, "demos.npy")),
+            "pois": np.load(os.path.join(ap, "pois.npy")),
+            "lu": None,
+            "jobs": None,
+        }
+        lp = os.path.join(ap, "lu.npy")
+        jp = os.path.join(ap, "jobs.npy")
+        if os.path.exists(lp):
+            raw["lu"] = np.load(lp)
+        if os.path.exists(jp):
+            raw["jobs"] = np.load(jp)
+        nf = build_feature_matrix(raw)
         adj = np.load(os.path.join(ap, "adj.npy"))
         dis = np.load(os.path.join(ap, "dis.npy"))
         od = np.load(os.path.join(ap, "od.npy"))
@@ -268,19 +268,22 @@ def load_multi_city_raw(city_ids=None, data_path=DATA_PATH):
 
 def split_multi_city(multi_city_raw, seed=42, val_size=2, test_size=2):
     mc_city_ids = list(multi_city_raw.keys())
-    np.random.seed(seed)
-    np.random.shuffle(mc_city_ids)
-    n_total = len(mc_city_ids)
-    if n_total <= val_size + test_size:
-        raise ValueError(
-            f"Need more than {val_size + test_size} cities for "
-            f"train/val/test split, got {n_total}"
-        )
-    n_train = n_total - val_size - test_size
-    train_city_ids = mc_city_ids[:n_train]
-    val_city_ids = mc_city_ids[n_train:n_train + val_size]
-    test_city_ids = mc_city_ids[n_train + val_size:]
-    return mc_city_ids, train_city_ids, val_city_ids, test_city_ids
+    try:
+        return split_configured_multi_city_ids(mc_city_ids)
+    except ValueError:
+        np.random.seed(seed)
+        np.random.shuffle(mc_city_ids)
+        n_total = len(mc_city_ids)
+        if n_total <= val_size + test_size:
+            raise ValueError(
+                f"Need more than {val_size + test_size} cities for "
+                f"train/val/test split, got {n_total}"
+            )
+        n_train = n_total - val_size - test_size
+        train_city_ids = mc_city_ids[:n_train]
+        val_city_ids = mc_city_ids[n_train:n_train + val_size]
+        test_city_ids = mc_city_ids[n_train + val_size:]
+        return mc_city_ids, train_city_ids, val_city_ids, test_city_ids
 
 
 def prepare_city_data(cid, raw, pe_type='rwpe', data_path=DATA_PATH):

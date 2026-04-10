@@ -13,7 +13,9 @@ warnings.filterwarnings('ignore')
 
 # ─── Paths (relative to project root) ────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-DATA_PATH = str(PROJECT_ROOT / "data_lu/data")
+_DATA_PATH_WITH_LU = PROJECT_ROOT / "data_lu" / "data"
+_DATA_PATH_DEFAULT = PROJECT_ROOT / "data"
+DATA_PATH = str(_DATA_PATH_WITH_LU if _DATA_PATH_WITH_LU.exists() else _DATA_PATH_DEFAULT)
 SHP_PATH = str(PROJECT_ROOT / "assets" / "Boundaries_Regions_within_Areas")
 RESULTS_DIR = PROJECT_ROOT / "results"
 WEIGHTS_DIR = RESULTS_DIR / "weights"
@@ -23,9 +25,69 @@ METRICS_VAL_LOSS_CSV = RESULTS_DIR / "metrics_val_loss.csv"
 METRICS_CPC_NZ_BEST_CSV = RESULTS_DIR / "metrics_cpc_nz_best.csv"
 METRICS_RUNS_DIR = RESULTS_DIR / "metrics_runs"
 
-SINGLE_CITY_ID = "48201"
-MULTI_CITY_IDS = ["17031","48201","04013","06073","06059","36047","12086","48113","06065","36081", "32003", "42003"]
-SINGLE_CITY_IDS = [SINGLE_CITY_ID] + [cid for cid in MULTI_CITY_IDS if cid != SINGLE_CITY_ID][:2]
+# NOTE: the local dataset does not contain 06037 (Los Angeles County), so we use
+# 06059 as the available Greater Los Angeles proxy in the configured city set.
+CITY_LABELS = {
+    "36061": "New York City",
+    "06059": "Los Angeles (06059 proxy)",
+    "17031": "Chicago",
+    "48201": "Houston",
+    "06075": "San Francisco",
+    "53033": "Seattle",
+    "11001": "Washington D.C.",
+    "47157": "Memphis",
+}
+# Legacy pre-8-city setup kept here for quick rollback:
+# CITY_LABELS = {
+#     "17031": "Chicago",
+#     "48201": "Houston",
+#     "04013": "Phoenix",
+#     "06073": "San Diego",
+#     "06059": "Los Angeles (06059 proxy)",
+#     "36047": "Brooklyn",
+#     "12086": "Miami-Dade",
+#     "48113": "Dallas",
+#     "06065": "Riverside",
+#     "36081": "Queens",
+#     "32003": "Las Vegas",
+#     "42003": "Allegheny",
+# }
+# MULTI_CITY_IDS = list(CITY_LABELS.keys())
+# SINGLE_CITY_IDS = ["48201", "17031", "04013"]
+# SINGLE_CITY_ID = SINGLE_CITY_IDS[0]
+# MULTI_CITY_VAL_IDS = ["06073", "12086"]
+# MULTI_CITY_TEST_IDS = ["32003", "42003"]
+
+MULTI_CITY_IDS = list(CITY_LABELS.keys())
+SINGLE_CITY_IDS = ["36061", "53033", "47157"]
+SINGLE_CITY_ID = SINGLE_CITY_IDS[0]
+MULTI_CITY_VAL_IDS = ["06075", "11001"]
+MULTI_CITY_TEST_IDS = ["36061", "47157"]
+
+
+def split_configured_multi_city_ids(city_ids=None, val_city_ids=None, test_city_ids=None):
+    ordered_city_ids = list(dict.fromkeys(MULTI_CITY_IDS if city_ids is None else city_ids))
+    val_city_ids = list(MULTI_CITY_VAL_IDS if val_city_ids is None else val_city_ids)
+    test_city_ids = list(MULTI_CITY_TEST_IDS if test_city_ids is None else test_city_ids)
+
+    missing_val = [cid for cid in val_city_ids if cid not in ordered_city_ids]
+    missing_test = [cid for cid in test_city_ids if cid not in ordered_city_ids]
+    if missing_val or missing_test:
+        raise ValueError(
+            "Configured multi-city split refers to cities outside the provided city_ids: "
+            f"val={missing_val}, test={missing_test}"
+        )
+
+    overlap = sorted(set(val_city_ids) & set(test_city_ids))
+    if overlap:
+        raise ValueError(f"Validation and test city sets must be disjoint, got overlap={overlap}")
+
+    held_out = set(val_city_ids) | set(test_city_ids)
+    train_city_ids = [cid for cid in ordered_city_ids if cid not in held_out]
+    if not train_city_ids:
+        raise ValueError("Configured multi-city split leaves no training cities")
+
+    return ordered_city_ids, train_city_ids, val_city_ids, test_city_ids
 
 # ─── Architecture ─────────────────────────────────────────────────────────────
 HIDDEN_DIM = 64
@@ -53,6 +115,7 @@ HUBER_KDE_BW = 2.0
 HUBER_MIN_PROB = 1e-4
 
 # ─── Features ─────────────────────────────────────────────────────────────────
+FEATURE_PRESET = "all"  # switch to "reduced" to reproduce the previous demo subset
 USE_LU_FEATURES = True
 USE_JOBS_FEATURES = True
 
@@ -242,6 +305,10 @@ def save_metrics_to_csv(run_id, run_name, config, metrics_full, metrics_nz,
     metrics_csv = Path(metrics_csv) if metrics_csv is not None else METRICS_CSV
     metrics_csv.parent.mkdir(exist_ok=True)
     train_val_metrics = train_val_metrics or {}
+    cpc_full_test = metrics_test.get('CPC_full', metrics_test.get('CPC'))
+    cpc_nz_test = metrics_test.get('CPC_nz', metrics_test.get('CPC'))
+    mae_test = metrics_test.get('MAE_full', metrics_test.get('MAE'))
+    rmse_test = metrics_test.get('RMSE_full', metrics_test.get('RMSE'))
     row = {
         'timestamp': datetime.now().isoformat(),
         'run_id': run_id, 'name': run_name, 'status': status,
@@ -277,19 +344,18 @@ def save_metrics_to_csv(run_id, run_name, config, metrics_full, metrics_nz,
         'gan_walk_len': config.gan_walk_len,
         'gan_walk_batch_size': config.gan_walk_batch_size,
         'n_params': n_params, 'epochs_trained': epochs_trained,
-        'CPC_full': metrics_full.get('CPC'), 'CPC_nz': metrics_nz.get('CPC'),
-        'CPC_test': metrics_test.get('CPC'),
-        'CPC_val': train_val_metrics.get('CPC_val_nz'),
-        'CPC_train_full': train_val_metrics.get('CPC_train_full'),
-        'CPC_val_full': train_val_metrics.get('CPC_val_full'),
-        'CPC_train_nz': train_val_metrics.get('CPC_train_nz'),
-        'CPC_val_nz': train_val_metrics.get('CPC_val_nz'),
+        'CPC_full_train': train_val_metrics.get('CPC_train_full'),
+        'CPC_full_val': train_val_metrics.get('CPC_val_full'),
+        'CPC_full_test': cpc_full_test,
+        'CPC_nz_train': train_val_metrics.get('CPC_train_nz'),
+        'CPC_nz_val': train_val_metrics.get('CPC_val_nz'),
+        'CPC_nz_test': cpc_nz_test,
         'MAE_full': metrics_full.get('MAE'), 'RMSE_full': metrics_full.get('RMSE'),
         # Full metric suite from cal_od_metrics
         'MAE_nz': metrics_nz.get('MAE'),
         'RMSE_nz': metrics_nz.get('RMSE'),
-        'MAE_test': metrics_test.get('MAE'),
-        'RMSE_test': metrics_test.get('RMSE'),
+        'MAE_test': mae_test,
+        'RMSE_test': rmse_test,
         'NRMSE_full': metrics_full.get('NRMSE'),
         'MAPE_full': metrics_full.get('MAPE'),
         'SMAPE_full': metrics_full.get('SMAPE'),

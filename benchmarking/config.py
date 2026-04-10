@@ -4,11 +4,22 @@ import random
 import numpy as np
 import torch
 
-from models.GPS.config import TrainingConfig, WEIGHTS_CPC_BEST_DIR, WEIGHTS_DIR, cleanup_gpu, device
+from models.GPS.config import (
+    FEATURE_PRESET,
+    MULTI_CITY_IDS as GPS_MULTI_CITY_IDS,
+    SINGLE_CITY_ID as GPS_SINGLE_CITY_ID,
+    SINGLE_CITY_IDS as GPS_SINGLE_CITY_IDS,
+    TrainingConfig,
+    WEIGHTS_CPC_BEST_DIR,
+    WEIGHTS_DIR,
+    cleanup_gpu,
+    device,
+)
 from .repeats import single_city_lgbm_run_id, single_city_run_id
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_PATH = PROJECT_ROOT / "data"
+_DATA_PATH_WITH_LU = PROJECT_ROOT / "data_lu" / "data"
+DATA_PATH = _DATA_PATH_WITH_LU if _DATA_PATH_WITH_LU.exists() else (PROJECT_ROOT / "data")
 RESULTS_DIR = PROJECT_ROOT / "results"
 
 SEED = 42
@@ -44,9 +55,10 @@ FLAT_BASELINE_MODELS = ["RF", "SVR", "GBRT", "DGM", "GM_E", "GM_P"]
 GRAPH_BASELINE_MODELS = ["GMEL", "GMEL_GBRT", "GMEL_LGBM", "NetGAN"]
 SEPARABLE_BASELINE_MODELS = FLAT_BASELINE_MODELS + GRAPH_BASELINE_MODELS + ["TransFlowerOrig"]
 
-SINGLE_CITY_ID = "48201"
-MULTI_CITY_IDS = ["17031", "48201", "04013", "06073", "06059", "36047", "12086", "48113", "06065", "36081"]
-SINGLE_CITY_IDS = [SINGLE_CITY_ID] + [cid for cid in MULTI_CITY_IDS if cid != SINGLE_CITY_ID][:2]
+SINGLE_CITY_ID = GPS_SINGLE_CITY_ID
+MULTI_CITY_IDS = list(GPS_MULTI_CITY_IDS)
+SINGLE_CITY_IDS = list(GPS_SINGLE_CITY_IDS)
+DEFAULT_FEATURE_MODE = "full" if FEATURE_PRESET == "all" else "reduced"
 
 TRANSFLOWER_ORIG_CONFIG = TrainingConfig(
     encoder_type="mlp",

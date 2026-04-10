@@ -7,6 +7,8 @@ from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.preprocessing import MinMaxScaler
 from tqdm.auto import tqdm
 
+from models.GPS.features import build_feature_matrix
+from models.shared.data_load import load_area_raw
 from models.shared.metrics import cal_od_metrics, compute_metrics
 from models.shared.plotting import save_loss_plot
 
@@ -149,7 +151,7 @@ def _fit_decoder(decoder_type, x_train, y_train, x_val=None, y_val=None, **kwarg
 def train(train_areas, val_areas, data_path,
           device=None, nfeat_scaler=None, dis_scaler=None, od_scaler=None,
           max_epochs=1000, patience=10, single_city_data=None, decoder_type='gbrt',
-          encoder_lr=3e-4, loss_plot_path=None, verbose=1, **decoder_kwargs):
+          encoder_lr=3e-4, loss_plot_path=None, verbose=1, feature_mode="full", **decoder_kwargs):
     """Train GMEL (PyG GAT encoder + tree decoder).
 
     Args:
@@ -178,17 +180,22 @@ def train(train_areas, val_areas, data_path,
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # ── Helper: lazily yield (nfeat, adj, dis, od) per area ──────────────────
+    def _select_node_features(raw):
+        if feature_mode == "full":
+            return build_feature_matrix(raw, feature_preset="all")
+        if feature_mode == "reduced":
+            return build_feature_matrix(raw, feature_preset="reduced")
+        if feature_mode == "gravity":
+            return raw["demos"][:, :1].astype(np.float32)
+        raise ValueError(
+            f"Unknown feature_mode={feature_mode!r}. "
+            "Valid options: 'full', 'reduced', 'gravity'"
+        )
+
     def _iter_areas(areas):
         for area in areas:
-            ap = os.path.join(data_path, area)
-            nfeat = np.concatenate([
-                np.load(os.path.join(ap, 'demos.npy')),
-                np.load(os.path.join(ap, 'pois.npy')),
-            ], axis=1)
-            adj = np.load(os.path.join(ap, 'adj.npy'))
-            dis = np.load(os.path.join(ap, 'dis.npy'))
-            od  = np.load(os.path.join(ap, 'od.npy'))
-            yield nfeat, adj, dis, od
+            raw = load_area_raw(area, data_path)
+            yield _select_node_features(raw), raw['adj'], raw['dis'], raw['od']
 
     # ── Fit scalers on val data if not provided ───────────────────────────────
     if single_city_data is not None:

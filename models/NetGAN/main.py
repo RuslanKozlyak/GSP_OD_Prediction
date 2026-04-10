@@ -21,7 +21,7 @@ def _transform_masked_matrix(matrix, scaler, mask=None):
 def train(train_areas, valid_areas, data_path,
           device=None, nfeat_scaler=None, dis_scaler=None, od_scaler=None,
           n_epochs=2, lr=3e-4, gp_lambda=10, batch_size=128, verbose=1,
-          single_city_data=None):
+          single_city_data=None, feature_mode="full"):
     """Train NetGAN (GAT + Generator + Discriminator).
 
     Args:
@@ -78,9 +78,13 @@ def train(train_areas, valid_areas, data_path,
         od_masks_tr = [train_mask]
     else:
         if nfeat_scaler is None or dis_scaler is None or od_scaler is None:
-            nf_v, _, dis_v, od_v = load_graph_data(train_areas, data_path)
+            nf_v, _, dis_v, od_v = load_graph_data(
+                train_areas, data_path, feature_mode=feature_mode
+            )
             nfeat_scaler, dis_scaler, od_scaler = get_scalers(nf_v, dis_v, od_v)
-        nf_tr, adj_tr, dis_tr, od_tr = load_graph_data(train_areas, data_path)
+        nf_tr, adj_tr, dis_tr, od_tr = load_graph_data(
+            train_areas, data_path, feature_mode=feature_mode
+        )
         od_masks_tr = [None] * len(od_tr)
 
     generator = Generator().to(device)
@@ -134,7 +138,7 @@ def train(train_areas, valid_areas, data_path,
     }
 
 
-def evaluate(trained, test_areas, data_path, device=None):
+def evaluate(trained, test_areas, data_path, device=None, feature_mode="full"):
     """Evaluate NetGAN on test areas."""
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -144,7 +148,9 @@ def evaluate(trained, test_areas, data_path, device=None):
     dis_scaler = trained['dis_scaler']
     od_scaler = trained['od_scaler']
 
-    nf_te, adj_te, dis_te, od_te = load_graph_data(test_areas, data_path)
+    nf_te, adj_te, dis_te, od_te = load_graph_data(
+        test_areas, data_path, feature_mode=feature_mode
+    )
 
     generator.eval()
     metrics_all = []
