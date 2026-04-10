@@ -202,6 +202,8 @@ def _train_loop(run_id, run_name, config, model, city_datas,
                 for bs in range(0, len(origins), ORIGIN_BATCH_SIZE):
                     batch = origins[bs:bs + ORIGIN_BATCH_SIZE].tolist()
                     optimizer.zero_grad()
+                    # Encode inside the batch — each backward pass needs its
+                    # own computation graph rooted at the encoder output.
                     loss = compute_loss_for_city(model, cd, cc, origin_batch_indices=batch)
                     total_batches += 1
                     if torch.isnan(loss) or torch.isinf(loss):
@@ -271,7 +273,7 @@ def _train_loop(run_id, run_name, config, model, city_datas,
 
         if use_supervised_monitoring and avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            best_state = {k: v.clone() for k, v in model.state_dict().items()}
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             best_val_epoch = epoch
             patience_count = 0
             flag = ' *'
@@ -285,7 +287,7 @@ def _train_loop(run_id, run_name, config, model, city_datas,
             cpc_nz_val = train_val_cpc['CPC_val_nz']
             if not np.isnan(cpc_nz_val) and cpc_nz_val > best_cpc_nz_val:
                 best_cpc_nz_val = cpc_nz_val
-                best_cpc_nz_state = {k: v.clone() for k, v in model.state_dict().items()}
+                best_cpc_nz_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
                 best_cpc_nz_epoch = epoch
 
         if epoch % 5 == 0 or epoch == 1:
@@ -441,7 +443,7 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         )
         return avg_mf, avg_mnz, avg_mt, per_city
 
-    last_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+    last_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
     val_loss_best_state = best_state if best_state is not None else last_state
     cpc_nz_best_state = best_cpc_nz_state if best_cpc_nz_state is not None else val_loss_best_state

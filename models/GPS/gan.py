@@ -155,9 +155,13 @@ def gan_step_for_city(model, discriminator, cd, config, generator_optimizer, dis
     discriminator.train()
     _set_requires_grad(discriminator, True)
     n_critic = _effective_n_critic(config, epoch)
+    # Decode the generated OD matrix once for all critic steps — the generator
+    # weights do not change during discriminator updates, so reusing the same
+    # matrix is equivalent to sampling a fresh one each step. Walk sequences
+    # are still resampled independently every critic iteration.
+    fake_od_cached = _detached_generated_od_matrix(model, cd, config)
     for _ in range(n_critic):
         discriminator_optimizer.zero_grad()
-        fake_od = _detached_generated_od_matrix(model, cd, config)
         real_seq = sample_walk_sequences(
             real_od,
             node_features,
@@ -168,7 +172,7 @@ def gan_step_for_city(model, discriminator, cd, config, generator_optimizer, dis
             hard=True,
         )
         fake_seq = sample_walk_sequences(
-            fake_od,
+            fake_od_cached,
             node_features,
             config.gan_walk_len,
             config.gan_walk_batch_size,
