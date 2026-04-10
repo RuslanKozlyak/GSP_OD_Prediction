@@ -226,22 +226,31 @@ class TransFlowerDecoder(nn.Module):
 
 
 class GravityGuidedDecoder(nn.Module):
-    """ODGN-style gravity decoder for GPS embeddings.
+    """ODGN-style gravity decoder.
 
-    It returns log-gravity scores:
-        log T_ij = log G + l1 log M_out(i) + l2 log M_in(j) - l3 log(1 + r_ij)
+    Implements the paper architecture: the node embedding is **split** into two
+    equal halves — a mass part and a location part — matching the description:
+        "we split the final node embedding into two parts. One part
+        characterizes the mass of the region and the other part characterizes
+        the location of the region in the abstract feature space."
 
-    The role-specific masses keep OD directionality, while the learned latent
-    locations provide the gravity distance term from the paper. A small learned
-    weight can also mix in the scaled geographic distance already used by GPS.
+    A single mass_head is shared for both origin and destination (the paper
+    does not use separate role-specific mass heads).
+
+    Returns log-gravity scores:
+        log T_ij = log G + λ1·log M(i) + λ2·log M(j) − λ3·log(1 + r_ij)
     """
     def __init__(self, hd, loc_dim=None, extra_dim=0, eps=1e-6):
         super().__init__()
-        loc_dim = loc_dim or max(2, min(16, hd // 2))
+        # loc_dim kept for API compatibility but ignored — split is always hd//2
+        self.mass_dim = hd // 2
+        self.loc_dim_actual = hd - self.mass_dim
         self.eps = eps
-        self.origin_mass = Sequential(Linear(hd, hd), ReLU(), Linear(hd, 1))
-        self.dest_mass = Sequential(Linear(hd, hd), ReLU(), Linear(hd, 1))
-        self.location = Linear(hd, loc_dim)
+        # Single shared mass head for both origin and destination (paper: one mass)
+        self.mass_head = Sequential(
+            Linear(self.mass_dim, self.mass_dim), ReLU(), Linear(self.mass_dim, 1)
+        )
+        self.loc_proj = Linear(self.loc_dim_actual, self.loc_dim_actual)
         self.log_g = nn.Parameter(torch.zeros(()))
         self.lambda_origin = nn.Parameter(torch.ones(()))
         self.lambda_dest = nn.Parameter(torch.ones(()))
@@ -253,10 +262,11 @@ class GravityGuidedDecoder(nn.Module):
             nn.init.zeros_(self.extra_bias.bias)
 
     def forward(self, oe, de, d=None, extra=None):
-        mo = F.softplus(self.origin_mass(oe)).squeeze(-1) + self.eps
-        md = F.softplus(self.dest_mass(de)).squeeze(-1) + self.eps
-        lo = self.location(oe)
-        ld = self.location(de)
+        # Split embedding: first half → mass, second half → location
+        mo = F.softplus(self.mass_head(oe[..., :self.mass_dim])).squeeze(-1) + self.eps
+        md = F.softplus(self.mass_head(de[..., :self.mass_dim])).squeeze(-1) + self.eps
+        lo = self.loc_proj(oe[..., self.mass_dim:])
+        ld = self.loc_proj(de[..., self.mass_dim:])
         dist = torch.linalg.vector_norm(lo - ld, dim=-1)
         if d is not None:
             # Distances are MinMax-scaled in data_load and may be negative off

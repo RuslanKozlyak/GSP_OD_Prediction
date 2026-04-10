@@ -96,6 +96,10 @@ PE_WALK_LEN = 20
 GPS_HEADS = 4
 GPS_LAYERS = 4
 GPS_DROPOUT = 0.1
+# ODGN paper hyperparameters (Rong et al. 2023, Section 4.1.4)
+ODGN_GNN_LAYERS = 3   # "number of graph convolutional layers is set to 3"
+ODGN_GNN_HEADS  = 8   # "number of heads is set to 8"
+ODGN_NOISE_DIM  = 60  # "noise dimension is set to be 60, same as regional attributes"
 TF_HEADS = 4
 TF_LAYERS = 2
 TF_DROPOUT = 0.1
