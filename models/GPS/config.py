@@ -33,42 +33,42 @@ METRICS_RUNS_DIR = RESULTS_DIR / "metrics_runs"
 
 # NOTE: the local dataset does not contain 06037 (Los Angeles County), so we use
 # 06059 as the available Greater Los Angeles proxy in the configured city set.
-CITY_LABELS = {
-    "36061": "New York City",
-    "06059": "Los Angeles (06059 proxy)",
-    "17031": "Chicago",
-    "48201": "Houston",
-    "06075": "San Francisco",
-    "53033": "Seattle",
-    "11001": "Washington D.C.",
-    "47157": "Memphis",
-}
-# Legacy pre-8-city setup kept here for quick rollback:
 # CITY_LABELS = {
+#     "36061": "New York City",
+#     "06059": "Los Angeles (06059 proxy)",
 #     "17031": "Chicago",
 #     "48201": "Houston",
-#     "04013": "Phoenix",
-#     "06073": "San Diego",
-#     "06059": "Los Angeles (06059 proxy)",
-#     "36047": "Brooklyn",
-#     "12086": "Miami-Dade",
-#     "48113": "Dallas",
-#     "06065": "Riverside",
-#     "36081": "Queens",
-#     "32003": "Las Vegas",
-#     "42003": "Allegheny",
+#     "06075": "San Francisco",
+#     "53033": "Seattle",
+#     "11001": "Washington D.C.",
+#     "47157": "Memphis",
 # }
-# MULTI_CITY_IDS = list(CITY_LABELS.keys())
-# SINGLE_CITY_IDS = ["48201", "17031", "04013"]
-# SINGLE_CITY_ID = SINGLE_CITY_IDS[0]
-# MULTI_CITY_VAL_IDS = ["06073", "12086"]
-# MULTI_CITY_TEST_IDS = ["32003", "42003"]
-
+# Legacy pre-8-city setup kept here for quick rollback:
+CITY_LABELS = {
+    "17031": "Chicago",
+    "48201": "Houston",
+    "04013": "Phoenix",
+    "06073": "San Diego",
+    "06059": "Los Angeles (06059 proxy)",
+    "36047": "Brooklyn",
+    "12086": "Miami-Dade",
+    "48113": "Dallas",
+    "06065": "Riverside",
+    "36081": "Queens",
+    "32003": "Las Vegas",
+    "42003": "Allegheny",
+}
 MULTI_CITY_IDS = list(CITY_LABELS.keys())
-SINGLE_CITY_IDS = ["36061", "53033", "47157"]
+SINGLE_CITY_IDS = ["48201", "17031", "04013"]
 SINGLE_CITY_ID = SINGLE_CITY_IDS[0]
-MULTI_CITY_VAL_IDS = ["06075", "11001"]
-MULTI_CITY_TEST_IDS = ["36061", "47157"]
+MULTI_CITY_VAL_IDS = ["06073", "12086"]
+MULTI_CITY_TEST_IDS = ["32003", "42003"]
+
+# MULTI_CITY_IDS = list(CITY_LABELS.keys())
+# SINGLE_CITY_IDS = ["36061", "53033", "47157"]
+# SINGLE_CITY_ID = SINGLE_CITY_IDS[0]
+# MULTI_CITY_VAL_IDS = ["06075", "11001"]
+# MULTI_CITY_TEST_IDS = ["36061", "47157"]
 
 
 def split_configured_multi_city_ids(city_ids=None, val_city_ids=None, test_city_ids=None):
