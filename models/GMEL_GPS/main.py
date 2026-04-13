@@ -15,6 +15,7 @@ from models.GPS.config import (
 )
 from models.shared.metrics import (
     cal_od_metrics,
+    canonical_od_metrics,
     compute_metrics,
     format_train_val_cpc_metrics,
     masked_train_val_cpc_metrics,
@@ -382,8 +383,17 @@ def train(run_id, run_name, config, city_data):
     )
     print(f"    Train/Val: {format_train_val_cpc_metrics(tree_train_val)}")
 
-    save_metrics_to_csv(run_id, run_name, config, mf, mnz, mt,
-                        n_params, epoch, status, train_val_metrics=tree_train_val)
+    tree_metrics = canonical_od_metrics(
+        pred,
+        od_np,
+        test_mask=test_mask,
+        test_full_mask=city_data.get('test_full_mask'),
+        train_mask=train_mask,
+        val_mask=val_mask,
+        train_full_mask=city_data.get('train_full_mask'),
+        val_full_mask=city_data.get('val_full_mask'),
+    )
+    save_metrics_to_csv(run_id, run_name, config, tree_metrics, n_params, epoch, status)
     save_model_weights(run_id, model, config)
 
     return {

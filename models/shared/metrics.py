@@ -24,7 +24,10 @@ def RMSE(a, b):
 
 
 def NRMSE(a, b):
-    return RMSE(a, b) / b.std()
+    std = b.std()
+    if isinstance(b, np.ndarray):
+        return float('nan') if float(std) <= 1e-10 else RMSE(a, b) / std
+    return b.new_tensor(float('nan')) if float(std.detach().cpu()) <= 1e-10 else RMSE(a, b) / std
 
 
 def MAE(a, b):
@@ -296,10 +299,6 @@ def canonical_od_metrics(
     - ``{metric}_test_full`` / ``{metric}_test_nz`` – test split (full/nz).
     - ``{metric}_train_full`` / ``{metric}_train_nz`` – train split.
     - ``{metric}_val_full``   / ``{metric}_val_nz``   – val split.
-
-    Legacy aliases kept for backward compatibility:
-    - ``CPC_test``, ``MAE_test``, ``RMSE_test`` → same as ``*_test_nz``.
-    - ``CPC_val`` → ``CPC_val_nz``.
     """
     pred_matrix = np.asarray(pred_matrix)
     od_matrix = np.asarray(od_matrix)
@@ -317,21 +316,23 @@ def canonical_od_metrics(
     test_nz_metrics = _nan_split_metrics()
     test_full_metrics = _nan_split_metrics()
 
-    if test_mask is not None and np.any(test_mask):
+    if test_mask is not None:
         test_mask = np.asarray(test_mask, dtype=bool)
+    if test_mask is not None and np.any(test_mask):
         test_nz_metrics = _compute_split_metrics(
             pred_matrix[test_mask], od_matrix[test_mask],
         )
     elif is_test_city:
-        # Whole city is "test" — full matrix = test
-        test_nz_metrics = {m: full_metrics.get(m, nz_metrics.get(m))
-                          for m in _SPLIT_METRIC_NAMES}
-        # Override with proper full-matrix values
-        for m in _SPLIT_METRIC_NAMES:
-            test_nz_metrics[m] = full_metrics.get(m, float('nan'))
+        # Whole city is "test": use nonzero metrics for test_nz and
+        # full-matrix metrics for test_full.
+        test_nz_metrics = {
+            m: nz_metrics.get(m, float('nan'))
+            for m in _SPLIT_METRIC_NAMES
+        }
 
-    if test_full_mask is not None and np.any(test_full_mask):
+    if test_full_mask is not None:
         test_full_mask = np.asarray(test_full_mask, dtype=bool)
+    if test_full_mask is not None and np.any(test_full_mask):
         test_full_metrics = _compute_split_metrics(
             pred_matrix[test_full_mask], od_matrix[test_full_mask],
         )
@@ -359,10 +360,6 @@ def canonical_od_metrics(
         # test split — full and nz
         **{f'{m}_test_full': test_full_metrics[m] for m in _SPLIT_METRIC_NAMES},
         **{f'{m}_test_nz': test_nz_metrics[m] for m in _SPLIT_METRIC_NAMES},
-        # legacy test aliases (= test_nz for backward compat)
-        'CPC_test': test_nz_metrics['CPC'],
-        'MAE_test': test_nz_metrics['MAE'],
-        'RMSE_test': test_nz_metrics['RMSE'],
         # structural / distributional
         'accuracy': full_metrics['accuracy'],
         'matrix_COS_similarity': full_metrics['matrix_COS_similarity'],
@@ -383,9 +380,6 @@ def canonical_od_metrics(
                 val_full_mask=val_full_mask,
             )
         )
-        metrics['CPC_val'] = metrics['CPC_val_nz']
-    elif not np.isnan(metrics['CPC_test']):
-        metrics['CPC_val'] = float('nan')
 
     return metrics
 
@@ -504,13 +498,17 @@ def average_listed_metrics(listed_metrics):
         for key, value in d.items()
         if isinstance(value, (int, float, np.number)) and not isinstance(value, bool)
     })
-    return {
-        key: float(np.mean([
-            d[key] for d in listed_metrics
-            if key in d and isinstance(d[key], (int, float, np.number))
-        ]))
-        for key in keys
-    }
+    averaged = {}
+    for key in keys:
+        values = [
+            float(d[key])
+            for d in listed_metrics
+            if key in d
+            and isinstance(d[key], (int, float, np.number))
+            and float(d[key]) == float(d[key])
+        ]
+        averaged[key] = float(np.mean(values)) if values else float('nan')
+    return averaged
 
 
 def citywise_segmented_metrics(valid_metrics):

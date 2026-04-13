@@ -156,57 +156,31 @@ def get_baseline_hyperparams(model_name):
     return dict(BASELINE_HYPERPARAMS.get(model_name, {}))
 
 
-RESULT_COLUMNS = [
-    "CPC_full",
-    "CPC_full_std",
-    "CPC_nz",
-    "CPC_nz_std",
-    "CPC_test",
-    "CPC_test_std",
-    "CPC_val",
-    "CPC_val_std",
-    "CPC_train_full",
-    "CPC_train_full_std",
-    "CPC_val_full",
-    "CPC_val_full_std",
-    "CPC_train_nz",
-    "CPC_train_nz_std",
-    "CPC_val_nz",
-    "CPC_val_nz_std",
-    "RMSE_full",
-    "RMSE_full_std",
-    "MAE_full",
-    "MAE_full_std",
-    "NRMSE_full",
-    "NRMSE_full_std",
-    "MAPE_full",
-    "MAPE_full_std",
-    "SMAPE_full",
-    "SMAPE_full_std",
-    "RMSE_nz",
-    "RMSE_nz_std",
-    "MAE_nz",
-    "MAE_nz_std",
-    "MAPE_nz",
-    "MAPE_nz_std",
-    "SMAPE_nz",
-    "SMAPE_nz_std",
-    "MAE_test",
-    "MAE_test_std",
-    "RMSE_test",
-    "RMSE_test_std",
+_SPLIT_METRIC_NAMES = ("CPC", "MAE", "RMSE", "MAPE", "SMAPE", "NRMSE")
+_RESULT_METRIC_COLUMNS = ["num_regions"]
+for metric_name in _SPLIT_METRIC_NAMES:
+    _RESULT_METRIC_COLUMNS.extend([
+        f"{metric_name}_full",
+        f"{metric_name}_nz",
+        f"{metric_name}_test_full",
+        f"{metric_name}_test_nz",
+        f"{metric_name}_train_full",
+        f"{metric_name}_val_full",
+        f"{metric_name}_train_nz",
+        f"{metric_name}_val_nz",
+    ])
+_RESULT_METRIC_COLUMNS.extend([
     "accuracy",
-    "accuracy_std",
     "matrix_COS_similarity",
-    "matrix_COS_similarity_std",
     "JSD_inflow",
-    "JSD_inflow_std",
     "JSD_outflow",
-    "JSD_outflow_std",
     "JSD_ODflow",
-    "JSD_ODflow_std",
-    "n_runs",
-]
+])
+RESULT_COLUMNS = [
+    item
+    for column_name in _RESULT_METRIC_COLUMNS
+    for item in (column_name, f"{column_name}_std")
+] + ["n_runs"]
 
 
 def set_global_seed(seed: int = SEED) -> None:

@@ -209,7 +209,7 @@ def train_lgbm_from_model(run_id, city_data, donor_model, donor_name):
 
     print(f"  Full:    CPC={canonical_metrics['CPC_full']:.4f}  MAE={canonical_metrics['MAE_full']:.4f}")
     print(f"  Nonzero: CPC={canonical_metrics['CPC_nz']:.4f}")
-    print(f"  Test:    CPC={canonical_metrics['CPC_test']:.4f}")
+    print(f"  Test:    CPC_nz={canonical_metrics['CPC_test_nz']:.4f}")
     print(f"  Train/Val: {format_train_val_cpc_metrics(train_val_metrics)}")
 
     # Save model to disk

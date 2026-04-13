@@ -476,24 +476,26 @@ def _average_multi_city_metrics(
     averaged = _average_metrics(all_metric_dicts)
     if test_metric_dicts:
         averaged_test = _average_metrics(test_metric_dicts)
-        for key in ("CPC_test", "MAE_test", "RMSE_test"):
-            if key in averaged_test:
+        for key in averaged_test:
+            if (
+                key.endswith("_test_full")
+                or key.endswith("_test_nz")
+            ):
                 averaged[key] = averaged_test[key]
-    _add_split_cpc_metrics(averaged, train_metric_dicts, "train")
-    _add_split_cpc_metrics(averaged, val_metric_dicts, "val")
+    _add_split_metrics(averaged, train_metric_dicts, "train")
+    _add_split_metrics(averaged, val_metric_dicts, "val")
     return averaged
 
 
-def _add_split_cpc_metrics(target, metric_dicts, prefix):
+def _add_split_metrics(target, metric_dicts, prefix):
     if not metric_dicts:
         return
     averaged = _average_metrics(metric_dicts)
-    if "CPC_full" in averaged:
-        target[f"CPC_{prefix}_full"] = averaged["CPC_full"]
-    if "CPC_nz" in averaged:
-        target[f"CPC_{prefix}_nz"] = averaged["CPC_nz"]
-    if prefix == "val" and "CPC_val_nz" in target:
-        target["CPC_val"] = target["CPC_val_nz"]
+    for metric_name in ("CPC", "MAE", "RMSE", "MAPE", "SMAPE", "NRMSE"):
+        for variant in ("full", "nz"):
+            source_key = f"{metric_name}_{variant}"
+            if source_key in averaged:
+                target[f"{metric_name}_{prefix}_{variant}"] = averaged[source_key]
 
 
 def _summarize_multi_city_per_city(per_city_metric_samples):
@@ -517,7 +519,8 @@ def _print_multi_city_city_summary(run_id, per_city_summary, overall_metrics):
             f"    {city_id}{tag}: "
             f"CPC_full={_fmt_metric(city_metrics, 'CPC_full')}  "
             f"CPC_nz={_fmt_metric(city_metrics, 'CPC_nz')}  "
-            f"CPC_test={_fmt_metric(city_metrics, 'CPC_test')}  "
+            f"CPC_test_full={_fmt_metric(city_metrics, 'CPC_test_full')}  "
+            f"CPC_test_nz={_fmt_metric(city_metrics, 'CPC_test_nz')}  "
             f"MAE_full={_fmt_metric(city_metrics, 'MAE_full')}  "
             f"RMSE_full={_fmt_metric(city_metrics, 'RMSE_full')}"
         )
@@ -525,7 +528,8 @@ def _print_multi_city_city_summary(run_id, per_city_summary, overall_metrics):
         "  Avg all cities: "
         f"CPC_full={_fmt_metric(overall_metrics, 'CPC_full')}  "
         f"CPC_nz={_fmt_metric(overall_metrics, 'CPC_nz')}  "
-        f"CPC_test={_fmt_metric(overall_metrics, 'CPC_test')}  "
+        f"CPC_test_full={_fmt_metric(overall_metrics, 'CPC_test_full')}  "
+        f"CPC_test_nz={_fmt_metric(overall_metrics, 'CPC_test_nz')}  "
         f"MAE_full={_fmt_metric(overall_metrics, 'MAE_full')}  "
         f"RMSE_full={_fmt_metric(overall_metrics, 'RMSE_full')}"
     )

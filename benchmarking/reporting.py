@@ -31,9 +31,8 @@ def save_results_table(df, filename):
 
 def build_combined_summary(single_city_results, multi_city_results):
     summary_metrics = [
-        "CPC_full", "CPC_nz", "CPC_test", "CPC_val",
-        "CPC_train_full", "CPC_val_full", "CPC_train_nz", "CPC_val_nz",
-        "MAE_full", "RMSE_full",
+        col for col in RESULT_COLUMNS
+        if not col.endswith("_std") and col != "n_runs"
     ]
     all_models = sorted(set(single_city_results) | set(multi_city_results))
     rows = []
@@ -92,12 +91,16 @@ def plot_comparison(results_dict, title, metrics_to_plot=None):
         axes[idx].grid(axis="x", alpha=0.3)
         finite = np.isfinite(vals)
         if finite.any():
+            maximize_metric = (
+                metric.startswith("CPC")
+                or metric in ("accuracy", "matrix_COS_similarity")
+            )
             selector_vals = np.where(finite, vals, -np.inf)
-            if metric not in ("CPC_full", "CPC_nz", "CPC_test", "accuracy", "matrix_COS_similarity"):
+            if not maximize_metric:
                 selector_vals = np.where(finite, vals, np.inf)
             best_idx = int(
                 np.argmax(selector_vals)
-                if metric in ("CPC_full", "CPC_nz", "CPC_test", "accuracy", "matrix_COS_similarity")
+                if maximize_metric
                 else np.argmin(selector_vals)
             )
             axes[idx].barh(best_idx, vals[best_idx], color="red", alpha=0.7)

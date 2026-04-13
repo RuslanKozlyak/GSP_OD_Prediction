@@ -97,9 +97,9 @@ def summarize_prediction_metrics(pred, cd, is_test_city=True):
         is_test_city=is_test_city,
     )
     test_metrics = {
-        'CPC': combined_metrics['CPC_test'],
-        'MAE': combined_metrics['MAE_test'],
-        'RMSE': combined_metrics['RMSE_test'],
+        'CPC': combined_metrics['CPC_test_nz'],
+        'MAE': combined_metrics['MAE_test_nz'],
+        'RMSE': combined_metrics['RMSE_test_nz'],
     }
 
     return {
