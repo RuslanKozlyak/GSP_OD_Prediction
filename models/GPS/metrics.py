@@ -6,6 +6,7 @@ import numpy as np
 import torch
 
 from .config import DEST_BATCH_SIZE, device
+from .model import restore_force_noise, set_force_noise
 
 # Re-export shared metrics for backward compatibility
 from models.shared.metrics import (
@@ -25,7 +26,7 @@ def _softplus_np(x):
     return np.log1p(np.exp(-np.abs(x))) + np.maximum(x, 0.0)
 
 
-def predict_full_matrix(model, cd, config, dbs=DEST_BATCH_SIZE):
+def _predict_full_matrix_legacy(model, cd, config, dbs=DEST_BATCH_SIZE):
     """Run GPS model encode+decode to produce full N×N OD prediction matrix."""
     model.eval()
     pm = config.prediction_mode
@@ -64,6 +65,73 @@ def predict_full_matrix(model, cd, config, dbs=DEST_BATCH_SIZE):
                 row = np.expm1(np.maximum(row, 0))
             pred[oi] = row
     return pred
+
+
+def _predict_single_full_matrix(model, cd, config, dbs=DEST_BATCH_SIZE, force_noise=False):
+    """Run one encode+decode pass to produce a full N×N OD prediction matrix."""
+    model.eval()
+    pm = config.prediction_mode
+    use_log_flow = config.use_log_transform and config.loss_type in ('huber', 'multitask', 'mae')
+    use_log_norm = use_log_flow and pm == 'normalized'
+    is_gravity = getattr(config, 'decoder_type', None) == 'gravity_guided'
+    nn_ = cd['num_nodes']
+    of = cd['outflow_full']
+    pred = np.zeros((nn_, nn_), dtype=np.float32)
+    noise_states = set_force_noise(model, True) if force_noise else []
+    try:
+        with torch.no_grad():
+            ne = model.encode(cd['graph_data'])
+            for oi in range(nn_):
+                row = np.zeros(nn_, dtype=np.float32)
+                for bs in range(0, nn_, dbs):
+                    be = min(bs + dbs, nn_)
+                    di = torch.LongTensor(np.arange(bs, be)).to(device)
+                    row[bs:be] = model.decode_row(
+                        ne, oi, di, cd['distance_matrix'],
+                        coords=cd.get('coords_tensor'),
+                    ).cpu().numpy()
+                if config.loss_type == 'zinb':
+                    row = np.log1p(np.exp(row))
+                elif pm == 'normalized':
+                    if use_log_norm:
+                        prob = 1.0 / (1.0 + np.exp(-np.clip(row, -60, 60)))
+                        row = np.expm1(prob * np.log1p(max(float(of[oi]), 0.0)))
+                    else:
+                        row = np.exp(row - row.max())
+                        row = row / (row.sum() + 1e-10) * of[oi]
+                else:
+                    if is_gravity:
+                        row = _softplus_np(row) if use_log_flow else np.exp(np.clip(row, -60.0, 20.0))
+                    else:
+                        row = np.maximum(row, 0)
+                if use_log_flow and pm != 'normalized':
+                    row = np.expm1(np.maximum(row, 0))
+                pred[oi] = row
+    finally:
+        restore_force_noise(noise_states)
+    return pred
+
+
+def _gan_eval_sample_count(model, config):
+    if getattr(config, 'training_mode', None) != 'gan':
+        return 1, False
+    has_noise = any(getattr(child, 'noise_dim', 0) > 0 for child in model.modules())
+    if not has_noise:
+        return 1, False
+    return max(1, int(getattr(config, 'gan_eval_num_samples', 1))), True
+
+
+def predict_full_matrix(model, cd, config, dbs=DEST_BATCH_SIZE):
+    """Run GPS model encode+decode to produce full N×N OD prediction matrix."""
+    n_samples, force_noise = _gan_eval_sample_count(model, config)
+    pred = _predict_single_full_matrix(model, cd, config, dbs=dbs, force_noise=force_noise)
+    if n_samples == 1:
+        return pred
+    pred_acc = pred.astype(np.float64, copy=False)
+    for _ in range(1, n_samples):
+        pred_acc += _predict_single_full_matrix(model, cd, config, dbs=dbs, force_noise=force_noise)
+    pred_acc /= float(n_samples)
+    return pred_acc.astype(np.float32, copy=False)
 
 
 def summarize_prediction_metrics(pred, cd, is_test_city=True):

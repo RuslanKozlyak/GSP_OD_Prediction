@@ -23,6 +23,12 @@ WEIGHTS_CPC_BEST_DIR = RESULTS_DIR / "weights_CPC_best"
 METRICS_CSV = RESULTS_DIR / "metrics.csv"
 METRICS_VAL_LOSS_CSV = RESULTS_DIR / "metrics_val_loss.csv"
 METRICS_CPC_NZ_BEST_CSV = RESULTS_DIR / "metrics_cpc_nz_best.csv"
+METRICS_SC_CSV = RESULTS_DIR / "metrics_single_city.csv"
+METRICS_MC_CSV = RESULTS_DIR / "metrics_multi_city.csv"
+METRICS_VAL_LOSS_SC_CSV = RESULTS_DIR / "metrics_val_loss_single_city.csv"
+METRICS_VAL_LOSS_MC_CSV = RESULTS_DIR / "metrics_val_loss_multi_city.csv"
+METRICS_CPC_NZ_BEST_SC_CSV = RESULTS_DIR / "metrics_cpc_nz_best_single_city.csv"
+METRICS_CPC_NZ_BEST_MC_CSV = RESULTS_DIR / "metrics_cpc_nz_best_multi_city.csv"
 METRICS_RUNS_DIR = RESULTS_DIR / "metrics_runs"
 
 # NOTE: the local dataset does not contain 06037 (Los Angeles County), so we use
@@ -100,6 +106,7 @@ GPS_DROPOUT = 0.1
 ODGN_GNN_LAYERS = 3   # "number of graph convolutional layers is set to 3"
 ODGN_GNN_HEADS  = 8   # "number of heads is set to 8"
 ODGN_NOISE_DIM  = 60  # "noise dimension is set to be 60, same as regional attributes"
+GAN_EVAL_NUM_SAMPLES = 4
 TF_HEADS = 4
 TF_LAYERS = 2
 TF_DROPOUT = 0.1
@@ -184,10 +191,14 @@ class TrainingConfig:
     gan_n_critic_after_epoch: int = 0
     gan_n_critic_after: int   = 1
     gan_noise_dim:      int   = 0
+    gan_noise_dim_mode: Literal['fixed', 'match_input'] = 'match_input'
+    gan_eval_num_samples: int = GAN_EVAL_NUM_SAMPLES
     gan_disc_hidden_dim: int  = 64
     gan_disc_layers:    int   = 4
     gan_disc_dropout:   float = 0.05
     gan_use_supervised_monitoring: bool = True
+    gat_use_edge_attr:  bool  = True
+    pair_use_distance:  bool  = True
     # ── RLE (Relative Location Encoder) ───────────────────────────────────────
     use_rle:            bool  = False
     rle_freq:           int   = 16
@@ -210,6 +221,7 @@ class TrainingConfig:
             'prediction_mode': ('raw', 'normalized'),
             'training_mode':   ('supervised', 'gan'),
             'gan_regularizer':  ('gp', 'clip'),
+            'gan_noise_dim_mode': ('fixed', 'match_input'),
         }
         for attr, choices in _valid.items():
             val = getattr(self, attr)
@@ -254,6 +266,8 @@ class TrainingConfig:
             raise ValueError("TrainingConfig.gan_n_critic_after must be >= 1")
         if self.gan_noise_dim < 0:
             raise ValueError("TrainingConfig.gan_noise_dim must be >= 0")
+        if self.gan_eval_num_samples < 1:
+            raise ValueError("TrainingConfig.gan_eval_num_samples must be >= 1")
 
     def describe(self):
         enc = {'mlp': 'MLP', 'gat': 'GAT'}.get(self.encoder_type, 'GPS')
@@ -281,12 +295,20 @@ class TrainingConfig:
                 parts.append(f"WGAN-clip={self.gan_clip_value:g}")
             if self.gan_n_critic_after_epoch:
                 parts.append(f"ncritic_after={self.gan_n_critic_after}@{self.gan_n_critic_after_epoch}")
-            if self.gan_noise_dim:
+            if self.encoder_type == 'gat' and self.gan_noise_dim_mode == 'match_input':
+                parts.append("noise=input")
+            elif self.encoder_type == 'gat' and self.gan_noise_dim:
                 parts.append(f"noise={self.gan_noise_dim}")
+            if self.gan_eval_num_samples > 1:
+                parts.append(f"evalx{self.gan_eval_num_samples}")
             if self.gan_only:
                 parts.append("gan_only")
             if not self.gan_use_supervised_monitoring:
                 parts.append("supmon=off")
+        if self.encoder_type == 'gat' and not self.gat_use_edge_attr:
+            parts.append("gat_edge=off")
+        if not self.pair_use_distance:
+            parts.append("pair_dist=off")
         parts.append(f"zeros={self.include_zero_pairs} samp={self.use_dest_sampling}")
         return " | ".join(parts)
 
@@ -299,11 +321,36 @@ def ensure_dirs():
     METRICS_RUNS_DIR.mkdir(exist_ok=True)
 
 
+def normalize_split_scope(split_scope):
+    return 'multi_city' if split_scope == 'multi_city' else 'single_city'
+
+
+def scoped_metrics_csv(metrics_csv=None, split_scope='single_city'):
+    split_scope = normalize_split_scope(split_scope)
+    metrics_csv = Path(metrics_csv) if metrics_csv is not None else METRICS_CSV
+    scoped_map = {
+        METRICS_CSV: {
+            'single_city': METRICS_SC_CSV,
+            'multi_city': METRICS_MC_CSV,
+        },
+        METRICS_VAL_LOSS_CSV: {
+            'single_city': METRICS_VAL_LOSS_SC_CSV,
+            'multi_city': METRICS_VAL_LOSS_MC_CSV,
+        },
+        METRICS_CPC_NZ_BEST_CSV: {
+            'single_city': METRICS_CPC_NZ_BEST_SC_CSV,
+            'multi_city': METRICS_CPC_NZ_BEST_MC_CSV,
+        },
+    }
+    return scoped_map.get(metrics_csv, {}).get(split_scope, metrics_csv)
+
+
 def save_metrics_to_csv(run_id, run_name, config, metrics,
                         n_params, epochs_trained, status='ok',
                         metrics_csv=None, run_suffix=None,
                         checkpoint_selection=None, selected_epoch=None,
-                        selection_metric=None, selection_metric_value=None):
+                        selection_metric=None, selection_metric_value=None,
+                        split_scope='single_city'):
     """Save canonical metrics dict to CSV and JSON.
 
     ``metrics`` should be the output of canonical_od_metrics (possibly merged
@@ -311,11 +358,13 @@ def save_metrics_to_csv(run_id, run_name, config, metrics,
     are written directly — no manual remapping.
     """
     ensure_dirs()
-    metrics_csv = Path(metrics_csv) if metrics_csv is not None else METRICS_CSV
+    split_scope = normalize_split_scope(split_scope)
+    metrics_csv = scoped_metrics_csv(metrics_csv, split_scope)
     metrics_csv.parent.mkdir(exist_ok=True)
     row = {
         'timestamp': datetime.now().isoformat(),
         'run_id': run_id, 'name': run_name, 'status': status,
+        'split_scope': split_scope,
         'checkpoint_selection': checkpoint_selection,
         'selected_epoch': selected_epoch,
         'selection_metric': selection_metric,
@@ -344,9 +393,13 @@ def save_metrics_to_csv(run_id, run_name, config, metrics,
         'gan_n_critic_after_epoch': config.gan_n_critic_after_epoch,
         'gan_n_critic_after': config.gan_n_critic_after,
         'gan_noise_dim': config.gan_noise_dim,
+        'gan_noise_dim_mode': config.gan_noise_dim_mode,
+        'gan_eval_num_samples': config.gan_eval_num_samples,
         'gan_pretrain_epochs': config.gan_pretrain_epochs,
         'gan_walk_len': config.gan_walk_len,
         'gan_walk_batch_size': config.gan_walk_batch_size,
+        'gat_use_edge_attr': config.gat_use_edge_attr,
+        'pair_use_distance': config.pair_use_distance,
         'n_params': n_params, 'epochs_trained': epochs_trained,
     }
     # Write all numeric metrics from the canonical dict directly

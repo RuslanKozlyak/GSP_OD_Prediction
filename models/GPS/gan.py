@@ -4,6 +4,8 @@ import torch.autograd as autograd
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .model import restore_force_noise, set_force_noise
+
 
 class Chomp1d(nn.Module):
     def __init__(self, chomp_size):
@@ -155,13 +157,15 @@ def gan_step_for_city(model, discriminator, cd, config, generator_optimizer, dis
     discriminator.train()
     _set_requires_grad(discriminator, True)
     n_critic = _effective_n_critic(config, epoch)
+    # Fresh fake OD samples are generated inside the loop below.
+    # The legacy cached-matrix comment below is no longer accurate.
     # Decode the generated OD matrix once for all critic steps — the generator
     # weights do not change during discriminator updates, so reusing the same
     # matrix is equivalent to sampling a fresh one each step. Walk sequences
     # are still resampled independently every critic iteration.
-    fake_od_cached = _detached_generated_od_matrix(model, cd, config)
     for _ in range(n_critic):
         discriminator_optimizer.zero_grad()
+        fake_od = _detached_generated_od_matrix(model, cd, config)
         real_seq = sample_walk_sequences(
             real_od,
             node_features,
@@ -172,7 +176,7 @@ def gan_step_for_city(model, discriminator, cd, config, generator_optimizer, dis
             hard=True,
         )
         fake_seq = sample_walk_sequences(
-            fake_od_cached,
+            fake_od,
             node_features,
             config.gan_walk_len,
             config.gan_walk_batch_size,
@@ -257,12 +261,12 @@ def _scores_to_flow(scores, outflow, config):
 def _detached_generated_od_matrix(model, cd, config):
     was_training = model.training
     model.eval()
-    noise_states = _set_force_noise(model, True)
+    noise_states = set_force_noise(model, True)
     try:
         with torch.no_grad():
             fake_od = generated_od_matrix(model, cd, config).detach()
     finally:
-        _restore_force_noise(noise_states)
+        restore_force_noise(noise_states)
     if was_training:
         model.train()
     return fake_od
@@ -292,17 +296,3 @@ def _clip_weights(module, clip_value):
     with torch.no_grad():
         for param in module.parameters():
             param.clamp_(-clip_value, clip_value)
-
-
-def _set_force_noise(module, enabled):
-    states = []
-    for child in module.modules():
-        if hasattr(child, 'force_noise'):
-            states.append((child, child.force_noise))
-            child.force_noise = enabled
-    return states
-
-
-def _restore_force_noise(states):
-    for module, previous in states:
-        module.force_noise = previous

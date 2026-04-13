@@ -136,6 +136,8 @@ def _train_loop(run_id, run_name, config, model, city_datas,
     best_gan_epoch = 0
 
     # Split cities into train / val
+    split_scope = 'multi_city' if is_multi else 'single_city'
+
     if is_multi:
         assert train_city_ids is not None and val_city_ids is not None
         train_cds = {cid: city_datas[cid] for cid in train_city_ids if cid in city_datas}
@@ -350,6 +352,7 @@ def _train_loop(run_id, run_name, config, model, city_datas,
                 metrics_csv=metrics_csv,
                 run_suffix=run_suffix,
                 checkpoint_selection=selection,
+                split_scope=split_scope,
             )
         return {
             'name': run_name, 'model': model, 'config': config, 'history': history,
@@ -450,26 +453,37 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         avg_val.update(_NAN_TRAIN_VAL)
         avg_cpc, pc_cpc = avg_val, pc_val
 
+    pure_gan_selected_epoch = best_gan_epoch or epoch
+    pure_gan_selection_value = best_gan_g_loss if np.isfinite(best_gan_g_loss) else None
+
     # Save
     save_metrics_to_csv(
         run_id, run_name, config, avg_val,
         n_params, epoch, status,
         metrics_csv=METRICS_VAL_LOSS_CSV,
         run_suffix='val_loss',
-        checkpoint_selection='val_loss_best' if use_training_control else 'last_epoch',
-        selected_epoch=best_val_epoch or epoch,
-        selection_metric='val_loss' if use_training_control else None,
-        selection_metric_value=best_val_loss if use_training_control else None,
+        checkpoint_selection='val_loss_best' if use_training_control else 'gan_g_loss_best',
+        selected_epoch=(
+            (best_val_epoch or epoch)
+            if use_training_control else pure_gan_selected_epoch
+        ),
+        selection_metric='val_loss' if use_training_control else 'gan_g_loss',
+        selection_metric_value=best_val_loss if use_training_control else pure_gan_selection_value,
+        split_scope=split_scope,
     )
     save_metrics_to_csv(
         run_id, run_name, config, avg_cpc,
         n_params, epoch, status,
         metrics_csv=METRICS_CPC_NZ_BEST_CSV,
         run_suffix='cpc_nz',
-        checkpoint_selection='cpc_nz_best' if use_training_control else 'last_epoch',
-        selected_epoch=best_cpc_nz_epoch or best_val_epoch or epoch,
-        selection_metric='CPC_val_nz' if use_training_control else None,
-        selection_metric_value=best_cpc_nz_val if use_training_control else None,
+        checkpoint_selection='cpc_nz_best' if use_training_control else 'gan_g_loss_best',
+        selected_epoch=(
+            (best_cpc_nz_epoch or best_val_epoch or epoch)
+            if use_training_control else pure_gan_selected_epoch
+        ),
+        selection_metric='CPC_val_nz' if use_training_control else 'gan_g_loss',
+        selection_metric_value=best_cpc_nz_val if use_training_control else pure_gan_selection_value,
+        split_scope=split_scope,
     )
     save_model_weights(run_id, gan_best_state if discriminator is not None else val_loss_best_state, config)
     if use_training_control:
@@ -478,8 +492,9 @@ def _train_loop(run_id, run_name, config, model, city_datas,
             f"epoch {best_cpc_nz_epoch or best_val_epoch or epoch}"
         )
     else:
-        print(f"  -> Pure GAN checkpoint source: final epoch {epoch}")
-    save_model_weights(run_id, cpc_nz_best_state, config, weights_dir=WEIGHTS_CPC_BEST_DIR)
+        print(f"  -> Pure GAN checkpoint source: gan_g_loss-best epoch {pure_gan_selected_epoch}")
+    cpc_export_state = cpc_nz_best_state if use_training_control else gan_best_state
+    save_model_weights(run_id, cpc_export_state, config, weights_dir=WEIGHTS_CPC_BEST_DIR)
 
     return {
         'name': run_name, 'model': model, 'config': config, 'history': history,

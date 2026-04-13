@@ -1,12 +1,10 @@
-import csv
 import json
-from datetime import datetime
 
 import numpy as np
 import torch
 import lightgbm as lgb
 
-from .config import TrainingConfig, METRICS_CSV, METRICS_RUNS_DIR, WEIGHTS_DIR, device, ensure_dirs
+from .config import TrainingConfig, WEIGHTS_DIR, device, ensure_dirs, save_metrics_to_csv
 from .metrics import compute_metrics, cal_od_metrics
 from models.shared.metrics import canonical_od_metrics, format_train_val_cpc_metrics
 
@@ -215,24 +213,16 @@ def train_lgbm_from_model(run_id, city_data, donor_model, donor_name):
     # Save model to disk
     save_lgbm_model(run_id, lgbm_model, donor_name)
 
-    # Save to metrics CSV
-    ensure_dirs()
-    row = {
-        'timestamp': datetime.now().isoformat(), 'run_id': run_id,
-        'name': f'LGBM({donor_name})', 'status': 'ok',
-        'decoder': 'lgbm', 'loss_type': 'mae',
-        'prediction_mode': 'raw', 'pe_type': '-', 'gps_norm_type': '-',
-        'use_log_transform': False, 'n_params': 0,
-        'epochs_trained': lgbm_model.best_iteration,
-        **canonical_metrics,
-    }
-    with open(METRICS_CSV, 'a', newline='') as f:
-        w = csv.DictWriter(f, fieldnames=row.keys())
-        w.writerow(row)
-    metrics_path = METRICS_RUNS_DIR / f"{run_id}.json"
-    with open(metrics_path, 'w') as f:
-        json.dump(row, f, indent=2)
-    print(f"  -> Metrics saved to {metrics_path}")
+    save_metrics_to_csv(
+        run_id,
+        f'LGBM({donor_name})',
+        TrainingConfig(decoder_type='lgbm', loss_type='mae'),
+        canonical_metrics,
+        n_params=0,
+        epochs_trained=lgbm_model.best_iteration,
+        status='ok',
+        split_scope=city_data.get('split_scope', 'single_city'),
+    )
 
     return {
         'name': f'LGBM({donor_name})', 'model': lgbm_model,

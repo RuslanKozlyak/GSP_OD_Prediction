@@ -123,6 +123,7 @@ class GATEncoder(nn.Module):
         pe_type=None,
         norm_type='batch_norm',
         noise_dim=0,
+        use_edge_attr=True,
     ):
         super().__init__()
         self.pe_type = pe_type
@@ -130,6 +131,7 @@ class GATEncoder(nn.Module):
         self.norm_type = norm_type
         self.dropout = do
         self.noise_dim = noise_dim
+        self.use_edge_attr = use_edge_attr
         self.force_noise = False
         npd = hd - ped if self.use_pe else hd
         self.node_proj = Sequential(Linear(idim + noise_dim, npd), ReLU(), Linear(npd, npd))
@@ -145,9 +147,11 @@ class GATEncoder(nn.Module):
         self.gat_uses_edge_attr = []
         self.norms = ModuleList()
         for _ in range(nl):
-            conv, use_edge_attr = _make_gat_conv(hd, nh, do, ed)
+            conv, conv_uses_edge_attr = _make_gat_conv(
+                hd, nh, do, ed if use_edge_attr else None,
+            )
             self.gat_layers.append(conv)
-            self.gat_uses_edge_attr.append(use_edge_attr)
+            self.gat_uses_edge_attr.append(conv_uses_edge_attr)
             if norm_type == 'graph_norm':
                 self.norms.append(GraphNormLayer(hd))
             elif norm_type == 'batch_norm':
@@ -194,23 +198,29 @@ class BilinearDecoder(nn.Module):
 
 
 class LinearPairDecoder(nn.Module):
-    def __init__(self, hd, extra_dim=0):
+    def __init__(self, hd, extra_dim=0, use_distance=True):
         super().__init__()
-        self.net = Sequential(Linear(hd * 2 + 1 + extra_dim, hd), ReLU(), Linear(hd, 1))
+        self.use_distance = use_distance
+        in_dim = hd * 2 + extra_dim + (1 if use_distance else 0)
+        self.net = Sequential(Linear(in_dim, hd), ReLU(), Linear(hd, 1))
 
     def forward(self, oe, de, d=None, extra=None):
-        if d is None:
-            d = torch.zeros(oe.size(0), 1, device=oe.device, dtype=oe.dtype)
-        parts = [oe, de, d]
+        parts = [oe, de]
+        if self.use_distance:
+            if d is None:
+                d = torch.zeros(oe.size(0), 1, device=oe.device, dtype=oe.dtype)
+            parts.append(d)
         if extra is not None:
             parts.append(extra)
         return self.net(torch.cat(parts, dim=-1)).squeeze(-1)
 
 
 class TransFlowerDecoder(nn.Module):
-    def __init__(self, hd, nh=4, nl=2, do=0.1, extra_dim=0):
+    def __init__(self, hd, nh=4, nl=2, do=0.1, extra_dim=0, use_distance=True):
         super().__init__()
-        self.fp = Sequential(Linear(hd * 2 + 1 + extra_dim, hd), ReLU(), Linear(hd, hd))
+        self.use_distance = use_distance
+        in_dim = hd * 2 + extra_dim + (1 if use_distance else 0)
+        self.fp = Sequential(Linear(in_dim, hd), ReLU(), Linear(hd, hd))
         tl = nn.TransformerEncoderLayer(
             d_model=hd, nhead=nh, dim_feedforward=hd * 4, dropout=do, batch_first=True
         )
@@ -218,7 +228,11 @@ class TransFlowerDecoder(nn.Module):
         self.ph = Sequential(Linear(hd, hd // 2), ReLU(), Linear(hd // 2, 1))
 
     def forward(self, oe, de, d, extra=None):
-        parts = [oe, de, d]
+        parts = [oe, de]
+        if self.use_distance:
+            if d is None:
+                d = torch.zeros(oe.size(0), 1, device=oe.device, dtype=oe.dtype)
+            parts.append(d)
         if extra is not None:
             parts.append(extra)
         fe = self.fp(torch.cat(parts, dim=-1))
@@ -240,7 +254,7 @@ class GravityGuidedDecoder(nn.Module):
     Returns log-gravity scores:
         log T_ij = log G + λ1·log M(i) + λ2·log M(j) − λ3·log(1 + r_ij)
     """
-    def __init__(self, hd, loc_dim=None, extra_dim=0, eps=1e-6):
+    def __init__(self, hd, loc_dim=None, extra_dim=0, eps=1e-6, use_distance=True):
         super().__init__()
         # loc_dim kept for API compatibility but ignored — split is always hd//2
         self.mass_dim = hd // 2
@@ -256,6 +270,7 @@ class GravityGuidedDecoder(nn.Module):
         self.lambda_dest = nn.Parameter(torch.ones(()))
         self.lambda_dist = nn.Parameter(torch.ones(()))
         self.geo_scale = nn.Parameter(torch.zeros(()))
+        self.use_distance = use_distance
         self.extra_bias = Linear(extra_dim, 1) if extra_dim else None
         if self.extra_bias is not None:
             nn.init.zeros_(self.extra_bias.weight)
@@ -268,7 +283,7 @@ class GravityGuidedDecoder(nn.Module):
         lo = self.loc_proj(oe[..., self.mass_dim:])
         ld = self.loc_proj(de[..., self.mass_dim:])
         dist = torch.linalg.vector_norm(lo - ld, dim=-1)
-        if d is not None:
+        if self.use_distance and d is not None:
             # Distances are MinMax-scaled in data_load and may be negative off
             # the train range, so clamp before using them as a gravity radius.
             dist = dist + F.softplus(self.geo_scale) * d.squeeze(-1).clamp_min(0.0)
@@ -283,15 +298,15 @@ class GravityGuidedDecoder(nn.Module):
         return score
 
 
-def make_pair_decoder(dt, hd, th=4, tl=2, tdo=0.1, extra_dim=0):
+def make_pair_decoder(dt, hd, th=4, tl=2, tdo=0.1, extra_dim=0, use_distance=True):
     if dt == 'bilinear':
         return BilinearDecoder(hd)
     if dt == 'linear':
-        return LinearPairDecoder(hd, extra_dim=extra_dim)
+        return LinearPairDecoder(hd, extra_dim=extra_dim, use_distance=use_distance)
     if dt == 'transflower':
-        return TransFlowerDecoder(hd, th, tl, tdo, extra_dim=extra_dim)
+        return TransFlowerDecoder(hd, th, tl, tdo, extra_dim=extra_dim, use_distance=use_distance)
     if dt == 'gravity_guided':
-        return GravityGuidedDecoder(hd, extra_dim=extra_dim)
+        return GravityGuidedDecoder(hd, extra_dim=extra_dim, use_distance=use_distance)
     raise ValueError(dt)
 
 
@@ -306,14 +321,17 @@ class MLPEncoder(nn.Module):
 
 class GPSODModel(nn.Module):
     def __init__(self, idim, hd, ped, ed, gl, gh, gdo,
-                 dt='bilinear', th=4, tl=2, tdo=0.1, pe_type='rwpe', nt='batch_norm', rle=None):
+                 dt='bilinear', th=4, tl=2, tdo=0.1, pe_type='rwpe', nt='batch_norm', rle=None,
+                 pair_use_distance=True):
         super().__init__()
         self.encoder = GPSEncoder(idim, hd, ped, ed, gl, gh, gdo, pe_type=pe_type, norm_type=nt)
         self.decoder_type = dt
         self.hidden_dim = hd
         self.rle = rle
         rle_dim = rle.out_dim if rle else 0
-        self.decoder = make_pair_decoder(dt, hd, th, tl, tdo, extra_dim=rle_dim)
+        self.decoder = make_pair_decoder(
+            dt, hd, th, tl, tdo, extra_dim=rle_dim, use_distance=pair_use_distance,
+        )
         self.outflow_head = Linear(hd, 1)
         self.inflow_head = Linear(hd, 1)
 
@@ -341,17 +359,19 @@ class GPSODModel(nn.Module):
 class GATODModel(nn.Module):
     def __init__(self, idim, hd, ped, ed, gl, gh, gdo,
                  dt='linear', th=4, tl=2, tdo=0.1, pe_type=None, nt='batch_norm', rle=None,
-                 noise_dim=0):
+                 noise_dim=0, use_edge_attr=True, pair_use_distance=True):
         super().__init__()
         self.encoder = GATEncoder(
             idim, hd, ped, ed, gl, gh, gdo,
-            pe_type=pe_type, norm_type=nt, noise_dim=noise_dim,
+            pe_type=pe_type, norm_type=nt, noise_dim=noise_dim, use_edge_attr=use_edge_attr,
         )
         self.decoder_type = dt
         self.hidden_dim = hd
         self.rle = rle
         rle_dim = rle.out_dim if rle else 0
-        self.decoder = make_pair_decoder(dt, hd, th, tl, tdo, extra_dim=rle_dim)
+        self.decoder = make_pair_decoder(
+            dt, hd, th, tl, tdo, extra_dim=rle_dim, use_distance=pair_use_distance,
+        )
         self.outflow_head = Linear(hd, 1)
         self.inflow_head = Linear(hd, 1)
 
@@ -378,13 +398,16 @@ class GATODModel(nn.Module):
 
 class TransFlowerODModel(nn.Module):
     """MLP encoder (no graph) with a pair decoder and optional RLE."""
-    def __init__(self, idim, hd, nh=4, nl=2, do=0.1, rle=None, decoder_type='transflower'):
+    def __init__(self, idim, hd, nh=4, nl=2, do=0.1, rle=None, decoder_type='transflower',
+                 pair_use_distance=True):
         super().__init__()
         self.encoder = MLPEncoder(idim, hd)
         self.rle = rle
         self.decoder_type = decoder_type
         rle_dim = rle.out_dim if rle else 0
-        self.decoder = make_pair_decoder(decoder_type, hd, nh, nl, do, extra_dim=rle_dim)
+        self.decoder = make_pair_decoder(
+            decoder_type, hd, nh, nl, do, extra_dim=rle_dim, use_distance=pair_use_distance,
+        )
         self.outflow_head = Linear(hd, 1)
         self.inflow_head = Linear(hd, 1)
 
@@ -423,25 +446,53 @@ def make_model(config, input_dim=None, edge_dim=None, graph_data_ref=None):
             lambda_min=config.rle_lambda_min, lambda_max=config.rle_lambda_max,
         )
 
+    pair_use_distance = getattr(config, 'pair_use_distance', True)
+
     if config.encoder_type == 'mlp':
         assert input_dim is not None
         return TransFlowerODModel(
             input_dim, HIDDEN_DIM, TF_HEADS, TF_LAYERS, TF_DROPOUT,
-            rle=rle, decoder_type=config.decoder_type,
+            rle=rle, decoder_type=config.decoder_type, pair_use_distance=pair_use_distance,
         ).to(device)
     gnn_layers = config.gnn_layers or GPS_LAYERS
     gnn_heads = config.gnn_heads or GPS_HEADS
     if config.encoder_type == 'gat':
-        assert input_dim and edge_dim
+        assert input_dim is not None
+        gat_use_edge_attr = getattr(config, 'gat_use_edge_attr', True)
+        noise_dim = resolve_gan_noise_dim(config, input_dim)
         return GATODModel(
             input_dim, HIDDEN_DIM, PE_DIM, edge_dim, gnn_layers, gnn_heads, GPS_DROPOUT,
             config.decoder_type, TF_HEADS, TF_LAYERS, TF_DROPOUT,
-            config.pe_type, config.gps_norm_type, rle=rle, noise_dim=config.gan_noise_dim,
+            config.pe_type, config.gps_norm_type, rle=rle, noise_dim=noise_dim,
+            use_edge_attr=gat_use_edge_attr, pair_use_distance=pair_use_distance,
         ).to(device)
     else:  # 'gps'
         assert input_dim and edge_dim
         return GPSODModel(
             input_dim, HIDDEN_DIM, PE_DIM, edge_dim, gnn_layers, gnn_heads, GPS_DROPOUT,
             config.decoder_type, TF_HEADS, TF_LAYERS, TF_DROPOUT,
-            config.pe_type, config.gps_norm_type, rle=rle,
+            config.pe_type, config.gps_norm_type, rle=rle, pair_use_distance=pair_use_distance,
         ).to(device)
+
+
+def resolve_gan_noise_dim(config, input_dim):
+    if getattr(config, 'training_mode', 'supervised') != 'gan':
+        return int(getattr(config, 'gan_noise_dim', 0))
+    mode = getattr(config, 'gan_noise_dim_mode', 'fixed')
+    if mode == 'match_input':
+        return int(input_dim or 0)
+    return int(getattr(config, 'gan_noise_dim', 0))
+
+
+def set_force_noise(module, enabled):
+    states = []
+    for child in module.modules():
+        if hasattr(child, 'force_noise'):
+            states.append((child, child.force_noise))
+            child.force_noise = enabled
+    return states
+
+
+def restore_force_noise(states):
+    for module, previous in states:
+        module.force_noise = previous

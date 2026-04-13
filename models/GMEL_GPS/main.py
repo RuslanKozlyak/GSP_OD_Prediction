@@ -393,7 +393,16 @@ def train(run_id, run_name, config, city_data):
         train_full_mask=city_data.get('train_full_mask'),
         val_full_mask=city_data.get('val_full_mask'),
     )
-    save_metrics_to_csv(run_id, run_name, config, tree_metrics, n_params, epoch, status)
+    save_metrics_to_csv(
+        run_id,
+        run_name,
+        config,
+        tree_metrics,
+        n_params,
+        epoch,
+        status,
+        split_scope=city_data.get('split_scope', 'single_city'),
+    )
     save_model_weights(run_id, model, config)
 
     return {
