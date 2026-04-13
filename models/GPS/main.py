@@ -11,23 +11,25 @@ from .config import (
 )
 from .model import make_model
 from .loss import compute_loss_for_city
-from .metrics import evaluate_full_matrix
+from .metrics import evaluate_full_matrix, predict_full_matrix, summarize_prediction_metrics
 from .data_load import prepare_single_city_data, prepare_multi_city_data
 from .gan import ODSequenceDiscriminator, gan_step_for_city
 from models.shared.metrics import (
-    average_matrix_cpc_metrics,
+    average_listed_metrics,
+    average_matrix_split_metrics,
     compute_metrics,
     format_train_val_cpc_metrics,
-    masked_train_val_cpc_metrics,
+    masked_split_metrics,
+    _SPLIT_METRIC_NAMES,
 )
 from models.shared.plotting import save_loss_plot
 
 
-_NAN_TRAIN_VAL_CPC = {
-    'CPC_train_full': float('nan'),
-    'CPC_val_full': float('nan'),
-    'CPC_train_nz': float('nan'),
-    'CPC_val_nz': float('nan'),
+_NAN_TRAIN_VAL = {
+    f'{m}_{split}_{var}': float('nan')
+    for m in _SPLIT_METRIC_NAMES
+    for split in ('train', 'val')
+    for var in ('full', 'nz')
 }
 
 
@@ -105,6 +107,10 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         )
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5, min_lr=1e-5)
     use_supervised_monitoring = discriminator is None or config.gan_use_supervised_monitoring
+    # LR scheduling and early stopping are only active for pure supervised runs.
+    # GAN runs compute metrics for logging but must not have their training
+    # trajectory altered by a supervised signal.
+    use_training_control = discriminator is None
 
     max_epochs = config.mc_epochs if is_multi else config.epochs
     history = {
@@ -125,6 +131,9 @@ def _train_loop(run_id, run_name, config, model, city_datas,
     best_cpc_nz_val = -float('inf')
     best_cpc_nz_state = None
     best_cpc_nz_epoch = 0
+    best_gan_g_loss = float('inf')
+    best_gan_state = None
+    best_gan_epoch = 0
 
     # Split cities into train / val
     if is_multi:
@@ -145,13 +154,11 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         val_cd['nonzero_dest_dict'] = cd['val_dest_dict']
         val_cds = {cid: val_cd}
 
-    def _train_val_cpc_metrics():
+    def _train_val_metrics():
         if not is_multi:
             full_cd = list(city_datas.values())[0]
-            pred, _, _ = evaluate_full_matrix(
-                model, full_cd, config, dest_batch_size=DEST_BATCH_SIZE
-            )
-            return masked_train_val_cpc_metrics(
+            pred = predict_full_matrix(model, full_cd, config, DEST_BATCH_SIZE)
+            return masked_split_metrics(
                 pred,
                 full_cd['od_matrix_np'],
                 full_cd['train_mask'],
@@ -165,12 +172,10 @@ def _train_loop(run_id, run_name, config, model, city_datas,
             pred_matrices = []
             od_matrices = []
             for ecd in eval_cds.values():
-                pred, _, _ = evaluate_full_matrix(
-                    model, ecd, config, dest_batch_size=DEST_BATCH_SIZE
-                )
+                pred = predict_full_matrix(model, ecd, config, DEST_BATCH_SIZE)
                 pred_matrices.append(pred)
                 od_matrices.append(ecd['od_matrix_np'])
-            metrics.update(average_matrix_cpc_metrics(pred_matrices, od_matrices, prefix))
+            metrics.update(average_matrix_split_metrics(pred_matrices, od_matrices, prefix))
         return metrics
 
     epoch = 0
@@ -253,10 +258,10 @@ def _train_loop(run_id, run_name, config, model, city_datas,
                     vl = compute_loss_for_city(model, vcd, config)
                     if not (torch.isnan(vl) or torch.isinf(vl)):
                         val_losses.append(vl.item())
-                train_val_cpc = _train_val_cpc_metrics()
+                train_val_cpc = _train_val_metrics()
             avg_val_loss = np.mean(val_losses) if val_losses else float('nan')
         else:
-            train_val_cpc = dict(_NAN_TRAIN_VAL_CPC)
+            train_val_cpc = dict(_NAN_TRAIN_VAL)
             avg_val_loss = float('nan')
         history['train_loss'].append(train_loss)
         history['val_loss'].append(avg_val_loss)
@@ -268,22 +273,30 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         history['gan_d_loss'].append(gan_d_loss)
         history['gan_gp'].append(gan_gp)
 
-        if use_supervised_monitoring and not np.isnan(avg_val_loss):
+        if discriminator is not None and not np.isnan(gan_g_loss) and gan_g_loss < best_gan_g_loss:
+            best_gan_g_loss = gan_g_loss
+            best_gan_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            best_gan_epoch = epoch
+            flag = ' *'
+        elif discriminator is not None:
+            flag = ''
+
+        if use_training_control and not np.isnan(avg_val_loss):
             scheduler.step(avg_val_loss)
 
-        if use_supervised_monitoring and avg_val_loss < best_val_loss:
+        if use_training_control and avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             best_val_epoch = epoch
             patience_count = 0
             flag = ' *'
-        elif use_supervised_monitoring:
+        elif use_training_control:
             patience_count += 1
             flag = ''
         else:
             flag = ''
 
-        if use_supervised_monitoring:
+        if use_training_control:
             cpc_nz_val = train_val_cpc['CPC_val_nz']
             if not np.isnan(cpc_nz_val) and cpc_nz_val > best_cpc_nz_val:
                 best_cpc_nz_val = cpc_nz_val
@@ -308,7 +321,7 @@ def _train_loop(run_id, run_name, config, model, city_datas,
             )
             print(f"  {epoch:3d}/{max_epochs}  train={train_text}  {monitor_text}  "
                   f"{time.time()-t0:.1f}s{flag}{nan_str}{gan_str}")
-        if use_supervised_monitoring and patience_count >= config.patience:
+        if use_training_control and patience_count >= config.patience:
             print(f"  Early stop @ epoch {epoch}")
             break
 
@@ -323,13 +336,16 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         model.loss_plot_path = str(saved_plot_path)
 
     if status == 'nan_diverged':
-        dummy = {'CPC': 0.0, 'MAE': float('inf'), 'RMSE': float('inf')}
+        dummy = {
+            'CPC_full': 0.0, 'MAE_full': float('inf'), 'RMSE_full': float('inf'),
+            'CPC_nz': 0.0, 'MAE_nz': float('inf'), 'RMSE_nz': float('inf'),
+        }
         for metrics_csv, run_suffix, selection in (
             (METRICS_VAL_LOSS_CSV, 'val_loss', 'val_loss_best'),
             (METRICS_CPC_NZ_BEST_CSV, 'cpc_nz', 'cpc_nz_best'),
         ):
             save_metrics_to_csv(
-                run_id, run_name, config, dummy, dummy, dummy,
+                run_id, run_name, config, dummy,
                 n_params, epoch, status,
                 metrics_csv=metrics_csv,
                 run_suffix=run_suffix,
@@ -338,7 +354,7 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         return {
             'name': run_name, 'model': model, 'config': config, 'history': history,
             'discriminator': discriminator,
-            'metrics_full': dummy, 'metrics_nonzero': dummy, 'metrics_test_pairs': dummy,
+            'metrics': dummy,
             'pred_matrix': None, 'status': status,
             'loss_plot_path': str(saved_plot_path) if saved_plot_path is not None else None,
         }
@@ -357,10 +373,8 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         test_eval_cities = full_eval_cities
 
     def eval_all(label):
-        all_mf = []
-        all_mnz = []
-        all_mt_full = []
-        all_mt_nz = []
+        """Evaluate all cities and return averaged canonical metrics."""
+        all_combined = []
         per_city = []
         test_eval_ids = set(test_eval_cities)
 
@@ -372,62 +386,23 @@ def _train_loop(run_id, run_name, config, model, city_datas,
             return "-" if np.isnan(v) else f"{v:.4f}"
 
         for ecid, ecd in full_eval_cities.items():
-            pred, mf, mnz = evaluate_full_matrix(model, ecd, config, dest_batch_size=DEST_BATCH_SIZE)
-            if is_multi:
-                if ecid in test_eval_ids:
-                    mt_full = {'CPC': mf['CPC'], 'MAE': mf['MAE'], 'RMSE': mf['RMSE']}
-                    mt_nz = dict(mnz)
-                    all_mt_full.append(mt_full)
-                    all_mt_nz.append(mt_nz)
-                else:
-                    mt_full = {'CPC': float('nan'), 'MAE': float('nan'), 'RMSE': float('nan')}
-                    mt_nz = {'CPC': float('nan'), 'MAE': float('nan'), 'RMSE': float('nan')}
-            else:
-                od_np = ecd['od_matrix_np']
-                test_full_mask = ecd.get('test_full_mask')
-                test_nz_mask = ecd.get('test_mask')
-                mt_full = (
-                    compute_metrics(pred[test_full_mask], od_np[test_full_mask].astype(float))
-                    if test_full_mask is not None and np.any(test_full_mask) else
-                    {'CPC': float('nan'), 'MAE': float('nan'), 'RMSE': float('nan')}
-                )
-                mt_nz = (
-                    compute_metrics(pred[test_nz_mask], od_np[test_nz_mask].astype(float))
-                    if test_nz_mask is not None and np.any(test_nz_mask) else
-                    {'CPC': float('nan'), 'MAE': float('nan'), 'RMSE': float('nan')}
-                )
-                all_mt_full.append(mt_full)
-                all_mt_nz.append(mt_nz)
-            all_mf.append(mf)
-            all_mnz.append(mnz)
+            is_test = (ecid in test_eval_ids) if is_multi else True
+            pred, combined = evaluate_full_matrix(
+                model, ecd, config, dest_batch_size=DEST_BATCH_SIZE,
+                is_test_city=is_test,
+            )
+            all_combined.append(combined)
             per_city.append({
-                'city_id': ecid, 'CPC_full': mf['CPC'], 'CPC_nz': mnz['CPC'],
-                'MAE': mf['MAE'], 'RMSE': mf['RMSE'],
-                'CPC_test_full': mt_full['CPC'],
-                'CPC_test_nz': mt_nz['CPC'],
+                'city_id': ecid,
+                'CPC_full': combined['CPC_full'],
+                'CPC_nz': combined['CPC_nz'],
+                'MAE_full': combined['MAE_full'],
+                'RMSE_full': combined['RMSE_full'],
+                'CPC_test_full': combined.get('CPC_test_full', float('nan')),
+                'CPC_test_nz': combined.get('CPC_test_nz', float('nan')),
             })
-        avg_mf = {k: np.mean([m[k] for m in all_mf]) for k in all_mf[0]}
-        avg_mnz = {k: np.mean([m[k] for m in all_mnz]) for k in all_mnz[0]}
-        avg_mt = {
-            'CPC_full': (
-                np.mean([m['CPC'] for m in all_mt_full]) if all_mt_full else float('nan')
-            ),
-            'MAE_full': (
-                np.mean([m['MAE'] for m in all_mt_full]) if all_mt_full else float('nan')
-            ),
-            'RMSE_full': (
-                np.mean([m['RMSE'] for m in all_mt_full]) if all_mt_full else float('nan')
-            ),
-            'CPC_nz': (
-                np.mean([m['CPC'] for m in all_mt_nz]) if all_mt_nz else float('nan')
-            ),
-            'MAE_nz': (
-                np.mean([m['MAE'] for m in all_mt_nz]) if all_mt_nz else float('nan')
-            ),
-            'RMSE_nz': (
-                np.mean([m['RMSE'] for m in all_mt_nz]) if all_mt_nz else float('nan')
-            ),
-        }
+
+        avg = average_listed_metrics(all_combined)
         print(f"\n  === {label} ===")
         for pc in per_city:
             print(
@@ -437,63 +412,67 @@ def _train_loop(run_id, run_name, config, model, city_datas,
                 f"CPC_test_nz={fmt(pc['CPC_test_nz'])}"
             )
         print(
-            f"  Avg: CPC_full={avg_mf['CPC']:.4f}  CPC_nz={avg_mnz['CPC']:.4f}  "
-            f"CPC_test_full={avg_mt['CPC_full']:.4f}  "
-            f"CPC_test_nz={avg_mt['CPC_nz']:.4f}  MAE={avg_mf['MAE']:.4f}"
+            f"  Avg: CPC_full={fmt(avg.get('CPC_full'))}  "
+            f"CPC_nz={fmt(avg.get('CPC_nz'))}  "
+            f"CPC_test_full={fmt(avg.get('CPC_test_full'))}  "
+            f"CPC_test_nz={fmt(avg.get('CPC_test_nz'))}  "
+            f"MAE={fmt(avg.get('MAE_full'))}"
         )
-        return avg_mf, avg_mnz, avg_mt, per_city
+        return avg, per_city
 
     last_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
     val_loss_best_state = best_state if best_state is not None else last_state
     cpc_nz_best_state = best_cpc_nz_state if best_cpc_nz_state is not None else val_loss_best_state
+    gan_best_state = best_gan_state if best_gan_state is not None else last_state
 
-    if use_supervised_monitoring:
+    if use_training_control:
         model.load_state_dict(val_loss_best_state)
-        tv_val = _train_val_cpc_metrics()
-        mf_val, mnz_val, mt_val, pc_val = eval_all(
+        tv_val = _train_val_metrics()
+        avg_val, pc_val = eval_all(
             f"Best weights (val_loss @ epoch {best_val_epoch or epoch})"
         )
-        print(f"  Train/Val: {format_train_val_cpc_metrics(tv_val)}")
+        avg_val.update(tv_val)
+        print(f"  Train/Val: {format_train_val_cpc_metrics(avg_val)}")
 
         model.load_state_dict(cpc_nz_best_state)
-        tv_cpc = _train_val_cpc_metrics()
-        mf_cpc, mnz_cpc, mt_cpc, pc_cpc = eval_all(
+        tv_cpc = _train_val_metrics()
+        avg_cpc, pc_cpc = eval_all(
             f"Best weights (CPC_val_nz @ epoch {best_cpc_nz_epoch or best_val_epoch or epoch})"
         )
-        print(f"  Train/Val: {format_train_val_cpc_metrics(tv_cpc)}")
+        avg_cpc.update(tv_cpc)
+        print(f"  Train/Val: {format_train_val_cpc_metrics(avg_cpc)}")
     else:
-        model.load_state_dict(last_state)
-        tv_val = dict(_NAN_TRAIN_VAL_CPC)
-        tv_cpc = dict(_NAN_TRAIN_VAL_CPC)
-        mf_val, mnz_val, mt_val, pc_val = eval_all("Final weights (pure GAN)")
-        mf_cpc, mnz_cpc, mt_cpc, pc_cpc = mf_val, mnz_val, mt_val, pc_val
+        model.load_state_dict(gan_best_state)
+        avg_val, pc_val = eval_all(
+            f"Best weights (gan_g_loss @ epoch {best_gan_epoch or epoch})"
+        )
+        avg_val.update(_NAN_TRAIN_VAL)
+        avg_cpc, pc_cpc = avg_val, pc_val
 
     # Save
     save_metrics_to_csv(
-        run_id, run_name, config, mf_val, mnz_val, mt_val,
+        run_id, run_name, config, avg_val,
         n_params, epoch, status,
         metrics_csv=METRICS_VAL_LOSS_CSV,
         run_suffix='val_loss',
-        checkpoint_selection='val_loss_best' if use_supervised_monitoring else 'last_epoch',
+        checkpoint_selection='val_loss_best' if use_training_control else 'last_epoch',
         selected_epoch=best_val_epoch or epoch,
-        selection_metric='val_loss' if use_supervised_monitoring else None,
-        selection_metric_value=best_val_loss if use_supervised_monitoring else None,
-        train_val_metrics=tv_val,
+        selection_metric='val_loss' if use_training_control else None,
+        selection_metric_value=best_val_loss if use_training_control else None,
     )
     save_metrics_to_csv(
-        run_id, run_name, config, mf_cpc, mnz_cpc, mt_cpc,
+        run_id, run_name, config, avg_cpc,
         n_params, epoch, status,
         metrics_csv=METRICS_CPC_NZ_BEST_CSV,
         run_suffix='cpc_nz',
-        checkpoint_selection='cpc_nz_best' if use_supervised_monitoring else 'last_epoch',
+        checkpoint_selection='cpc_nz_best' if use_training_control else 'last_epoch',
         selected_epoch=best_cpc_nz_epoch or best_val_epoch or epoch,
-        selection_metric='CPC_val_nz' if use_supervised_monitoring else None,
-        selection_metric_value=best_cpc_nz_val if use_supervised_monitoring else None,
-        train_val_metrics=tv_cpc,
+        selection_metric='CPC_val_nz' if use_training_control else None,
+        selection_metric_value=best_cpc_nz_val if use_training_control else None,
     )
-    save_model_weights(run_id, val_loss_best_state, config)
-    if use_supervised_monitoring:
+    save_model_weights(run_id, gan_best_state if discriminator is not None else val_loss_best_state, config)
+    if use_training_control:
         print(
             "  -> CPC_nz-best checkpoint source: "
             f"epoch {best_cpc_nz_epoch or best_val_epoch or epoch}"
@@ -505,10 +484,8 @@ def _train_loop(run_id, run_name, config, model, city_datas,
     return {
         'name': run_name, 'model': model, 'config': config, 'history': history,
         'discriminator': discriminator,
-        'metrics_full': mf_cpc, 'metrics_nonzero': mnz_cpc, 'metrics_test_pairs': mt_cpc,
-        'metrics_full_val_loss': mf_val, 'metrics_nonzero_val_loss': mnz_val,
-        'metrics_test_pairs_val_loss': mt_val,
-        'metrics_train_val': tv_cpc, 'metrics_train_val_loss': tv_val,
+        'metrics': avg_cpc,
+        'metrics_val_loss': avg_val,
         'per_city': pc_cpc, 'per_city_val_loss': pc_val, 'status': status,
         'loss_plot_path': str(saved_plot_path) if saved_plot_path is not None else None,
     }

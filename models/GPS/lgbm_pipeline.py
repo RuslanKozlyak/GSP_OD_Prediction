@@ -112,11 +112,14 @@ def load_lgbm_results(run_id, city_data, return_payload=False):
         pred = np.zeros((nn_, nn_), dtype=np.float32)
         pred[ao, ad] = pf.astype(np.float32)
 
-        test_mask = None if city_data.get('split_scope') == 'multi_city' else city_data.get('test_mask')
+        is_multi = city_data.get('split_scope') == 'multi_city'
+        test_mask = None if is_multi else city_data.get('test_mask')
+        test_full_mask = None if is_multi else city_data.get('test_full_mask')
         metrics = canonical_od_metrics(
             pred,
             od,
             test_mask=test_mask,
+            test_full_mask=test_full_mask,
             train_mask=city_data.get('train_mask'),
             val_mask=city_data.get('val_mask'),
             train_full_mask=city_data.get('train_full_mask'),

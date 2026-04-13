@@ -15,11 +15,11 @@ from tqdm.auto import tqdm
 
 from models.shared.metrics import (
     average_listed_metrics,
-    average_matrix_cpc_metrics,
+    average_matrix_split_metrics,
     canonical_od_metrics,
     compute_metrics,
     format_train_val_cpc_metrics,
-    masked_train_val_cpc_metrics,
+    masked_split_metrics,
 )
 from models.shared.data_load import (
     construct_flat_features, load_graph_data, get_scalers, build_dgl_graph, build_pyg_graph,
@@ -160,7 +160,7 @@ def _compute_flat_train_val_metrics(model, payload):
     if payload['single_city_split']:
         pred_flat = _predict_flat_array(model, payload['x_full'])
         pred_matrix = pred_flat.reshape(payload['n_nodes'], payload['n_nodes'])
-        return masked_train_val_cpc_metrics(
+        return masked_split_metrics(
             pred_matrix,
             payload['od_matrix'],
             payload['train_mask'],
@@ -174,8 +174,8 @@ def _compute_flat_train_val_metrics(model, payload):
         ('train', 'xs_train_eval', 'ys_train_eval'),
         ('val', 'xs_valid_full', 'ys_valid_full'),
     ):
-        cpc_fulls = []
-        cpc_nzs = []
+        from models.shared.metrics import _SPLIT_METRIC_NAMES
+        per_city_metrics = []
         if xs_key in payload and ys_key in payload:
             pairs = zip(payload[xs_key], payload[ys_key])
         elif prefix == 'train' and 'train_eval_areas' in payload:
@@ -192,12 +192,17 @@ def _compute_flat_train_val_metrics(model, payload):
             n = int(np.sqrt(y_one.shape[0]))
             pred_matrix = _predict_flat_array(model, x_one).reshape(n, n)
             od_matrix = y_one.reshape(n, n)
-            one = average_matrix_cpc_metrics([pred_matrix], [od_matrix], prefix)
-            cpc_fulls.append(one[f'CPC_{prefix}_full'])
-            cpc_nzs.append(one[f'CPC_{prefix}_nz'])
+            one = average_matrix_split_metrics([pred_matrix], [od_matrix], prefix)
+            per_city_metrics.append(one)
             del pred_matrix, od_matrix
-        metrics[f'CPC_{prefix}_full'] = float(np.mean(cpc_fulls)) if cpc_fulls else float('nan')
-        metrics[f'CPC_{prefix}_nz'] = float(np.mean(cpc_nzs)) if cpc_nzs else float('nan')
+        if per_city_metrics:
+            for key in per_city_metrics[0]:
+                vals = [d[key] for d in per_city_metrics]
+                metrics[key] = float(np.mean(vals))
+        else:
+            for m in _SPLIT_METRIC_NAMES:
+                metrics[f'{m}_{prefix}_full'] = float('nan')
+                metrics[f'{m}_{prefix}_nz'] = float('nan')
     return metrics
 
 
@@ -215,7 +220,8 @@ def _print_validation_metrics(metrics):
 
 def _attach_validation_metrics(metrics_all, validation_metrics):
     for metric in metrics_all:
-        metric.update(validation_metrics)
+        for k, v in validation_metrics.items():
+            metric.setdefault(k, v)
     return metrics_all
 
 
@@ -268,7 +274,7 @@ def _compute_gmel_train_val_metrics(gmel, decoder, nfeat_scaler, train_areas, va
             single_city_data['nfeat'], single_city_data['adj'], single_city_data['dis'],
             device,
         )
-        return masked_train_val_cpc_metrics(
+        return masked_split_metrics(
             pred,
             single_city_data['od'],
             single_city_data['train_mask'],
@@ -286,7 +292,7 @@ def _compute_gmel_train_val_metrics(gmel, decoder, nfeat_scaler, train_areas, va
             _predict_gmel_matrix(gmel, decoder, nfeat_scaler, nf, adj, dis, device)
             for nf, adj, dis in zip(nf_list, adj_list, dis_list)
         ]
-        metrics.update(average_matrix_cpc_metrics(pred_matrices, od_list, prefix))
+        metrics.update(average_matrix_split_metrics(pred_matrices, od_list, prefix))
     return metrics
 
 
@@ -317,7 +323,7 @@ def _compute_netgan_train_val_metrics(trained, train_areas, valid_areas, data_pa
             single_city_data['dis'],
             device,
         )
-        return masked_train_val_cpc_metrics(
+        return masked_split_metrics(
             pred,
             single_city_data['od'],
             single_city_data['train_mask'],
@@ -335,7 +341,7 @@ def _compute_netgan_train_val_metrics(trained, train_areas, valid_areas, data_pa
             _predict_netgan_matrix(trained, nf, adj, dis, device)
             for nf, adj, dis in zip(nf_list, adj_list, dis_list)
         ]
-        metrics.update(average_matrix_cpc_metrics(pred_matrices, od_list, prefix))
+        metrics.update(average_matrix_split_metrics(pred_matrices, od_list, prefix))
     return metrics
 
 
@@ -740,6 +746,11 @@ def infer_flat_model(model_name, train_areas, valid_areas, test_areas, data_path
                     pred_matrix,
                     payload['od_matrix'],
                     test_mask=payload['test_mask'],
+                    test_full_mask=payload.get('test_full_mask'),
+                    train_mask=payload.get('train_mask'),
+                    val_mask=payload.get('val_mask'),
+                    train_full_mask=payload.get('train_full_mask'),
+                    val_full_mask=payload.get('val_full_mask'),
                 )
                 metrics_all = [mf]
             else:
@@ -925,6 +936,11 @@ def infer_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
                         od_hat,
                         od_full,
                         test_mask=single_city_data['test_mask'],
+                        test_full_mask=single_city_data.get('test_full_mask'),
+                        train_mask=single_city_data.get('train_mask'),
+                        val_mask=single_city_data.get('val_mask'),
+                        train_full_mask=single_city_data.get('train_full_mask'),
+                        val_full_mask=single_city_data.get('val_full_mask'),
                     )
                     metrics_all = [mf]
                 else:
@@ -1012,6 +1028,11 @@ def infer_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
                         od_hat,
                         od_full,
                         test_mask=single_city_data['test_mask'],
+                        test_full_mask=single_city_data.get('test_full_mask'),
+                        train_mask=single_city_data.get('train_mask'),
+                        val_mask=single_city_data.get('val_mask'),
+                        train_full_mask=single_city_data.get('train_full_mask'),
+                        val_full_mask=single_city_data.get('val_full_mask'),
                     )
                     metrics_all = [mf]
                 else:

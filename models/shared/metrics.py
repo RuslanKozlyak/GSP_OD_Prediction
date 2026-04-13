@@ -246,6 +246,32 @@ def compute_metrics(p, t):
     }
 
 
+_SPLIT_METRIC_NAMES = ('CPC', 'MAE', 'RMSE', 'MAPE', 'SMAPE', 'NRMSE')
+
+
+def _compute_split_metrics(pred_1d, target_1d):
+    """Full 6-metric summary on pre-masked 1-D arrays."""
+    pred_1d = np.asarray(pred_1d, dtype=float)
+    target_1d = np.asarray(target_1d, dtype=float)
+    if pred_1d.size == 0:
+        return {m: float('nan') for m in _SPLIT_METRIC_NAMES}
+    std = target_1d.std()
+    return {
+        'CPC': _safe_scalar(CPC(pred_1d, target_1d))
+               if (pred_1d.sum() + target_1d.sum()) > 1e-10 else 0.0,
+        'MAE': _safe_scalar(MAE(pred_1d, target_1d)),
+        'RMSE': _safe_scalar(RMSE(pred_1d, target_1d)),
+        'MAPE': _safe_scalar(MAPE(pred_1d, target_1d)),
+        'SMAPE': _safe_scalar(SMAPE(pred_1d, target_1d)),
+        'NRMSE': _safe_scalar(RMSE(pred_1d, target_1d)) / float(std)
+                 if float(std) > 1e-10 else float('nan'),
+    }
+
+
+def _nan_split_metrics():
+    return {m: float('nan') for m in _SPLIT_METRIC_NAMES}
+
+
 def _nan_quick_metrics():
     return {'CPC': float('nan'), 'MAE': float('nan'), 'RMSE': float('nan')}
 
@@ -255,6 +281,7 @@ def canonical_od_metrics(
     od_matrix,
     *,
     test_mask=None,
+    test_full_mask=None,
     train_mask=None,
     val_mask=None,
     train_full_mask=None,
@@ -263,53 +290,80 @@ def canonical_od_metrics(
 ):
     """Return the canonical benchmark metric schema for one OD matrix.
 
-    Canonical keys:
-    - *_full: metrics on the full OD matrix.
-    - *_nz: metrics on nonzero target OD pairs.
-    - *_test: metrics on the test split, or full matrix for test cities.
-    - CPC_train_*/CPC_val_*: split CPC diagnostics when masks are provided.
+    Canonical keys (all 6 metrics: CPC, MAE, RMSE, MAPE, SMAPE, NRMSE):
+    - ``{metric}_full``  – on the full OD matrix.
+    - ``{metric}_nz``    – on nonzero-target OD pairs only.
+    - ``{metric}_test_full`` / ``{metric}_test_nz`` – test split (full/nz).
+    - ``{metric}_train_full`` / ``{metric}_train_nz`` – train split.
+    - ``{metric}_val_full``   / ``{metric}_val_nz``   – val split.
+
+    Legacy aliases kept for backward compatibility:
+    - ``CPC_test``, ``MAE_test``, ``RMSE_test`` → same as ``*_test_nz``.
+    - ``CPC_val`` → ``CPC_val_nz``.
     """
     pred_matrix = np.asarray(pred_matrix)
     od_matrix = np.asarray(od_matrix)
     full_metrics = cal_od_metrics(pred_matrix, od_matrix)
 
+    # ── nonzero metrics (consistent via _compute_split_metrics) ──────────
     nz_mask = od_matrix > 0
-    nonzero_metrics = (
-        compute_metrics(pred_matrix[nz_mask], od_matrix[nz_mask].astype(float))
+    nz_metrics = (
+        _compute_split_metrics(pred_matrix[nz_mask], od_matrix[nz_mask])
         if np.any(nz_mask) else
-        {'CPC': 0.0, 'MAE': 0.0, 'RMSE': 0.0}
+        {m: 0.0 for m in _SPLIT_METRIC_NAMES}
     )
+
+    # ── test split metrics ───────────────────────────────────────────────
+    test_nz_metrics = _nan_split_metrics()
+    test_full_metrics = _nan_split_metrics()
 
     if test_mask is not None and np.any(test_mask):
         test_mask = np.asarray(test_mask, dtype=bool)
-        test_metrics = compute_metrics(
-            pred_matrix[test_mask], od_matrix[test_mask].astype(float)
+        test_nz_metrics = _compute_split_metrics(
+            pred_matrix[test_mask], od_matrix[test_mask],
         )
     elif is_test_city:
-        test_metrics = {
-            'CPC': full_metrics['CPC'],
-            'MAE': full_metrics['MAE'],
-            'RMSE': full_metrics['RMSE'],
-        }
-    else:
-        test_metrics = _nan_quick_metrics()
+        # Whole city is "test" — full matrix = test
+        test_nz_metrics = {m: full_metrics.get(m, nz_metrics.get(m))
+                          for m in _SPLIT_METRIC_NAMES}
+        # Override with proper full-matrix values
+        for m in _SPLIT_METRIC_NAMES:
+            test_nz_metrics[m] = full_metrics.get(m, float('nan'))
 
+    if test_full_mask is not None and np.any(test_full_mask):
+        test_full_mask = np.asarray(test_full_mask, dtype=bool)
+        test_full_metrics = _compute_split_metrics(
+            pred_matrix[test_full_mask], od_matrix[test_full_mask],
+        )
+    elif is_test_city:
+        test_full_metrics = {m: full_metrics.get(m, float('nan'))
+                            for m in _SPLIT_METRIC_NAMES}
+
+    # ── assemble output ──────────────────────────────────────────────────
     metrics = {
         'num_regions': full_metrics['num_regions'],
+        # full matrix
         'CPC_full': full_metrics['CPC'],
         'MAE_full': full_metrics['MAE'],
         'RMSE_full': full_metrics['RMSE'],
         'NRMSE_full': full_metrics['NRMSE'],
         'MAPE_full': full_metrics['MAPE'],
         'SMAPE_full': full_metrics['SMAPE'],
-        'CPC_nz': nonzero_metrics['CPC'],
-        'MAE_nz': nonzero_metrics['MAE'],
-        'RMSE_nz': nonzero_metrics['RMSE'],
-        'MAPE_nz': full_metrics['MAPE_nonzero'],
-        'SMAPE_nz': full_metrics['SMAPE_nonzero'],
-        'CPC_test': test_metrics['CPC'],
-        'MAE_test': test_metrics['MAE'],
-        'RMSE_test': test_metrics['RMSE'],
+        # nonzero (all from the same path now)
+        'CPC_nz': nz_metrics['CPC'],
+        'MAE_nz': nz_metrics['MAE'],
+        'RMSE_nz': nz_metrics['RMSE'],
+        'MAPE_nz': nz_metrics['MAPE'],
+        'SMAPE_nz': nz_metrics['SMAPE'],
+        'NRMSE_nz': nz_metrics['NRMSE'],
+        # test split — full and nz
+        **{f'{m}_test_full': test_full_metrics[m] for m in _SPLIT_METRIC_NAMES},
+        **{f'{m}_test_nz': test_nz_metrics[m] for m in _SPLIT_METRIC_NAMES},
+        # legacy test aliases (= test_nz for backward compat)
+        'CPC_test': test_nz_metrics['CPC'],
+        'MAE_test': test_nz_metrics['MAE'],
+        'RMSE_test': test_nz_metrics['RMSE'],
+        # structural / distributional
         'accuracy': full_metrics['accuracy'],
         'matrix_COS_similarity': full_metrics['matrix_COS_similarity'],
         'JSD_inflow': full_metrics['JSD_inflow'],
@@ -317,9 +371,10 @@ def canonical_od_metrics(
         'JSD_ODflow': full_metrics['JSD_ODflow'],
     }
 
+    # ── train / val split metrics ────────────────────────────────────────
     if train_mask is not None and val_mask is not None:
         metrics.update(
-            masked_train_val_cpc_metrics(
+            masked_split_metrics(
                 pred_matrix,
                 od_matrix,
                 train_mask,
@@ -353,7 +408,7 @@ def cpc_nonzero(pred_matrix, target_matrix, mask=None):
     return compute_metrics(pred_matrix[mask], target_matrix[mask].astype(float))['CPC']
 
 
-def masked_train_val_cpc_metrics(
+def masked_split_metrics(
     pred_matrix,
     od_matrix,
     train_mask,
@@ -361,11 +416,10 @@ def masked_train_val_cpc_metrics(
     train_full_mask=None,
     val_full_mask=None,
 ):
-    """Common train/val CPC metrics for single-city pair masks.
+    """Full per-split metrics for single-city pair masks.
 
-    CPC_*_full compares predicted/target split matrices after applying full
-    pair masks, including zeros when those masks are provided. CPC_*_nz is
-    restricted to the nonzero split mask entries.
+    For each split (train, val) and variant (full, nz) computes all 6 metrics:
+    CPC, MAE, RMSE, MAPE, SMAPE, NRMSE.
     """
     pred_matrix = np.asarray(pred_matrix)
     od_matrix = np.asarray(od_matrix)
@@ -379,37 +433,65 @@ def masked_train_val_cpc_metrics(
         val_mask if val_full_mask is None
         else np.asarray(val_full_mask, dtype=bool)
     )
-    return {
-        'CPC_train_full': cpc_full(
-            pred_matrix * train_full_mask, od_matrix * train_full_mask
-        ),
-        'CPC_val_full': cpc_full(
-            pred_matrix * val_full_mask, od_matrix * val_full_mask
-        ),
-        'CPC_train_nz': cpc_nonzero(pred_matrix, od_matrix, train_mask),
-        'CPC_val_nz': cpc_nonzero(pred_matrix, od_matrix, val_mask),
-    }
+
+    result = {}
+    for prefix, nz_mask, full_mask in (
+        ('train', train_mask, train_full_mask),
+        ('val', val_mask, val_full_mask),
+    ):
+        full_m = _compute_split_metrics(
+            pred_matrix[full_mask], od_matrix[full_mask],
+        )
+        nz_m = _compute_split_metrics(
+            pred_matrix[nz_mask], od_matrix[nz_mask],
+        )
+        for m in _SPLIT_METRIC_NAMES:
+            result[f'{m}_{prefix}_full'] = full_m[m]
+            result[f'{m}_{prefix}_nz'] = nz_m[m]
+    return result
 
 
-def average_matrix_cpc_metrics(pred_matrices, od_matrices, prefix):
-    """Average full/nonzero CPC over a list of city matrices."""
-    cpc_fulls = []
-    cpc_nzs = []
+# Backward-compatible alias
+masked_train_val_cpc_metrics = masked_split_metrics
+
+
+def average_matrix_split_metrics(pred_matrices, od_matrices, prefix):
+    """Average all 6 metrics (full + nz) over a list of city matrices."""
+    all_full = []
+    all_nz = []
     for pred_matrix, od_matrix in zip(pred_matrices, od_matrices):
-        cpc_fulls.append(cpc_full(pred_matrix, od_matrix))
-        cpc_nzs.append(cpc_nonzero(pred_matrix, od_matrix))
-    return {
-        f'CPC_{prefix}_full': float(np.mean(cpc_fulls)) if cpc_fulls else float('nan'),
-        f'CPC_{prefix}_nz': float(np.mean(cpc_nzs)) if cpc_nzs else float('nan'),
-    }
+        pred_matrix = np.asarray(pred_matrix)
+        od_matrix = np.asarray(od_matrix)
+        all_full.append(
+            _compute_split_metrics(pred_matrix.reshape(-1), od_matrix.reshape(-1))
+        )
+        nz = od_matrix > 0
+        if np.any(nz):
+            all_nz.append(_compute_split_metrics(pred_matrix[nz], od_matrix[nz]))
+        else:
+            all_nz.append({m: 0.0 for m in _SPLIT_METRIC_NAMES})
+    result = {}
+    for m in _SPLIT_METRIC_NAMES:
+        vals_full = [d[m] for d in all_full]
+        vals_nz = [d[m] for d in all_nz]
+        result[f'{m}_{prefix}_full'] = float(np.mean(vals_full)) if vals_full else float('nan')
+        result[f'{m}_{prefix}_nz'] = float(np.mean(vals_nz)) if vals_nz else float('nan')
+    return result
+
+
+# Backward-compatible alias
+average_matrix_cpc_metrics = average_matrix_split_metrics
 
 
 def format_train_val_cpc_metrics(metrics):
+    def _fmt(key):
+        v = metrics.get(key)
+        return f"{v:.4f}" if v is not None and not np.isnan(v) else "-"
     return (
-        f"CPC_train_full={metrics['CPC_train_full']:.4f}  "
-        f"CPC_val_full={metrics['CPC_val_full']:.4f}  "
-        f"CPC_train_nz={metrics['CPC_train_nz']:.4f}  "
-        f"CPC_val_nz={metrics['CPC_val_nz']:.4f}"
+        f"CPC_train_full={_fmt('CPC_train_full')}  "
+        f"CPC_val_full={_fmt('CPC_val_full')}  "
+        f"CPC_train_nz={_fmt('CPC_train_nz')}  "
+        f"CPC_val_nz={_fmt('CPC_val_nz')}"
     )
 
 

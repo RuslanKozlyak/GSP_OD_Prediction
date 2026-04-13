@@ -299,20 +299,20 @@ def ensure_dirs():
     METRICS_RUNS_DIR.mkdir(exist_ok=True)
 
 
-def save_metrics_to_csv(run_id, run_name, config, metrics_full, metrics_nz,
-                        metrics_test, n_params, epochs_trained, status='ok',
+def save_metrics_to_csv(run_id, run_name, config, metrics,
+                        n_params, epochs_trained, status='ok',
                         metrics_csv=None, run_suffix=None,
                         checkpoint_selection=None, selected_epoch=None,
-                        selection_metric=None, selection_metric_value=None,
-                        train_val_metrics=None):
+                        selection_metric=None, selection_metric_value=None):
+    """Save canonical metrics dict to CSV and JSON.
+
+    ``metrics`` should be the output of canonical_od_metrics (possibly merged
+    with train/val split metrics from masked_split_metrics).  All metric keys
+    are written directly — no manual remapping.
+    """
     ensure_dirs()
     metrics_csv = Path(metrics_csv) if metrics_csv is not None else METRICS_CSV
     metrics_csv.parent.mkdir(exist_ok=True)
-    train_val_metrics = train_val_metrics or {}
-    cpc_full_test = metrics_test.get('CPC_full', metrics_test.get('CPC'))
-    cpc_nz_test = metrics_test.get('CPC_nz', metrics_test.get('CPC'))
-    mae_test = metrics_test.get('MAE_full', metrics_test.get('MAE'))
-    rmse_test = metrics_test.get('RMSE_full', metrics_test.get('RMSE'))
     row = {
         'timestamp': datetime.now().isoformat(),
         'run_id': run_id, 'name': run_name, 'status': status,
@@ -348,33 +348,17 @@ def save_metrics_to_csv(run_id, run_name, config, metrics_full, metrics_nz,
         'gan_walk_len': config.gan_walk_len,
         'gan_walk_batch_size': config.gan_walk_batch_size,
         'n_params': n_params, 'epochs_trained': epochs_trained,
-        'CPC_full_train': train_val_metrics.get('CPC_train_full'),
-        'CPC_full_val': train_val_metrics.get('CPC_val_full'),
-        'CPC_full_test': cpc_full_test,
-        'CPC_nz_train': train_val_metrics.get('CPC_train_nz'),
-        'CPC_nz_val': train_val_metrics.get('CPC_val_nz'),
-        'CPC_nz_test': cpc_nz_test,
-        'MAE_full': metrics_full.get('MAE'), 'RMSE_full': metrics_full.get('RMSE'),
-        # Full metric suite from cal_od_metrics
-        'MAE_nz': metrics_nz.get('MAE'),
-        'RMSE_nz': metrics_nz.get('RMSE'),
-        'MAE_test': mae_test,
-        'RMSE_test': rmse_test,
-        'NRMSE_full': metrics_full.get('NRMSE'),
-        'MAPE_full': metrics_full.get('MAPE'),
-        'SMAPE_full': metrics_full.get('SMAPE'),
-        'accuracy': metrics_full.get('accuracy'),
-        'matrix_COS_similarity': metrics_full.get('matrix_COS_similarity'),
-        'JSD_inflow': metrics_full.get('JSD_inflow'),
-        'JSD_outflow': metrics_full.get('JSD_outflow'),
-        'JSD_ODflow': metrics_full.get('JSD_ODflow'),
     }
+    # Write all numeric metrics from the canonical dict directly
+    for k, v in metrics.items():
+        if isinstance(v, (int, float)):
+            row[k] = v
     _append_metrics_row(metrics_csv, row)
     print(f"  -> Metrics saved to {metrics_csv}")
     suffix = f"__{run_suffix}" if run_suffix else ""
     metrics_path = METRICS_RUNS_DIR / f"{run_id}{suffix}.json"
     with open(metrics_path, 'w') as f:
-        json.dump(row, f, indent=2)
+        json.dump(row, f, indent=2, default=str)
     print(f"  -> Metrics saved to {metrics_path}")
 
 

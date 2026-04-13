@@ -16,7 +16,7 @@ from models.shared.metrics import (
     JSD_inflow, JSD_outflow, JSD_ODflow,
     cal_od_metrics, compute_metrics, average_listed_metrics,
     canonical_od_metrics, citywise_segmented_metrics,
-    masked_train_val_cpc_metrics, num_regions,
+    masked_train_val_cpc_metrics, masked_split_metrics, num_regions,
 )
 
 
@@ -82,11 +82,14 @@ def summarize_prediction_metrics(pred, cd, is_test_city=True):
     else:
         nonzero_metrics = {'CPC': 0.0, 'MAE': 0.0, 'RMSE': 0.0}
 
-    test_mask = None if cd.get('split_scope') == 'multi_city' else cd.get('test_mask')
+    is_multi = cd.get('split_scope') == 'multi_city'
+    test_mask = None if is_multi else cd.get('test_mask')
+    test_full_mask = None if is_multi else cd.get('test_full_mask')
     combined_metrics = canonical_od_metrics(
         pred,
         od,
         test_mask=test_mask,
+        test_full_mask=test_full_mask,
         train_mask=cd.get('train_mask'),
         val_mask=cd.get('val_mask'),
         train_full_mask=cd.get('train_full_mask'),
@@ -107,18 +110,14 @@ def summarize_prediction_metrics(pred, cd, is_test_city=True):
     }
 
 
-def evaluate_full_matrix(model, cd, config, dest_batch_size=DEST_BATCH_SIZE):
-    """Predict full matrix and compute metrics (full suite + nonzero).
+def evaluate_full_matrix(model, cd, config, dest_batch_size=DEST_BATCH_SIZE,
+                         is_test_city=True):
+    """Predict full matrix and compute canonical metrics.
 
     Returns:
-        pred:  N×N prediction matrix
-        mf:    full 17-metric dict from cal_od_metrics
-        mnz:   {CPC, MAE, RMSE} computed on nonzero entries only
+        pred:      N×N prediction matrix
+        combined:  canonical metric dict from canonical_od_metrics
     """
     pred = predict_full_matrix(model, cd, config, dest_batch_size)
-    summary = summarize_prediction_metrics(pred, cd, is_test_city=True)
-    return (
-        pred,
-        summary['full'],
-        summary['nonzero'],
-    )
+    summary = summarize_prediction_metrics(pred, cd, is_test_city=is_test_city)
+    return pred, summary['combined']
