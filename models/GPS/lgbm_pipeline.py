@@ -147,9 +147,9 @@ def train_lgbm_from_model(run_id, city_data, donor_model, donor_name):
     print(f"\n{'='*70}\n  LGBM: {run_id} (donor: {donor_name})\n{'='*70}")
     nn_ = city_data['num_nodes']
     od = city_data['od_matrix_np']
-    tm = city_data['train_mask']
-    vm = city_data['val_mask']
-    tsm = city_data['test_mask']
+    tm = city_data.get('train_fit_mask', city_data['train_mask'])
+    vm = city_data.get('val_fit_mask', city_data['val_mask'])
+    tsm = city_data.get('test_fit_mask', city_data.get('test_mask'))
     nfs = city_data['node_features_scaled']
     ds = city_data['distances_scaled']
 
@@ -211,7 +211,11 @@ def train_lgbm_from_model(run_id, city_data, donor_model, donor_name):
     save_metrics_to_csv(
         run_id,
         f'LGBM({donor_name})',
-        TrainingConfig(decoder_type='lgbm', loss_type='mae'),
+        TrainingConfig(
+            decoder_type='lgbm',
+            loss_type='mae',
+            pair_split_mode=city_data.get('pair_split_mode', 'nonzero_pairs'),
+        ),
         canonical_metrics,
         n_params=0,
         epochs_trained=lgbm_model.best_iteration,
@@ -222,8 +226,13 @@ def train_lgbm_from_model(run_id, city_data, donor_model, donor_name):
     return {
         'name': f'LGBM({donor_name})', 'model': lgbm_model,
         'metrics_full': mf, 'metrics_nonzero': mnz, 'metrics_test_pairs': mt,
+        'metrics_canonical': canonical_metrics,
         'metrics_train_val': train_val_metrics,
         'pred_matrix': pred,
-        'config': TrainingConfig(decoder_type='lgbm', loss_type='mae'),
+        'config': TrainingConfig(
+            decoder_type='lgbm',
+            loss_type='mae',
+            pair_split_mode=city_data.get('pair_split_mode', 'nonzero_pairs'),
+        ),
         'status': 'ok',
     }
