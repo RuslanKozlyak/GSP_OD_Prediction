@@ -251,7 +251,7 @@ def _scores_to_flow(scores, outflow, config):
         if is_gravity:
             flow = F.softplus(scores) if use_log_flow else torch.exp(scores.clamp(max=20.0))
         else:
-            flow = F.relu(scores)
+            flow = F.softplus(scores)
         if use_log_flow:
             flow = torch.expm1(flow.clamp_min(0.0))
 

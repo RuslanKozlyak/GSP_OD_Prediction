@@ -1116,7 +1116,9 @@ def train_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_
             single_city_id=area_id, data_path=data_path,
         )
         city_data = gps_loader.get_single_city_data(
-            pe_type=TRANSFLOWER_ORIG_CONFIG.pe_type, area_id=area_id,
+            pe_type=TRANSFLOWER_ORIG_CONFIG.pe_type,
+            area_id=area_id,
+            pair_split_mode=TRANSFLOWER_ORIG_CONFIG.pair_split_mode,
         )
         result = train_single_city(
             run_id,
@@ -1139,7 +1141,9 @@ def train_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_
             multi_city_ids=city_ids, data_path=data_path,
         )
         mc_dict, mc_train_ids, mc_val_ids, mc_test_ids = gps_loader.get_multi_city_data(
-            pe_type=cfg.pe_type, city_ids=city_ids,
+            pe_type=cfg.pe_type,
+            city_ids=city_ids,
+            pair_split_mode=cfg.pair_split_mode,
         )
         result = train_multi_city(
             run_id,

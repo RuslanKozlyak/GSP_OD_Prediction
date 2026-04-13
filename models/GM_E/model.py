@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 class GRAVITY(nn.Module):
     def __init__(self):
@@ -11,5 +12,5 @@ class GRAVITY(nn.Module):
         x = x + 1e-10
         x = torch.log(x)
         logy = self.linear(x)
-        y = self.G * torch.exp(logy)
+        y = F.softplus(self.G) * torch.exp(logy)
         return y

@@ -95,6 +95,10 @@ def split_configured_multi_city_ids(city_ids=None, val_city_ids=None, test_city_
 
     return ordered_city_ids, train_city_ids, val_city_ids, test_city_ids
 
+
+def normalize_pair_split_mode(pair_split_mode):
+    return 'all_pairs' if pair_split_mode == 'all_pairs' else 'nonzero_pairs'
+
 # ─── Architecture ─────────────────────────────────────────────────────────────
 HIDDEN_DIM = 64
 PE_DIM = 8
@@ -169,6 +173,7 @@ class TrainingConfig:
     n_dest_sample:      int   = N_DEST_SAMPLE
     include_zero_pairs: bool  = True
     zero_pair_ratio:    float = 0.3
+    pair_split_mode:    Literal['nonzero_pairs', 'all_pairs'] = 'nonzero_pairs'
     # ── Training schedule ─────────────────────────────────────────────────────
     epochs:             int   = EPOCHS
     learning_rate:      float = LEARNING_RATE
@@ -222,6 +227,7 @@ class TrainingConfig:
             'training_mode':   ('supervised', 'gan'),
             'gan_regularizer':  ('gp', 'clip'),
             'gan_noise_dim_mode': ('fixed', 'match_input'),
+            'pair_split_mode': ('nonzero_pairs', 'all_pairs'),
         }
         for attr, choices in _valid.items():
             val = getattr(self, attr)
@@ -309,7 +315,10 @@ class TrainingConfig:
             parts.append("gat_edge=off")
         if not self.pair_use_distance:
             parts.append("pair_dist=off")
-        parts.append(f"zeros={self.include_zero_pairs} samp={self.use_dest_sampling}")
+        parts.append(
+            f"split={'all' if self.pair_split_mode == 'all_pairs' else 'nz'} "
+            f"zeros={self.include_zero_pairs} samp={self.use_dest_sampling}"
+        )
         return " | ".join(parts)
 
 
@@ -379,6 +388,7 @@ def save_metrics_to_csv(run_id, run_name, config, metrics,
         'use_dest_sampling': config.use_dest_sampling,
         'include_zero_pairs': config.include_zero_pairs,
         'zero_pair_ratio': config.zero_pair_ratio,
+        'pair_split_mode': normalize_pair_split_mode(config.pair_split_mode),
         'use_rle': config.use_rle,
         'learning_rate': config.learning_rate,
         'discriminator_lr': config.discriminator_lr,

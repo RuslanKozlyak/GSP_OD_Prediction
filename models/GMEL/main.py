@@ -199,7 +199,7 @@ def train(train_areas, val_areas, data_path,
 
     # ── Fit scalers on val data if not provided ───────────────────────────────
     if single_city_data is not None:
-        train_mask = single_city_data['train_mask']
+        train_mask = single_city_data.get('train_fit_mask', single_city_data['train_mask'])
         toi = np.where(train_mask.any(1))[0]
         nf_fit = single_city_data['nfeat'][toi] if toi.size > 0 else single_city_data['nfeat']
         dis_fit = single_city_data['dis'][train_mask].reshape(-1, 1)
@@ -224,16 +224,20 @@ def train(train_areas, val_areas, data_path,
     optimizer = torch.optim.Adam(gmel.parameters(), lr=encoder_lr)
 
     # Pre-load and cache data on GPU (avoid rebuilding graphs every epoch)
-    # Full-matrix marginals for marginal loss (must NOT come from masked matrix)
     if single_city_data is not None:
-        od_full_s = od_scaler.transform(
-            single_city_data['od'].reshape(-1, 1)
-        ).reshape(single_city_data['od'].shape)
-        marginal_in_t = torch.FloatTensor(od_full_s.sum(0)).to(device)
-        marginal_out_t = torch.FloatTensor(od_full_s.sum(1)).to(device)
+        train_fit_mask = single_city_data.get('train_fit_mask', single_city_data['train_mask'])
+        val_fit_mask = single_city_data.get('val_fit_mask', single_city_data['val_mask'])
+        od_train_s = _transform_masked_matrix(single_city_data['od'], od_scaler, train_fit_mask)
+        od_val_s = _transform_masked_matrix(single_city_data['od'], od_scaler, val_fit_mask)
+        marginal_in_t = torch.FloatTensor(od_train_s.sum(0)).to(device)
+        marginal_out_t = torch.FloatTensor(od_train_s.sum(1)).to(device)
+        marginal_in_val_t = torch.FloatTensor(od_val_s.sum(0)).to(device)
+        marginal_out_val_t = torch.FloatTensor(od_val_s.sum(1)).to(device)
     else:
         marginal_in_t = None
         marginal_out_t = None
+        marginal_in_val_t = None
+        marginal_out_val_t = None
 
     train_data_gpu = []
     if single_city_data is not None:
@@ -241,7 +245,7 @@ def train(train_areas, val_areas, data_path,
         adj = single_city_data['adj']
         dis = single_city_data['dis']
         od_train = single_city_data['od_train']
-        train_mask = single_city_data['train_mask']
+        train_mask = single_city_data.get('train_fit_mask', single_city_data['train_mask'])
         nf_s = nfeat_scaler.transform(nf)
         od_s = _transform_masked_matrix(single_city_data['od'], od_scaler, train_mask)
         train_data_gpu.append((
@@ -269,7 +273,7 @@ def train(train_areas, val_areas, data_path,
         adj = single_city_data['adj']
         dis = single_city_data['dis']
         od_val = single_city_data['od_val']
-        val_mask = single_city_data['val_mask']
+        val_mask = single_city_data.get('val_fit_mask', single_city_data['val_mask'])
         nf_s = nfeat_scaler.transform(nf)
         od_s = _transform_masked_matrix(single_city_data['od'], od_scaler, val_mask)
         val_data_gpu.append((
@@ -319,8 +323,8 @@ def train(train_areas, val_areas, data_path,
             vls = []
             for nf_t, g, od_t, od_mask_t, *_ in val_data_gpu:
                 flow_in, flow_out, flow, _, _ = gmel(g, nf_t)
-                m_in = marginal_in_t if marginal_in_t is not None else od_t.sum(0)
-                m_out = marginal_out_t if marginal_out_t is not None else od_t.sum(1)
+                m_in = marginal_in_val_t if marginal_in_val_t is not None else od_t.sum(0)
+                m_out = marginal_out_val_t if marginal_out_val_t is not None else od_t.sum(1)
                 vl = (_marginal_mse(flow_in, m_in) +
                       _marginal_mse(flow_out, m_out) +
                       _masked_mse(flow, od_t, od_mask_t)).item()

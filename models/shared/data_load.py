@@ -2,7 +2,7 @@
 
 All models should use these functions for consistent data splits.
 Supports two evaluation modes:
-- Single city: one city, nonzero OD pairs split 80/10/10
+- Single city: one city with configurable pair split mode
 - Multi city: configured city set split into fixed train/val/test groups
 """
 import os
@@ -11,7 +11,12 @@ from pathlib import Path
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
 
-from models.GPS.config import MULTI_CITY_IDS, SINGLE_CITY_ID, split_configured_multi_city_ids
+from models.GPS.config import (
+    MULTI_CITY_IDS,
+    SINGLE_CITY_ID,
+    normalize_pair_split_mode,
+    split_configured_multi_city_ids,
+)
 from models.GPS.features import build_feature_matrix
 
 
@@ -93,51 +98,87 @@ def construct_flat_features(areas, data_path=None, feature_mode="full"):
 
 # ─── Single-city split (matches GPS prepare_single_city_data) ───────────────
 
-def _make_single_city_masks(od_matrix, seed=42):
-    """Create train/val/test masks on nonzero OD pairs (80/10/10 split).
-
-    Uses the same seed and logic as models.GPS.data_load.prepare_single_city_data
-    so that all models evaluate on identical splits.
-    """
-    num_nodes = od_matrix.shape[0]
-    np.random.seed(seed)
-    nzo, nzd = np.where(od_matrix > 0)
-    np_ = len(nzo)
-    perm = np.random.permutation(np_)
-    nt = int(np_ * 0.8)
-    nv = int(np_ * 0.9)
-
-    train_mask = np.zeros((num_nodes, num_nodes), bool)
-    val_mask = np.zeros((num_nodes, num_nodes), bool)
-    test_mask = np.zeros((num_nodes, num_nodes), bool)
-    train_mask[nzo[perm[:nt]], nzd[perm[:nt]]] = True
-    val_mask[nzo[perm[nt:nv]], nzd[perm[nt:nv]]] = True
-    test_mask[nzo[perm[nv:]], nzd[perm[nv:]]] = True
-
+def _split_mask_from_pairs(num_nodes, row_idx, col_idx, perm):
+    train_mask = np.zeros((num_nodes, num_nodes), dtype=bool)
+    val_mask = np.zeros((num_nodes, num_nodes), dtype=bool)
+    test_mask = np.zeros((num_nodes, num_nodes), dtype=bool)
+    n_pairs = len(row_idx)
+    n_train = int(n_pairs * 0.8)
+    n_val = int(n_pairs * 0.9)
+    train_sel = perm[:n_train]
+    val_sel = perm[n_train:n_val]
+    test_sel = perm[n_val:]
+    train_mask[row_idx[train_sel], col_idx[train_sel]] = True
+    val_mask[row_idx[val_sel], col_idx[val_sel]] = True
+    test_mask[row_idx[test_sel], col_idx[test_sel]] = True
     return train_mask, val_mask, test_mask
 
 
-def _make_single_city_full_masks(od_matrix, train_mask, val_mask, test_mask, seed=42):
-    """Build matching split masks over all OD pairs, including true zeros."""
+def build_single_city_pair_masks(od_matrix, seed=42, pair_split_mode='nonzero_pairs'):
+    """Create single-city train/val/test masks for both pair-split regimes."""
+    pair_split_mode = normalize_pair_split_mode(pair_split_mode)
     num_nodes = od_matrix.shape[0]
-    rng = np.random.default_rng(seed + 1)
-    zo, zd = np.where(od_matrix == 0)
-    perm = rng.permutation(len(zo))
-    nt = int(len(zo) * 0.8)
-    nv = int(len(zo) * 0.9)
+    positive_mask = np.asarray(od_matrix > 0, dtype=bool)
 
-    train_full_mask = train_mask.copy()
-    val_full_mask = val_mask.copy()
-    test_full_mask = test_mask.copy()
-    train_full_mask[zo[perm[:nt]], zd[perm[:nt]]] = True
-    val_full_mask[zo[perm[nt:nv]], zd[perm[nt:nv]]] = True
-    test_full_mask[zo[perm[nv:]], zd[perm[nv:]]] = True
+    if pair_split_mode == 'all_pairs':
+        all_rows, all_cols = np.indices((num_nodes, num_nodes))
+        all_rows = all_rows.reshape(-1)
+        all_cols = all_cols.reshape(-1)
+        perm = np.random.RandomState(seed).permutation(all_rows.shape[0])
+        train_full_mask, val_full_mask, test_full_mask = _split_mask_from_pairs(
+            num_nodes, all_rows, all_cols, perm,
+        )
+        train_mask = train_full_mask & positive_mask
+        val_mask = val_full_mask & positive_mask
+        test_mask = test_full_mask & positive_mask
+    else:
+        nzo, nzd = np.where(positive_mask)
+        perm = np.random.RandomState(seed).permutation(len(nzo))
+        train_mask, val_mask, test_mask = _split_mask_from_pairs(
+            num_nodes, nzo, nzd, perm,
+        )
 
-    assert train_full_mask.shape == (num_nodes, num_nodes)
-    return train_full_mask, val_full_mask, test_full_mask
+        zo, zd = np.where(~positive_mask)
+        zero_perm = np.random.default_rng(seed + 1).permutation(len(zo))
+        z_train, z_val, z_test = _split_mask_from_pairs(
+            num_nodes, zo, zd, zero_perm,
+        )
+        train_full_mask = train_mask | z_train
+        val_full_mask = val_mask | z_val
+        test_full_mask = test_mask | z_test
+
+    train_fit_mask = train_full_mask if pair_split_mode == 'all_pairs' else train_mask
+    val_fit_mask = val_full_mask if pair_split_mode == 'all_pairs' else val_mask
+    test_fit_mask = test_full_mask if pair_split_mode == 'all_pairs' else test_mask
+
+    return {
+        'pair_split_mode': pair_split_mode,
+        'train_mask': train_mask,
+        'val_mask': val_mask,
+        'test_mask': test_mask,
+        'train_full_mask': train_full_mask,
+        'val_full_mask': val_full_mask,
+        'test_full_mask': test_full_mask,
+        'train_fit_mask': train_fit_mask,
+        'val_fit_mask': val_fit_mask,
+        'test_fit_mask': test_fit_mask,
+    }
 
 
-def prepare_single_city_flat(area_id=None, data_path=None, seed=42, feature_mode="full"):
+def _make_single_city_masks(od_matrix, seed=42, pair_split_mode='nonzero_pairs'):
+    masks = build_single_city_pair_masks(od_matrix, seed=seed, pair_split_mode=pair_split_mode)
+    return masks['train_mask'], masks['val_mask'], masks['test_mask']
+
+
+def _make_single_city_full_masks(od_matrix, train_mask, val_mask, test_mask, seed=42,
+                                 pair_split_mode='nonzero_pairs'):
+    del train_mask, val_mask, test_mask
+    masks = build_single_city_pair_masks(od_matrix, seed=seed, pair_split_mode=pair_split_mode)
+    return masks['train_full_mask'], masks['val_full_mask'], masks['test_full_mask']
+
+
+def prepare_single_city_flat(area_id=None, data_path=None, seed=42, feature_mode="full",
+                             pair_split_mode='nonzero_pairs'):
     """Prepare flat features for a single city with proper train/val/test split.
 
     Returns:
@@ -146,17 +187,23 @@ def prepare_single_city_flat(area_id=None, data_path=None, seed=42, feature_mode
         xs_val_full, ys_val_full: full-matrix view for full-matrix monitoring
         xs_test, ys_test: list of test arrays (per-area format, single element)
         od_matrix: full OD matrix
-        train_mask, val_mask, test_mask: boolean masks
+        train_mask, val_mask, test_mask: boolean nonzero-pair masks
     """
     if area_id is None:
         area_id = SINGLE_CITY_ID
 
     raw = load_area_raw(area_id, data_path)
     od = raw["od"]
-    train_mask, val_mask, test_mask = _make_single_city_masks(od, seed)
-    train_full_mask, val_full_mask, test_full_mask = _make_single_city_full_masks(
-        od, train_mask, val_mask, test_mask, seed
-    )
+    masks = build_single_city_pair_masks(od, seed=seed, pair_split_mode=pair_split_mode)
+    train_mask = masks['train_mask']
+    val_mask = masks['val_mask']
+    test_mask = masks['test_mask']
+    train_full_mask = masks['train_full_mask']
+    val_full_mask = masks['val_full_mask']
+    test_full_mask = masks['test_full_mask']
+    train_fit_mask = masks['train_fit_mask']
+    val_fit_mask = masks['val_fit_mask']
+    test_fit_mask = masks['test_fit_mask']
 
     feat = _select_node_features(raw, feature_mode)
     dis = raw["dis"].astype(np.float32)
@@ -167,7 +214,7 @@ def prepare_single_city_flat(area_id=None, data_path=None, seed=42, feature_mode
     x_full = np.concatenate([feat_o, feat_d, dis.reshape(n, n, 1)], axis=2).reshape(-1, feat.shape[1] * 2 + 1)
     y_full = od.reshape(-1).astype(np.float32)
 
-    train_flat = train_mask.reshape(-1)
+    train_flat = train_fit_mask.reshape(-1)
     val_flat = val_mask.reshape(-1)
     test_flat = test_mask.reshape(-1)
 
@@ -191,22 +238,33 @@ def prepare_single_city_flat(area_id=None, data_path=None, seed=42, feature_mode
         'train_full_mask': train_full_mask,
         'val_full_mask': val_full_mask,
         'test_full_mask': test_full_mask,
+        'train_fit_mask': train_fit_mask,
+        'val_fit_mask': val_fit_mask,
+        'test_fit_mask': test_fit_mask,
+        'pair_split_mode': normalize_pair_split_mode(pair_split_mode),
         'n_nodes': n,
         'area_id': area_id,
     }
 
 
-def prepare_single_city_graph(area_id=None, data_path=None, seed=42, feature_mode="full"):
-    """Prepare raw graph inputs for a single city with 80/10/10 pair masks."""
+def prepare_single_city_graph(area_id=None, data_path=None, seed=42, feature_mode="full",
+                              pair_split_mode='nonzero_pairs'):
+    """Prepare raw graph inputs for a single city with configurable pair masks."""
     if area_id is None:
         area_id = SINGLE_CITY_ID
 
     raw = load_area_raw(area_id, data_path)
     od = raw["od"].astype(np.float32)
-    train_mask, val_mask, test_mask = _make_single_city_masks(od, seed)
-    train_full_mask, val_full_mask, test_full_mask = _make_single_city_full_masks(
-        od, train_mask, val_mask, test_mask, seed
-    )
+    masks = build_single_city_pair_masks(od, seed=seed, pair_split_mode=pair_split_mode)
+    train_mask = masks['train_mask']
+    val_mask = masks['val_mask']
+    test_mask = masks['test_mask']
+    train_full_mask = masks['train_full_mask']
+    val_full_mask = masks['val_full_mask']
+    test_full_mask = masks['test_full_mask']
+    train_fit_mask = masks['train_fit_mask']
+    val_fit_mask = masks['val_fit_mask']
+    test_fit_mask = masks['test_fit_mask']
 
     return {
         'area_id': area_id,
@@ -214,15 +272,19 @@ def prepare_single_city_graph(area_id=None, data_path=None, seed=42, feature_mod
         'adj': raw["adj"],
         'dis': raw["dis"].astype(np.float32),
         'od': od,
-        'od_train': (od * train_mask).astype(np.float32),
-        'od_val': (od * val_mask).astype(np.float32),
-        'od_test': (od * test_mask).astype(np.float32),
+        'od_train': (od * train_fit_mask).astype(np.float32),
+        'od_val': (od * val_fit_mask).astype(np.float32),
+        'od_test': (od * test_fit_mask).astype(np.float32),
         'train_mask': train_mask,
         'val_mask': val_mask,
         'test_mask': test_mask,
         'train_full_mask': train_full_mask,
         'val_full_mask': val_full_mask,
         'test_full_mask': test_full_mask,
+        'train_fit_mask': train_fit_mask,
+        'val_fit_mask': val_fit_mask,
+        'test_fit_mask': test_fit_mask,
+        'pair_split_mode': normalize_pair_split_mode(pair_split_mode),
     }
 
 

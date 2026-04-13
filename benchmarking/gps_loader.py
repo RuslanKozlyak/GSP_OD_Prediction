@@ -23,24 +23,26 @@ class GPSBenchmarkLoader:
         self._single_city_cache = {}
         self._multi_city_cache = {}
 
-    def get_single_city_data(self, pe_type="rwpe", area_id=None):
+    def get_single_city_data(self, pe_type="rwpe", area_id=None, pair_split_mode='nonzero_pairs'):
         area_id = area_id or self.single_city_id
-        key = (area_id, pe_type)
+        key = (area_id, pe_type, pair_split_mode)
         if key not in self._single_city_cache:
             self._single_city_cache[key] = prepare_single_city_data(
                 area_id=area_id,
                 pe_type=pe_type,
+                pair_split_mode=pair_split_mode,
                 data_path=str(self.data_path),
             )
         return self._single_city_cache[key]
 
-    def get_multi_city_data(self, pe_type="rwpe", city_ids=None):
+    def get_multi_city_data(self, pe_type="rwpe", city_ids=None, pair_split_mode='nonzero_pairs'):
         city_ids = tuple(city_ids or self.multi_city_ids)
-        key = (city_ids, pe_type)
+        key = (city_ids, pe_type, pair_split_mode)
         if key not in self._multi_city_cache:
             self._multi_city_cache[key] = prepare_multi_city_data(
                 city_ids=list(city_ids),
                 pe_type=pe_type,
+                pair_split_mode=pair_split_mode,
                 data_path=str(self.data_path),
             )
         return self._multi_city_cache[key]
@@ -61,8 +63,12 @@ class GPSBenchmarkLoader:
             print(f"  [SKIP] {run_id}: no saved config JSON and no config passed.")
             return None
 
-        if city_data is None:
-            city_data = self.get_single_city_data(pe_type=effective_cfg.pe_type, area_id=area_id)
+        if city_data is None or city_data.get('pair_split_mode') != getattr(effective_cfg, 'pair_split_mode', 'nonzero_pairs'):
+            city_data = self.get_single_city_data(
+                pe_type=effective_cfg.pe_type,
+                area_id=area_id,
+                pair_split_mode=getattr(effective_cfg, 'pair_split_mode', 'nonzero_pairs'),
+            )
 
         if verbose:
             print(f"  Loading {run_id} (pe_type={effective_cfg.pe_type}) ...")
@@ -105,18 +111,27 @@ class GPSBenchmarkLoader:
     def load_lgbm_results(self, run_id, city_data=None, area_id=None, pe_type=_PE_TYPE_UNSET, inference_seed=None):
         from models.GPS.config import load_model_config
 
-        if city_data is None:
-            donor_id = None
-            meta_path = WEIGHTS_DIR / f"{run_id}_meta.json"
-            if meta_path.exists():
-                donor_id = json.loads(meta_path.read_text()).get("donor_id")
-            if donor_id is None and run_id.endswith("_lgbm"):
-                donor_id = run_id[:-5]
-            donor_cfg = load_model_config(donor_id) if donor_id else None
+        donor_id = None
+        meta_path = WEIGHTS_DIR / f"{run_id}_meta.json"
+        if meta_path.exists():
+            donor_id = json.loads(meta_path.read_text()).get("donor_id")
+        if donor_id is None and run_id.endswith("_lgbm"):
+            donor_id = run_id[:-5]
+        donor_cfg = load_model_config(donor_id) if donor_id else None
+        donor_pair_split_mode = (
+            getattr(donor_cfg, 'pair_split_mode', 'nonzero_pairs')
+            if donor_cfg is not None else
+            'nonzero_pairs'
+        )
+        if city_data is None or city_data.get('pair_split_mode') != donor_pair_split_mode:
             effective_pe_type = pe_type if pe_type is not _PE_TYPE_UNSET else (
                 donor_cfg.pe_type if donor_cfg is not None else "rwpe"
             )
-            city_data = self.get_single_city_data(pe_type=effective_pe_type, area_id=area_id)
+            city_data = self.get_single_city_data(
+                pe_type=effective_pe_type,
+                area_id=area_id,
+                pair_split_mode=donor_pair_split_mode,
+            )
         if inference_seed is not None:
             set_global_seed(inference_seed)
         payload = load_saved_lgbm_results(run_id, city_data, return_payload=True)
@@ -155,9 +170,11 @@ class GPSBenchmarkLoader:
         valid_fields = {f.name for f in __import__('dataclasses').fields(TrainingConfig)}
         cfg = TrainingConfig(**{k: v for k, v in raw.items() if k in valid_fields})
 
-        if city_data is None:
+        if city_data is None or city_data.get('pair_split_mode') != getattr(cfg, 'pair_split_mode', 'nonzero_pairs'):
             city_data = self.get_single_city_data(
-                pe_type=cfg.pe_type, area_id=area_id
+                pe_type=cfg.pe_type,
+                area_id=area_id,
+                pair_split_mode=getattr(cfg, 'pair_split_mode', 'nonzero_pairs'),
             )
 
         print(f"  Loading {run_id} (pe_type={cfg.pe_type}) ...")
@@ -215,7 +232,9 @@ class GPSBenchmarkLoader:
             print(f"  [SKIP] {run_id}: config JSON not found.")
             return []
         city_data_dict, train_city_ids, val_city_ids, test_city_ids = self.get_multi_city_data(
-            pe_type=saved_cfg.pe_type, city_ids=city_ids,
+            pe_type=saved_cfg.pe_type,
+            city_ids=city_ids,
+            pair_split_mode=getattr(saved_cfg, 'pair_split_mode', 'nonzero_pairs'),
         )
         test_city_ids = list(test_city_ids)
         train_city_id_set = set(train_city_ids)
@@ -238,6 +257,10 @@ class GPSBenchmarkLoader:
             )
             if city_metric:
                 city_metric = dict(city_metric)
+                if city_id not in test_city_id_set:
+                    for key in list(city_metric.keys()):
+                        if '_test_' in key:
+                            city_metric[key] = float('nan')
                 city_metric["city_id"] = city_id
                 city_metric["is_train_city"] = city_id in train_city_id_set
                 city_metric["is_val_city"] = city_id in val_city_id_set

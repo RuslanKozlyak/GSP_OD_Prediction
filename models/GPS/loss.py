@@ -19,20 +19,33 @@ def regression_prediction_from_scores(sc, config, pm, use_log_flow, use_log_norm
         return F.softmax(sc, dim=0)
     if getattr(config, 'decoder_type', None) == 'gravity_guided':
         return F.softplus(sc) if use_log_flow else torch.exp(torch.clamp(sc, max=20.0))
-    return F.relu(sc)
+    # Smooth non-negative mapping avoids dead ReLU zones that can freeze
+    # raw-flow GAN generators at an all-zero OD matrix.
+    return F.softplus(sc)
 
 
-def sample_destinations(oi, nzd, nn, use_sampling=True, n_dest=128, inc_zeros=True, zr=0.3):
+def sample_destinations(oi, nzd, nn, use_sampling=True, n_dest=128, inc_zeros=True, zr=0.3,
+                        eligible_destinations=None):
+    if eligible_destinations is None:
+        eligible = np.arange(nn, dtype=int)
+    else:
+        eligible = np.asarray(eligible_destinations, dtype=int)
+        if eligible.size == 0:
+            return np.array([], dtype=int)
     nz = nzd.get(oi, np.array([], dtype=int))
+    if eligible_destinations is not None and nz.size:
+        nz = np.intersect1d(nz, eligible, assume_unique=False)
     if not use_sampling:
-        return np.arange(nn)
+        if inc_zeros:
+            return eligible
+        return nz
     if not inc_zeros:
-        av = nz if len(nz) > 0 else np.arange(nn)
+        av = nz
         return av if len(av) <= n_dest else np.random.choice(av, n_dest, replace=False)
     nzn = max(1, int(n_dest * zr))
     nnz = n_dest - nzn
     snz = nz if len(nz) <= nnz else np.random.choice(nz, nnz, replace=False)
-    zd = np.setdiff1d(np.arange(nn), nz)
+    zd = np.setdiff1d(eligible, nz)
     sz = np.random.choice(zd, min(nzn, len(zd)), replace=False) if len(zd) > 0 else np.array([], dtype=int)
     return np.concatenate([snz, sz]).astype(int)
 
@@ -48,14 +61,27 @@ def compute_loss_for_city(model, cd, config, origin_batch_indices=None, node_emb
     of = cd['outflow_train']
     inf_ = cd['inflow_train']
     nzd = cd['nonzero_dest_dict']
-    ao = list(nzd.keys()) if origin_batch_indices is None else origin_batch_indices
+    active_fit_mask = cd.get('active_fit_mask')
+    if origin_batch_indices is None:
+        if active_fit_mask is not None:
+            ao = np.where(np.asarray(active_fit_mask, dtype=bool).any(1))[0].tolist()
+        else:
+            ao = list(nzd.keys())
+    else:
+        ao = origin_batch_indices
     tl = torch.tensor(0.0, requires_grad=True, device=device)
     np_ = 0
 
     for oi in ao:
+        eligible_destinations = (
+            np.flatnonzero(active_fit_mask[oi])
+            if active_fit_mask is not None else
+            None
+        )
         di = sample_destinations(
             oi, nzd, nn_, config.use_dest_sampling,
-            config.n_dest_sample, config.include_zero_pairs, config.zero_pair_ratio
+            config.n_dest_sample, config.include_zero_pairs, config.zero_pair_ratio,
+            eligible_destinations=eligible_destinations,
         )
         if len(di) == 0:
             continue

@@ -60,7 +60,7 @@ def _predict_full_matrix_legacy(model, cd, config, dbs=DEST_BATCH_SIZE):
                 if is_gravity:
                     row = _softplus_np(row) if use_log_flow else np.exp(np.clip(row, -60.0, 20.0))
                 else:
-                    row = np.maximum(row, 0)
+                    row = _softplus_np(row)
             if use_log_flow and pm != 'normalized':
                 row = np.expm1(np.maximum(row, 0))
             pred[oi] = row
@@ -103,7 +103,7 @@ def _predict_single_full_matrix(model, cd, config, dbs=DEST_BATCH_SIZE, force_no
                     if is_gravity:
                         row = _softplus_np(row) if use_log_flow else np.exp(np.clip(row, -60.0, 20.0))
                     else:
-                        row = np.maximum(row, 0)
+                        row = _softplus_np(row)
                 if use_log_flow and pm != 'normalized':
                     row = np.expm1(np.maximum(row, 0))
                 pred[oi] = row
@@ -150,14 +150,11 @@ def summarize_prediction_metrics(pred, cd, is_test_city=True):
     else:
         nonzero_metrics = {'CPC': 0.0, 'MAE': 0.0, 'RMSE': 0.0}
 
-    is_multi = cd.get('split_scope') == 'multi_city'
-    test_mask = None if is_multi else cd.get('test_mask')
-    test_full_mask = None if is_multi else cd.get('test_full_mask')
     combined_metrics = canonical_od_metrics(
         pred,
         od,
-        test_mask=test_mask,
-        test_full_mask=test_full_mask,
+        test_mask=cd.get('test_mask'),
+        test_full_mask=cd.get('test_full_mask'),
         train_mask=cd.get('train_mask'),
         val_mask=cd.get('val_mask'),
         train_full_mask=cd.get('train_full_mask'),

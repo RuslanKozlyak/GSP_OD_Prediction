@@ -13,6 +13,7 @@ from .config import (
     N_DEST_SAMPLE, device, split_configured_multi_city_ids,
 )
 from .features import build_feature_matrix
+from models.shared.data_load import build_single_city_pair_masks
 
 
 def precompute_coords(data_path=DATA_PATH, shp_path=SHP_PATH):
@@ -123,7 +124,7 @@ def build_huber_weight_table(od, fm, bw=HUBER_KDE_BW, mp=HUBER_MIN_PROB):
         return None, None
     kde = gaussian_kde(fl, bw_method=bw / (fl.std() + 1e-8))
     fg = np.linspace(0, fl.max() * 1.05, 2000)
-    return fg, 1.0 / np.maximum(kde(np.sqrt(np.maximum(fg, 0))), mp)
+    return fg, 1.0 / np.maximum(kde(fg), mp)
 
 
 def interpolate_huber_weights(fv, fg, wt):
@@ -143,7 +144,8 @@ def build_dest_dict(od):
 
 # ─── Single-city data preparation ────────────────────────────────────────────
 
-def prepare_single_city_data(area_id=None, pe_type='rwpe', data_path=DATA_PATH, seed=42):
+def prepare_single_city_data(area_id=None, pe_type='rwpe', data_path=DATA_PATH, seed=42,
+                             pair_split_mode='nonzero_pairs'):
     from .config import SINGLE_CITY_ID
     if area_id is None:
         area_id = SINGLE_CITY_ID
@@ -166,40 +168,33 @@ def prepare_single_city_data(area_id=None, pe_type='rwpe', data_path=DATA_PATH, 
     node_features_raw, adjacency, distances, od_matrix_raw, coords = data
     num_nodes = node_features_raw.shape[0]
 
-    np.random.seed(seed)
-    nzo, nzd_ = np.where(od_matrix_raw > 0)
-    np_ = len(nzo)
-    perm = np.random.permutation(np_)
-    nt = int(np_ * 0.8)
-    nv = int(np_ * 0.9)
+    masks = build_single_city_pair_masks(
+        od_matrix_raw, seed=seed, pair_split_mode=pair_split_mode,
+    )
+    train_mask = masks['train_mask']
+    val_mask = masks['val_mask']
+    test_mask = masks['test_mask']
+    train_full_mask = masks['train_full_mask']
+    val_full_mask = masks['val_full_mask']
+    test_full_mask = masks['test_full_mask']
+    train_fit_mask = masks['train_fit_mask']
+    val_fit_mask = masks['val_fit_mask']
+    test_fit_mask = masks['test_fit_mask']
 
-    train_mask = np.zeros((num_nodes, num_nodes), bool)
-    val_mask = np.zeros((num_nodes, num_nodes), bool)
-    test_mask = np.zeros((num_nodes, num_nodes), bool)
-    train_mask[nzo[perm[:nt]], nzd_[perm[:nt]]] = True
-    val_mask[nzo[perm[nt:nv]], nzd_[perm[nt:nv]]] = True
-    test_mask[nzo[perm[nv:]], nzd_[perm[nv:]]] = True
-
-    zo, zd = np.where(od_matrix_raw == 0)
-    zero_rng = np.random.default_rng(seed + 1)
-    zp = zero_rng.permutation(len(zo))
-    zt = int(len(zo) * 0.8)
-    zv = int(len(zo) * 0.9)
-    train_full_mask = train_mask.copy()
-    val_full_mask = val_mask.copy()
-    test_full_mask = test_mask.copy()
-    train_full_mask[zo[zp[:zt]], zd[zp[:zt]]] = True
-    val_full_mask[zo[zp[zt:zv]], zd[zp[zt:zv]]] = True
-    test_full_mask[zo[zp[zv:]], zd[zp[zv:]]] = True
-
-    toi = np.where(train_mask.any(1))[0]
+    toi = np.where(train_fit_mask.any(1))[0]
+    if toi.size == 0:
+        toi = np.arange(num_nodes)
     node_features_scaled = MinMaxScaler().fit(node_features_raw[toi]).transform(node_features_raw)
-    distances_scaled = MinMaxScaler().fit(distances[train_mask].reshape(-1, 1)).transform(
+    dist_fit = distances[train_fit_mask].reshape(-1, 1)
+    if dist_fit.size == 0:
+        dist_fit = distances.reshape(-1, 1)
+    distances_scaled = MinMaxScaler().fit(dist_fit).transform(
         distances.reshape(-1, 1)
     ).reshape(num_nodes, num_nodes)
 
-    od_train = od_matrix_raw * train_mask
-    od_val = od_matrix_raw * val_mask
+    od_train = od_matrix_raw * train_fit_mask
+    od_val = od_matrix_raw * val_fit_mask
+    od_test = od_matrix_raw * test_fit_mask
     outflow_full = od_matrix_raw.sum(1)
     inflow_full = od_matrix_raw.sum(0)
     outflow_train = od_train.sum(1)
@@ -208,7 +203,7 @@ def prepare_single_city_data(area_id=None, pe_type='rwpe', data_path=DATA_PATH, 
     inflow_val = od_val.sum(0)
     train_dest_dict = build_dest_dict(od_train)
     val_dest_dict = build_dest_dict(od_val)
-    huber_flow_grid, huber_weight_table = build_huber_weight_table(od_matrix_raw, train_mask)
+    huber_flow_grid, huber_weight_table = build_huber_weight_table(od_matrix_raw, train_fit_mask)
 
     gd = build_graph(adjacency, node_features_scaled, distances_scaled, device, pe_type=pe_type)
     dt = torch.FloatTensor(distances_scaled).to(device)
@@ -218,6 +213,7 @@ def prepare_single_city_data(area_id=None, pe_type='rwpe', data_path=DATA_PATH, 
     return {
         'city_id': area_id, 'graph_data': gd, 'distance_matrix': dt,
         'od_matrix_np': od_matrix_raw, 'od_matrix_train': od_train,
+        'od_matrix_val': od_val, 'od_matrix_test': od_test,
         'outflow_full': outflow_full, 'inflow_full': inflow_full,
         'outflow_train': outflow_train, 'inflow_train': inflow_train,
         'outflow_val': outflow_val, 'inflow_val': inflow_val,
@@ -227,6 +223,14 @@ def prepare_single_city_data(area_id=None, pe_type='rwpe', data_path=DATA_PATH, 
         'train_full_mask': train_full_mask,
         'val_full_mask': val_full_mask,
         'test_full_mask': test_full_mask,
+        'train_fit_mask': train_fit_mask,
+        'val_fit_mask': val_fit_mask,
+        'test_fit_mask': test_fit_mask,
+        'active_fit_mask': train_fit_mask,
+        'active_origin_indices': np.where(train_fit_mask.any(1))[0],
+        'val_origin_indices': np.where(val_fit_mask.any(1))[0],
+        'test_origin_indices': np.where(test_fit_mask.any(1))[0],
+        'pair_split_mode': masks['pair_split_mode'],
         'split_scope': 'single_city',
         'val_dest_dict': val_dest_dict,
         'node_features_scaled': node_features_scaled, 'distances_scaled': distances_scaled,
@@ -286,7 +290,8 @@ def split_multi_city(multi_city_raw, seed=42, val_size=2, test_size=2):
         return mc_city_ids, train_city_ids, val_city_ids, test_city_ids
 
 
-def prepare_city_data(cid, raw, pe_type='rwpe', data_path=DATA_PATH):
+def prepare_city_data(cid, raw, pe_type='rwpe', data_path=DATA_PATH, seed=42,
+                      pair_split_mode='nonzero_pairs'):
     # Auto-generate coords.npy from shapefile if missing
     cp = os.path.join(data_path, cid, "coords.npy")
     if not os.path.exists(cp):
@@ -307,35 +312,69 @@ def prepare_city_data(cid, raw, pe_type='rwpe', data_path=DATA_PATH):
     nn_ = nfs.shape[0]
     g = build_graph(raw['adj'], nfs, ds, device, pe_type)
     dt = torch.FloatTensor(ds).to(device)
-    nzd = build_dest_dict(od)
-    hfg, hwt = build_huber_weight_table(od, od > 0)
+    masks = build_single_city_pair_masks(od, seed=seed, pair_split_mode=pair_split_mode)
+    train_mask = masks['train_mask']
+    val_mask = masks['val_mask']
+    test_mask = masks['test_mask']
+    train_full_mask = masks['train_full_mask']
+    val_full_mask = masks['val_full_mask']
+    test_full_mask = masks['test_full_mask']
+    train_fit_mask = masks['train_fit_mask']
+    val_fit_mask = masks['val_fit_mask']
+    test_fit_mask = masks['test_fit_mask']
+    od_train = od * train_fit_mask
+    od_val = od * val_fit_mask
+    od_test = od * test_fit_mask
+    nzd = build_dest_dict(od_train)
+    vdd = build_dest_dict(od_val)
+    hfg, hwt = build_huber_weight_table(od, train_fit_mask)
     cnd = max(8, min(int(np.mean([len(v) for v in nzd.values()])), 128)) if nzd else N_DEST_SAMPLE
     coords = raw.get('coords')
     coords_tensor = torch.FloatTensor(coords).to(device) if coords is not None else None
     return {
         'city_id': cid, 'graph_data': g, 'distance_matrix': dt,
-        'od_matrix_np': od, 'od_matrix_train': od,
-        'outflow_full': od.sum(1), 'outflow_train': od.sum(1),
-        'inflow_train': od.sum(0), 'inflow_full': od.sum(0),
-        'outflow_val': od.sum(1), 'inflow_val': od.sum(0),
+        'od_matrix_np': od, 'od_matrix_train': od_train,
+        'od_matrix_val': od_val, 'od_matrix_test': od_test,
+        'outflow_full': od.sum(1), 'outflow_train': od_train.sum(1),
+        'inflow_train': od_train.sum(0), 'inflow_full': od.sum(0),
+        'outflow_val': od_val.sum(1), 'inflow_val': od_val.sum(0),
         'num_nodes': nn_, 'nonzero_dest_dict': nzd,
         'huber_flow_grid': hfg, 'huber_weight_table': hwt,
         'city_n_dest': cnd,
-        'train_mask': od > 0, 'val_mask': od > 0, 'test_mask': od > 0,
+        'train_mask': train_mask, 'val_mask': val_mask, 'test_mask': test_mask,
+        'train_full_mask': train_full_mask,
+        'val_full_mask': val_full_mask,
+        'test_full_mask': test_full_mask,
+        'train_fit_mask': train_fit_mask,
+        'val_fit_mask': val_fit_mask,
+        'test_fit_mask': test_fit_mask,
+        'active_fit_mask': train_fit_mask,
+        'active_origin_indices': np.where(train_fit_mask.any(1))[0],
+        'val_origin_indices': np.where(val_fit_mask.any(1))[0],
+        'test_origin_indices': np.where(test_fit_mask.any(1))[0],
+        'pair_split_mode': masks['pair_split_mode'],
         'split_scope': 'multi_city',
-        'val_dest_dict': nzd,
+        'val_dest_dict': vdd,
         'node_features_scaled': nfs, 'distances_scaled': ds,
         'coords': coords, 'coords_tensor': coords_tensor,
     }
 
 
-def prepare_multi_city_data(city_ids=None, pe_type='rwpe', data_path=DATA_PATH, seed=42):
+def prepare_multi_city_data(city_ids=None, pe_type='rwpe', data_path=DATA_PATH, seed=42,
+                            pair_split_mode='nonzero_pairs'):
     multi_city_raw = load_multi_city_raw(city_ids, data_path)
     mc_city_ids, train_city_ids, val_city_ids, test_city_ids = split_multi_city(multi_city_raw, seed)
 
     city_data_dict = {}
-    for cid in mc_city_ids:
-        city_data_dict[cid] = prepare_city_data(cid, multi_city_raw[cid], pe_type, data_path)
+    for idx, cid in enumerate(mc_city_ids):
+        city_data_dict[cid] = prepare_city_data(
+            cid,
+            multi_city_raw[cid],
+            pe_type,
+            data_path,
+            seed=seed + idx,
+            pair_split_mode=pair_split_mode,
+        )
         print(f"  {cid}: N={city_data_dict[cid]['num_nodes']}")
 
     return city_data_dict, train_city_ids, val_city_ids, test_city_ids

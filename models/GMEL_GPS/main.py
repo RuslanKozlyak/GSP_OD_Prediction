@@ -56,31 +56,15 @@ def _scale_masked_matrix(od_matrix, fit_mask, apply_mask):
     return scaled, scaler
 
 
-def _build_decoder_training_set(feat, od_matrix, train_mask, include_zero_pairs, zero_pair_ratio):
-    """Fit the tree decoder on train positives, optionally mixing in true zeros only."""
-    train_idx = np.flatnonzero(train_mask.reshape(-1))
+def _build_decoder_training_set(feat, od_matrix, train_fit_mask):
+    """Fit the tree decoder exactly on the configured train split."""
+    train_idx = np.flatnonzero(train_fit_mask.reshape(-1))
     y_flat = od_matrix.reshape(-1)
 
     if train_idx.size == 0:
         return feat, y_flat
 
-    if not include_zero_pairs:
-        return feat[train_idx], y_flat[train_idx]
-
-    zero_idx = np.flatnonzero(y_flat == 0)
-    if zero_idx.size == 0:
-        return feat[train_idx], y_flat[train_idx]
-
-    zero_ratio = float(np.clip(zero_pair_ratio, 0.0, 0.95))
-    n_zero = int(round(train_idx.size * zero_ratio / max(1e-8, 1.0 - zero_ratio)))
-    n_zero = min(n_zero, zero_idx.size)
-    if n_zero <= 0:
-        return feat[train_idx], y_flat[train_idx]
-
-    rng = np.random.default_rng(42)
-    sampled_zero_idx = rng.choice(zero_idx, size=n_zero, replace=False)
-    fit_idx = np.concatenate([train_idx, sampled_zero_idx])
-    return feat[fit_idx], y_flat[fit_idx]
+    return feat[train_idx], y_flat[train_idx]
 
 
 def _predict_bilinear_matrix(model, city_data, od_scaler):
@@ -170,19 +154,21 @@ def train(run_id, run_name, config, city_data):
     train_mask = city_data['train_mask']
     val_mask = city_data['val_mask']
     test_mask = city_data['test_mask']
+    train_fit_mask = city_data.get('train_fit_mask', train_mask)
+    val_fit_mask = city_data.get('val_fit_mask', val_mask)
     dis = city_data['distances_scaled']
 
-    od_train_scaled, od_scaler = _scale_masked_matrix(od_np, train_mask, train_mask)
-    od_val_scaled, _ = _scale_masked_matrix(od_np, train_mask, val_mask)
+    od_train_scaled, od_scaler = _scale_masked_matrix(od_np, train_fit_mask, train_fit_mask)
+    od_val_scaled, _ = _scale_masked_matrix(od_np, train_fit_mask, val_fit_mask)
     od_t = torch.FloatTensor(od_train_scaled).to(device)
     od_val_t = torch.FloatTensor(od_val_scaled).to(device)
-    train_mask_t = torch.BoolTensor(train_mask).to(device)
-    val_mask_t = torch.BoolTensor(val_mask).to(device)
+    train_mask_t = torch.BoolTensor(train_fit_mask).to(device)
+    val_mask_t = torch.BoolTensor(val_fit_mask).to(device)
 
-    # Full-matrix marginals — must come from the complete OD, not the masked version
-    od_full_scaled = od_scaler.transform(od_np.reshape(-1, 1)).reshape(od_np.shape)
-    marginal_in_t = torch.FloatTensor(od_full_scaled.sum(0)).to(device)
-    marginal_out_t = torch.FloatTensor(od_full_scaled.sum(1)).to(device)
+    marginal_in_t = torch.FloatTensor(od_train_scaled.sum(0)).to(device)
+    marginal_out_t = torch.FloatTensor(od_train_scaled.sum(1)).to(device)
+    marginal_in_val_t = torch.FloatTensor(od_val_scaled.sum(0)).to(device)
+    marginal_out_val_t = torch.FloatTensor(od_val_scaled.sum(1)).to(device)
 
     # ── Build model ──────────────────────────────────────────────────────────
     model = GMEL_GPS(
@@ -239,8 +225,8 @@ def train(run_id, run_name, config, city_data):
         model.eval()
         with torch.no_grad():
             vfi, vfo, vf, _, _ = model(gd)
-            val_loss = (_marginal_mse(vfi, marginal_in_t)
-                        + _marginal_mse(vfo, marginal_out_t)
+            val_loss = (_marginal_mse(vfi, marginal_in_val_t)
+                        + _marginal_mse(vfo, marginal_out_val_t)
                         + _masked_mse(vf, od_val_t, val_mask_t)).item()
             train_val_pred = od_scaler.inverse_transform(
                 vf.detach().cpu().numpy().reshape(-1, 1)
@@ -326,20 +312,18 @@ def train(run_id, run_name, config, city_data):
     X_fit, y_fit = _build_decoder_training_set(
         feat,
         od_np,
-        train_mask,
-        include_zero_pairs=config.include_zero_pairs,
-        zero_pair_ratio=config.zero_pair_ratio,
+        train_fit_mask,
     )
-    fit_label = 'train pairs + sampled zeros' if config.include_zero_pairs else 'train nonzero pairs'
+    fit_label = 'train full-pair split' if city_data.get('pair_split_mode') == 'all_pairs' else 'train nonzero-pair split'
     print(f'  GMEL_GPS: fitting {config.decoder_type.upper()} on '
           f'{X_fit.shape[0]:,} {fit_label} ...')
 
     if config.decoder_type == 'lgbm':
         import lightgbm as lgb
-        val_flat = (od_np * val_mask).reshape(-1)
-        val_nz = val_flat > 0
-        X_val_fit = feat[val_nz]
-        y_val_fit = val_flat[val_nz]
+        val_flat = od_np.reshape(-1)
+        val_fit_flat = val_fit_mask.reshape(-1)
+        X_val_fit = feat[val_fit_flat]
+        y_val_fit = val_flat[val_fit_flat]
         lgbm_params = {
             'objective': 'regression', 'metric': 'mae', 'learning_rate': 0.05,
             'num_leaves': config.lgbm_num_leaves, 'max_depth': 8,

@@ -107,7 +107,8 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
         for xb, yb in dl:
             xb, yb = xb.to(device), yb.to(device)
             optimizer.zero_grad()
-            loss = torch.mean((torch.log1p(net(xb).squeeze()) - yb) ** 2)
+            pred = net(xb).squeeze().clamp_min(0.0)
+            loss = torch.mean((torch.log1p(pred) - yb) ** 2)
             loss.backward()
             optimizer.step()
             ep_losses.append(loss.item())
@@ -115,7 +116,7 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
         net.eval()
         with torch.no_grad():
             if xv_all_t is not None:
-                yh_all = net(xv_all_t).squeeze()
+                yh_all = net(xv_all_t).squeeze().clamp_min(0.0)
                 vl = float(((torch.log1p(yh_all) - yv_log_all_t) ** 2).mean().item())
             else:
                 vl = np.inf

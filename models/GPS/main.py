@@ -107,10 +107,7 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         )
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5, min_lr=1e-5)
     use_supervised_monitoring = discriminator is None or config.gan_use_supervised_monitoring
-    # LR scheduling and early stopping are only active for pure supervised runs.
-    # GAN runs compute metrics for logging but must not have their training
-    # trajectory altered by a supervised signal.
-    use_training_control = discriminator is None
+    use_training_control = discriminator is None or config.gan_use_supervised_monitoring
 
     max_epochs = config.mc_epochs if is_multi else config.epochs
     history = {
@@ -138,23 +135,62 @@ def _train_loop(run_id, run_name, config, model, city_datas,
     # Split cities into train / val
     split_scope = 'multi_city' if is_multi else 'single_city'
 
+    def _make_split_view(cd, split_name):
+        view = dict(cd)
+        if split_name == 'val':
+            view['od_matrix_train'] = cd.get('od_matrix_val', cd['od_matrix_np'] * cd['val_mask'])
+            view['outflow_train'] = cd['outflow_val']
+            view['inflow_train'] = cd['inflow_val']
+            view['nonzero_dest_dict'] = cd.get('val_dest_dict', cd['nonzero_dest_dict'])
+            view['active_fit_mask'] = cd.get('val_fit_mask', cd.get('val_mask'))
+            view['active_origin_indices'] = cd.get(
+                'val_origin_indices',
+                np.where(np.asarray(view['active_fit_mask'], dtype=bool).any(1))[0],
+            )
+            return view
+        view['active_fit_mask'] = cd.get('train_fit_mask', cd.get('train_mask'))
+        view['active_origin_indices'] = cd.get(
+            'active_origin_indices',
+            np.where(np.asarray(view['active_fit_mask'], dtype=bool).any(1))[0],
+        )
+        return view
+
+    def _average_metric_dicts(metric_dicts):
+        if not metric_dicts:
+            return {}
+        keys = set().union(*(d.keys() for d in metric_dicts))
+        averaged = {}
+        for key in keys:
+            vals = []
+            for metrics in metric_dicts:
+                value = metrics.get(key, float('nan'))
+                try:
+                    value = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if not np.isnan(value):
+                    vals.append(value)
+            averaged[key] = float(np.mean(vals)) if vals else float('nan')
+        return averaged
+
     if is_multi:
         assert train_city_ids is not None and val_city_ids is not None
-        train_cds = {cid: city_datas[cid] for cid in train_city_ids if cid in city_datas}
-        val_cds = {cid: city_datas[cid] for cid in val_city_ids if cid in city_datas}
+        train_cds = {
+            cid: _make_split_view(city_datas[cid], 'train')
+            for cid in train_city_ids if cid in city_datas
+        }
+        val_cds = {
+            cid: _make_split_view(city_datas[cid], 'val')
+            for cid in val_city_ids if cid in city_datas
+        }
         if test_city_ids is None:
             seen = set(train_city_ids) | set(val_city_ids)
             test_city_ids = [cid for cid in city_datas if cid not in seen]
     else:
         cid = list(city_datas.keys())[0]
         cd = city_datas[cid]
-        train_cds = {cid: cd}
-        val_cd = dict(cd)
-        val_cd['od_matrix_train'] = cd['od_matrix_np'] * cd['val_mask']
-        val_cd['outflow_train'] = cd['outflow_val']
-        val_cd['inflow_train'] = cd['inflow_val']
-        val_cd['nonzero_dest_dict'] = cd['val_dest_dict']
-        val_cds = {cid: val_cd}
+        train_cds = {cid: _make_split_view(cd, 'train')}
+        val_cds = {cid: _make_split_view(cd, 'val')}
 
     def _train_val_metrics():
         if not is_multi:
@@ -169,15 +205,38 @@ def _train_loop(run_id, run_name, config, model, city_datas,
                 val_full_mask=full_cd.get('val_full_mask'),
             )
 
-        metrics = {}
-        for prefix, eval_cds in (('train', train_cds), ('val', val_cds)):
-            pred_matrices = []
-            od_matrices = []
-            for ecd in eval_cds.values():
-                pred = predict_full_matrix(model, ecd, config, DEST_BATCH_SIZE)
-                pred_matrices.append(pred)
-                od_matrices.append(ecd['od_matrix_np'])
-            metrics.update(average_matrix_split_metrics(pred_matrices, od_matrices, prefix))
+        metrics = dict(_NAN_TRAIN_VAL)
+        train_group_metrics = []
+        for cid in train_cds:
+            full_cd = city_datas[cid]
+            pred = predict_full_matrix(model, full_cd, config, DEST_BATCH_SIZE)
+            train_group_metrics.append(masked_split_metrics(
+                pred,
+                full_cd['od_matrix_np'],
+                full_cd['train_mask'],
+                full_cd['val_mask'],
+                train_full_mask=full_cd.get('train_full_mask'),
+                val_full_mask=full_cd.get('val_full_mask'),
+            ))
+        val_group_metrics = []
+        for cid in val_cds:
+            full_cd = city_datas[cid]
+            pred = predict_full_matrix(model, full_cd, config, DEST_BATCH_SIZE)
+            val_group_metrics.append(masked_split_metrics(
+                pred,
+                full_cd['od_matrix_np'],
+                full_cd['train_mask'],
+                full_cd['val_mask'],
+                train_full_mask=full_cd.get('train_full_mask'),
+                val_full_mask=full_cd.get('val_full_mask'),
+            ))
+        avg_train = _average_metric_dicts(train_group_metrics)
+        avg_val = _average_metric_dicts(val_group_metrics)
+        for key in metrics:
+            if '_train_' in key:
+                metrics[key] = avg_train.get(key, float('nan'))
+            elif '_val_' in key:
+                metrics[key] = avg_val.get(key, float('nan'))
         return metrics
 
     epoch = 0
@@ -194,6 +253,8 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         epoch_gan_gps = []
         nan_count = 0
         total_batches = 0
+        gan_nan_count = 0
+        total_gan_steps = 0
         gan_only_epoch = (
             discriminator is not None
             and config.gan_only
@@ -204,7 +265,7 @@ def _train_loop(run_id, run_name, config, model, city_datas,
             cd = train_cds[cid]
             cc = replace(config, n_dest_sample=cd.get('city_n_dest', config.n_dest_sample)) if is_multi else config
             if not gan_only_epoch:
-                origins = np.array(list(cd['nonzero_dest_dict'].keys()))
+                origins = np.array(cd.get('active_origin_indices', list(cd['nonzero_dest_dict'].keys())))
                 np.random.shuffle(origins)
                 for bs in range(0, len(origins), ORIGIN_BATCH_SIZE):
                     batch = origins[bs:bs + ORIGIN_BATCH_SIZE].tolist()
@@ -222,6 +283,7 @@ def _train_loop(run_id, run_name, config, model, city_datas,
                     epoch_losses.append(loss.item())
 
             if discriminator is not None and epoch > config.gan_pretrain_epochs:
+                total_gan_steps += 1
                 gan_stats = gan_step_for_city(
                     model,
                     discriminator,
@@ -231,18 +293,29 @@ def _train_loop(run_id, run_name, config, model, city_datas,
                     discriminator_optimizer,
                     epoch=epoch,
                 )
+                gan_invalid = False
                 for key, target in (
                     ('gan_g_loss', epoch_gan_g_losses),
                     ('gan_d_loss', epoch_gan_d_losses),
                     ('gan_gp', epoch_gan_gps),
                 ):
                     value = gan_stats.get(key, float('nan'))
-                    if not np.isnan(value):
+                    if np.isnan(value):
+                        if key in ('gan_g_loss', 'gan_d_loss'):
+                            gan_invalid = True
+                    else:
                         target.append(value)
+                if gan_invalid:
+                    gan_nan_count += 1
 
         # Divergence check
-        if total_batches > 0 and nan_count / total_batches > NAN_BATCH_THRESHOLD:
-            print(f"  NaN divergence @ epoch {epoch} ({nan_count}/{total_batches} NaN batches)")
+        total_steps = total_batches + total_gan_steps
+        total_nan = nan_count + gan_nan_count
+        if total_steps > 0 and total_nan / total_steps > NAN_BATCH_THRESHOLD:
+            print(
+                f"  NaN divergence @ epoch {epoch} "
+                f"(sup={nan_count}/{total_batches}, gan={gan_nan_count}/{total_gan_steps})"
+            )
             status = 'nan_diverged'
             break
 
@@ -257,7 +330,8 @@ def _train_loop(run_id, run_name, config, model, city_datas,
             val_losses = []
             with torch.no_grad():
                 for vcid, vcd in val_cds.items():
-                    vl = compute_loss_for_city(model, vcd, config)
+                    vcfg = replace(config, n_dest_sample=vcd.get('city_n_dest', config.n_dest_sample)) if is_multi else config
+                    vl = compute_loss_for_city(model, vcd, vcfg)
                     if not (torch.isnan(vl) or torch.isinf(vl)):
                         val_losses.append(vl.item())
                 train_val_cpc = _train_val_metrics()
@@ -306,7 +380,12 @@ def _train_loop(run_id, run_name, config, model, city_datas,
                 best_cpc_nz_epoch = epoch
 
         if epoch % 5 == 0 or epoch == 1:
-            nan_str = f" NaN:{nan_count}" if nan_count > 0 else ""
+            nan_parts = []
+            if nan_count > 0:
+                nan_parts.append(f"sup={nan_count}")
+            if gan_nan_count > 0:
+                nan_parts.append(f"gan={gan_nan_count}")
+            nan_str = f" NaN:{','.join(nan_parts)}" if nan_parts else ""
             train_text = "gan_only" if gan_only_epoch else f"{train_loss:.4f}"
             gan_str = ""
             if discriminator is not None:
@@ -394,6 +473,11 @@ def _train_loop(run_id, run_name, config, model, city_datas,
                 model, ecd, config, dest_batch_size=DEST_BATCH_SIZE,
                 is_test_city=is_test,
             )
+            if is_multi and not is_test:
+                combined = {
+                    key: (float('nan') if '_test_' in key else value)
+                    for key, value in combined.items()
+                }
             all_combined.append(combined)
             per_city.append({
                 'city_id': ecid,
@@ -485,7 +569,12 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         selection_metric_value=best_cpc_nz_val if use_training_control else pure_gan_selection_value,
         split_scope=split_scope,
     )
-    save_model_weights(run_id, gan_best_state if discriminator is not None else val_loss_best_state, config)
+    export_state = (
+        val_loss_best_state
+        if use_training_control else
+        (gan_best_state if discriminator is not None else val_loss_best_state)
+    )
+    save_model_weights(run_id, export_state, config)
     if use_training_control:
         print(
             "  -> CPC_nz-best checkpoint source: "
@@ -509,13 +598,20 @@ def _train_loop(run_id, run_name, config, model, city_datas,
 # ─── High-level train functions ──────────────────────────────────────────────
 
 def train_single_city(run_id, run_name, config, city_data=None, area_id=None, data_path=None):
-    if city_data is None:
+    if city_data is None or city_data.get('pair_split_mode') != config.pair_split_mode:
         kwargs = {}
-        if area_id is not None:
-            kwargs['area_id'] = area_id
+        effective_area_id = area_id if area_id is not None else (
+            city_data.get('city_id') if city_data is not None else None
+        )
+        if effective_area_id is not None:
+            kwargs['area_id'] = effective_area_id
         if data_path is not None:
             kwargs['data_path'] = data_path
-        city_data = prepare_single_city_data(pe_type=config.pe_type, **kwargs)
+        city_data = prepare_single_city_data(
+            pe_type=config.pe_type,
+            pair_split_mode=config.pair_split_mode,
+            **kwargs,
+        )
 
     model = make_model(config, graph_data_ref=city_data['graph_data'])
     cid = city_data['city_id']
@@ -525,14 +621,23 @@ def train_single_city(run_id, run_name, config, city_data=None, area_id=None, da
 def train_multi_city(run_id, run_name, config, city_data_dict=None,
                      train_city_ids=None, val_city_ids=None, test_city_ids=None,
                      city_ids=None, data_path=None):
-    if city_data_dict is None:
+    needs_reload = city_data_dict is None or any(
+        cd.get('pair_split_mode') != config.pair_split_mode
+        for cd in (city_data_dict or {}).values()
+    )
+    if needs_reload:
         kwargs = {}
-        if city_ids is not None:
-            kwargs['city_ids'] = city_ids
+        effective_city_ids = city_ids if city_ids is not None else (
+            list(city_data_dict.keys()) if city_data_dict is not None else None
+        )
+        if effective_city_ids is not None:
+            kwargs['city_ids'] = effective_city_ids
         if data_path is not None:
             kwargs['data_path'] = data_path
         city_data_dict, train_city_ids, val_city_ids, test_city_ids = prepare_multi_city_data(
-            pe_type=config.pe_type, **kwargs
+            pe_type=config.pe_type,
+            pair_split_mode=config.pair_split_mode,
+            **kwargs,
         )
     input_dim = city_data_dict[list(city_data_dict.keys())[0]]['graph_data'].x.shape[1]
     model = make_model(config, input_dim=input_dim, edge_dim=1)

@@ -69,9 +69,6 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
     if dist_max > 1.0:
         x_train[:, 2] /= dist_max
     xs_valid = [xv.copy() for xv in xs_valid]
-    for xv in xs_valid:
-        if dist_max > 1.0:
-            xv[:, 2] /= dist_max
     xs_valid_full = [xv.copy() for xv in xs_valid_full]
 
     # Filter zero OD pairs + log-space targets
@@ -86,15 +83,18 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
     del ds, x_nz, y_nz_log; gc.collect()
 
     # Pre-compute validation tensors once (avoid per-city alloc + GPU round-trip every epoch)
-    # xs_valid is already distance-normalized at this point
-    _vx = [xv[yv > 0] for xv, yv in zip(xs_valid, ys_valid) if (yv > 0).any()]
+    xs_valid_norm = [xv.copy() for xv in xs_valid]
+    for xv in xs_valid_norm:
+        if dist_max > 1.0:
+            xv[:, 2] /= dist_max
+    _vx = [xv[yv > 0] for xv, yv in zip(xs_valid_norm, ys_valid) if (yv > 0).any()]
     _vy = [np.log1p(yv[yv > 0]) for xv, yv in zip(xs_valid, ys_valid) if (yv > 0).any()]
     if _vx:
         xv_all_t = torch.FloatTensor(np.concatenate(_vx)).to(device)
         yv_log_all = np.concatenate(_vy)
     else:
         xv_all_t = None
-    del _vx, _vy
+    del _vx, _vy, xs_valid_norm
 
     net = GRAVITY().to(device)
     optimizer = torch.optim.Adam(net.parameters(), lr=lr)
