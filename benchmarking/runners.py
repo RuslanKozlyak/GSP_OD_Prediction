@@ -639,15 +639,21 @@ def train_flat_model(model_name, train_areas, valid_areas, test_areas, data_path
         if not hasattr(module, 'train'):
             raise ValueError(f"Model {model_name} has no train() function")
         split_metric_kwargs = {}
-        if model_name == "DGM" and payload.get('single_city_split'):
-            split_metric_kwargs = {
-                'x_full': payload.get('x_full'),
-                'od_matrix': payload.get('od_matrix'),
-                'train_mask': payload.get('train_mask'),
-                'val_mask': payload.get('val_mask'),
-                'train_full_mask': payload.get('train_full_mask'),
-                'val_full_mask': payload.get('val_full_mask'),
-            }
+        if model_name in ("DGM", "GM_E", "GM_P"):
+            if payload.get('single_city_split'):
+                split_metric_kwargs = {
+                    'x_full': payload.get('x_full'),
+                    'od_matrix': payload.get('od_matrix'),
+                    'train_mask': payload.get('train_mask'),
+                    'val_mask': payload.get('val_mask'),
+                    'train_full_mask': payload.get('train_full_mask'),
+                    'val_full_mask': payload.get('val_full_mask'),
+                }
+            elif 'xs_train_eval' in payload and 'ys_train_eval' in payload:
+                split_metric_kwargs = {
+                    'xs_train_full': payload['xs_train_eval'],
+                    'ys_train_full': payload['ys_train_eval'],
+                }
         model = module.train(
             payload['x_train'],
             payload['y_train'],

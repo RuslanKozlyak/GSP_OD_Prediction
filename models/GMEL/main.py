@@ -9,7 +9,13 @@ from tqdm.auto import tqdm
 
 from models.GPS.features import build_feature_matrix
 from models.shared.data_load import load_area_raw
-from models.shared.metrics import cal_od_metrics, compute_metrics
+from models.shared.metrics import (
+    cal_od_metrics,
+    compute_metrics,
+    masked_train_val_cpc_metrics,
+    average_matrix_split_metrics,
+    format_train_val_cpc_metrics,
+)
 from models.shared.plotting import save_loss_plot
 
 
@@ -300,6 +306,10 @@ def train(train_areas, val_areas, data_path,
     best_state = None
     train_losses = []
     val_losses = []
+    train_cpc_full_hist = []
+    train_cpc_nz_hist = []
+    val_cpc_full_hist = []
+    val_cpc_nz_hist = []
     pbar = tqdm(range(max_epochs), desc='GMEL-GAT', unit='ep', disable=not verbose)
     for ep in pbar:
         gmel.train()
@@ -331,9 +341,57 @@ def train(train_areas, val_areas, data_path,
                 vls.append(vl)
             vl = float(np.mean(vls))
 
+        split_metrics = None
+        gmel.eval()
+        with torch.no_grad():
+            if single_city_data is not None:
+                nf_t_sc, g_sc, *_ = val_data_gpu[0]
+                pred_sc = _predict_bilinear_matrix(gmel, nf_t_sc, g_sc, od_scaler)
+                split_metrics = masked_train_val_cpc_metrics(
+                    pred_sc,
+                    single_city_data['od'].astype(float),
+                    single_city_data['train_mask'],
+                    single_city_data['val_mask'],
+                    train_full_mask=single_city_data.get('train_full_mask'),
+                    val_full_mask=single_city_data.get('val_full_mask'),
+                )
+            else:
+                train_pred_mats, train_od_mats = [], []
+                for nf_t_, g_, _od_t, _mask, _nf, _adj, _dis, od_np, _fit in train_data_gpu:
+                    train_pred_mats.append(_predict_bilinear_matrix(gmel, nf_t_, g_, od_scaler))
+                    train_od_mats.append(np.asarray(od_np, dtype=float))
+                val_pred_mats, val_od_mats = [], []
+                for nf_t_, g_, _od_t, _mask, _nf, _adj, _dis, od_np, _fit in val_data_gpu:
+                    val_pred_mats.append(_predict_bilinear_matrix(gmel, nf_t_, g_, od_scaler))
+                    val_od_mats.append(np.asarray(od_np, dtype=float))
+                if train_pred_mats and val_pred_mats:
+                    split_metrics = {
+                        **average_matrix_split_metrics(train_pred_mats, train_od_mats, 'train'),
+                        **average_matrix_split_metrics(val_pred_mats, val_od_mats, 'val'),
+                    }
+
         train_losses.append(float(np.mean(ep_losses)))
         val_losses.append(vl)
-        pbar.set_postfix(loss=f'{train_losses[-1]:.4g}', val=f'{vl:.4g}', pat=best_pat)
+        if split_metrics is not None:
+            train_cpc_full_hist.append(split_metrics['CPC_train_full'])
+            train_cpc_nz_hist.append(split_metrics['CPC_train_nz'])
+            val_cpc_full_hist.append(split_metrics['CPC_val_full'])
+            val_cpc_nz_hist.append(split_metrics['CPC_val_nz'])
+            pbar.set_postfix(
+                loss=f'{train_losses[-1]:.4g}',
+                val=f'{vl:.4g}',
+                CPC_train_full=f"{split_metrics['CPC_train_full']:.4g}",
+                CPC_val_full=f"{split_metrics['CPC_val_full']:.4g}",
+                CPC_train_nz=f"{split_metrics['CPC_train_nz']:.4g}",
+                CPC_val_nz=f"{split_metrics['CPC_val_nz']:.4g}",
+                pat=best_pat,
+            )
+        else:
+            train_cpc_full_hist.append(float('nan'))
+            train_cpc_nz_hist.append(float('nan'))
+            val_cpc_full_hist.append(float('nan'))
+            val_cpc_nz_hist.append(float('nan'))
+            pbar.set_postfix(loss=f'{train_losses[-1]:.4g}', val=f'{vl:.4g}', pat=best_pat)
 
         if vl < best_vl:
             best_vl = vl
@@ -357,6 +415,10 @@ def train(train_areas, val_areas, data_path,
         print(f"  -> Loss plot saved to {saved_plot_path}")
     gmel.train_losses = train_losses
     gmel.val_losses = val_losses
+    gmel.train_cpc_full_hist = train_cpc_full_hist
+    gmel.train_cpc_nz_hist = train_cpc_nz_hist
+    gmel.val_cpc_full_hist = val_cpc_full_hist
+    gmel.val_cpc_nz_hist = val_cpc_nz_hist
     gmel.loss_plot_path = str(saved_plot_path) if saved_plot_path is not None else None
 
     if verbose and single_city_data is not None:

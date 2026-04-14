@@ -6,7 +6,11 @@ import torch
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm.auto import tqdm
 
-from models.shared.metrics import compute_metrics
+from models.shared.metrics import (
+    compute_metrics,
+    masked_train_val_cpc_metrics,
+    average_matrix_split_metrics,
+)
 from models.shared.plotting import save_loss_plot
 
 
@@ -29,7 +33,10 @@ def _make_predict_fn(net, device, batch_size):
 
 def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_full=None,
           device=None, batch_size=50_000, max_epochs=10000, patience=100,
-          loss_plot_path=None, lr=1e-4, verbose=1):
+          loss_plot_path=None, lr=1e-4, verbose=1,
+          x_full=None, od_matrix=None, train_mask=None, val_mask=None,
+          train_full_mask=None, val_full_mask=None,
+          xs_train_full=None, ys_train_full=None):
     """Train GRAVITY (GM_E) on pre-built feature arrays.
 
     Args:
@@ -58,6 +65,20 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
     if xs_valid_full is None or ys_valid_full is None:
         xs_valid_full = xs_valid
         ys_valid_full = ys_valid
+
+    single_city_split_ready = (
+        x_full is not None
+        and od_matrix is not None
+        and train_mask is not None
+        and val_mask is not None
+    )
+    multi_city_split_ready = (
+        not single_city_split_ready
+        and xs_train_full is not None
+        and ys_train_full is not None
+        and len(xs_train_full) > 0
+        and len(xs_valid_full) > 0
+    )
 
     # Filter zero OD pairs + log-space targets
     nz = y_train > 0
@@ -99,6 +120,10 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
     val_losses = []
     val_cpc_vals = []
     val_cpc_fulls = []
+    train_cpc_full_hist = []
+    train_cpc_nz_hist = []
+    val_cpc_full_hist = []
+    val_cpc_nz_hist = []
     yv_log_all_t = torch.FloatTensor(yv_log_all).to(device) if xv_all_t is not None else None
     pbar = tqdm(range(max_epochs), desc='GM_E', unit='ep', disable=not verbose)
     for ep in pbar:
@@ -127,23 +152,77 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
                 vc_vals.append(compute_metrics(pred_val, yv)['CPC'])
 
             vcpcs = []
+            val_full_preds = []
             for xv_full, yv_full in zip(xs_valid_full, ys_valid_full):
                 pred_full = _predict_np(xv_full)
+                val_full_preds.append(pred_full)
                 vcpcs.append(compute_metrics(pred_full, yv_full)['CPC'])
             vc_val = float(np.mean(vc_vals)) if vc_vals else 0.0
             vc = float(np.mean(vcpcs)) if vcpcs else 0.0
+
+            split_metrics = None
+            if single_city_split_ready:
+                pred_full_flat = (
+                    val_full_preds[0]
+                    if len(val_full_preds) == 1 and val_full_preds[0].shape[0] == x_full.shape[0]
+                    else _predict_np(x_full)
+                )
+                split_metrics = masked_train_val_cpc_metrics(
+                    pred_full_flat.reshape(od_matrix.shape),
+                    od_matrix,
+                    train_mask,
+                    val_mask,
+                    train_full_mask=train_full_mask,
+                    val_full_mask=val_full_mask,
+                )
+            elif multi_city_split_ready:
+                train_pred_mats = []
+                train_od_mats = []
+                for xt, yt in zip(xs_train_full, ys_train_full):
+                    nn = int(np.sqrt(yt.shape[0]))
+                    train_pred_mats.append(_predict_np(xt).reshape(nn, nn))
+                    train_od_mats.append(yt.reshape(nn, nn))
+                val_pred_mats = []
+                val_od_mats = []
+                for pred_full, yv_full in zip(val_full_preds, ys_valid_full):
+                    nn = int(np.sqrt(yv_full.shape[0]))
+                    val_pred_mats.append(pred_full.reshape(nn, nn))
+                    val_od_mats.append(yv_full.reshape(nn, nn))
+                split_metrics = {
+                    **average_matrix_split_metrics(train_pred_mats, train_od_mats, 'train'),
+                    **average_matrix_split_metrics(val_pred_mats, val_od_mats, 'val'),
+                }
 
         train_losses.append(float(np.mean(ep_losses)))
         val_losses.append(vl)
         val_cpc_vals.append(vc_val)
         val_cpc_fulls.append(vc)
-        pbar.set_postfix(
-            loss=f'{train_losses[-1]:.4g}',
-            val=f'{vl:.4g}',
-            CPC_val=f'{vc_val:.4g}',
-            CPC_full=f'{vc:.4g}',
-            pat=best_pat,
-        )
+        if split_metrics is not None:
+            train_cpc_full_hist.append(split_metrics['CPC_train_full'])
+            train_cpc_nz_hist.append(split_metrics['CPC_train_nz'])
+            val_cpc_full_hist.append(split_metrics['CPC_val_full'])
+            val_cpc_nz_hist.append(split_metrics['CPC_val_nz'])
+            pbar.set_postfix(
+                loss=f'{train_losses[-1]:.4g}',
+                val=f'{vl:.4g}',
+                CPC_train_full=f"{split_metrics['CPC_train_full']:.4g}",
+                CPC_val_full=f"{split_metrics['CPC_val_full']:.4g}",
+                CPC_train_nz=f"{split_metrics['CPC_train_nz']:.4g}",
+                CPC_val_nz=f"{split_metrics['CPC_val_nz']:.4g}",
+                pat=best_pat,
+            )
+        else:
+            train_cpc_full_hist.append(float('nan'))
+            train_cpc_nz_hist.append(float('nan'))
+            val_cpc_full_hist.append(float('nan'))
+            val_cpc_nz_hist.append(float('nan'))
+            pbar.set_postfix(
+                loss=f'{train_losses[-1]:.4g}',
+                val=f'{vl:.4g}',
+                CPC_val=f'{vc_val:.4g}',
+                CPC_full=f'{vc:.4g}',
+                pat=best_pat,
+            )
 
         if vl < best_vl:
             best_vl = vl
@@ -171,6 +250,10 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
     predict.val_losses = val_losses
     predict.val_cpc_vals = val_cpc_vals
     predict.val_cpc_fulls = val_cpc_fulls
+    predict.train_cpc_full_hist = train_cpc_full_hist
+    predict.train_cpc_nz_hist = train_cpc_nz_hist
+    predict.val_cpc_full_hist = val_cpc_full_hist
+    predict.val_cpc_nz_hist = val_cpc_nz_hist
     predict.loss_plot_path = str(saved_plot_path) if saved_plot_path is not None else None
     return predict
 

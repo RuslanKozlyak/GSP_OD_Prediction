@@ -7,7 +7,12 @@ from torch.utils.data import DataLoader, TensorDataset
 from sklearn.preprocessing import MinMaxScaler
 from tqdm.auto import tqdm
 
-from models.shared.metrics import compute_metrics, masked_train_val_cpc_metrics
+from models.shared.metrics import (
+    compute_metrics,
+    masked_train_val_cpc_metrics,
+    average_matrix_split_metrics,
+    format_train_val_cpc_metrics,
+)
 from models.shared.plotting import save_loss_plot
 
 
@@ -39,7 +44,8 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
           device=None, batch_size=50_000, max_epochs=300, patience=100,
           loss_plot_path=None, lr=3e-4, grad_clip=1.0, verbose=1,
           x_full=None, od_matrix=None, train_mask=None, val_mask=None,
-          train_full_mask=None, val_full_mask=None):
+          train_full_mask=None, val_full_mask=None,
+          xs_train_full=None, ys_train_full=None):
     """Train DeepGravity on pre-built feature arrays.
 
     Args:
@@ -70,11 +76,20 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
         xs_valid_full = xs_valid
         ys_valid_full = ys_valid
 
-    split_metric_ready = (
+    single_city_split_ready = (
         x_full is not None
         and od_matrix is not None
         and train_mask is not None
         and val_mask is not None
+    )
+    multi_city_split_ready = (
+        not single_city_split_ready
+        and xs_train_full is not None
+        and ys_train_full is not None
+        and xs_valid_full is not None
+        and ys_valid_full is not None
+        and len(xs_train_full) > 0
+        and len(xs_valid_full) > 0
     )
 
     # Filter zero OD pairs — avoids mode collapse on sparse matrices
@@ -125,6 +140,10 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
     val_losses = []
     val_cpc_vals = []
     val_cpc_fulls = []
+    train_cpc_full_hist = []
+    train_cpc_nz_hist = []
+    val_cpc_full_hist = []
+    val_cpc_nz_hist = []
     pbar = tqdm(range(max_epochs), desc='DGM', unit='ep', disable=not verbose)
     for ep in pbar:
         net.train()
@@ -161,7 +180,7 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
             vc = float(np.mean(vcpcs)) if vcpcs else 0.0
 
             split_metrics = None
-            if split_metric_ready:
+            if single_city_split_ready:
                 pred_full = (
                     full_preds[0]
                     if len(full_preds) == 1 and full_preds[0].shape[0] == x_full.shape[0]
@@ -175,25 +194,54 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
                     train_full_mask=train_full_mask,
                     val_full_mask=val_full_mask,
                 )
+            elif multi_city_split_ready:
+                train_pred_mats = []
+                train_od_mats = []
+                for xt, yt in zip(xs_train_full, ys_train_full):
+                    nn = int(np.sqrt(yt.shape[0]))
+                    train_pred_mats.append(_predict_np(xt).reshape(nn, nn))
+                    train_od_mats.append(yt.reshape(nn, nn))
+                val_pred_mats = []
+                val_od_mats = []
+                for xv, yv in zip(xs_valid_full, ys_valid_full):
+                    nn = int(np.sqrt(yv.shape[0]))
+                    val_pred_mats.append(_predict_np(xv).reshape(nn, nn))
+                    val_od_mats.append(yv.reshape(nn, nn))
+                split_metrics = {
+                    **average_matrix_split_metrics(train_pred_mats, train_od_mats, 'train'),
+                    **average_matrix_split_metrics(val_pred_mats, val_od_mats, 'val'),
+                }
 
         tl = float(np.mean(ep_losses))
         train_losses.append(tl)
         val_losses.append(vl)
         val_cpc_vals.append(vc_val)
         val_cpc_fulls.append(vc)
-        postfix = dict(
-            loss=f'{tl:.4g}',
-            val=f'{vl:.4g}',
-            CPC_val=f'{vc_val:.4g}',
-            CPC_full=f'{vc:.4g}',
-            pat=best_pat,
-        )
         if split_metrics is not None:
-            postfix.update(
+            train_cpc_full_hist.append(split_metrics['CPC_train_full'])
+            train_cpc_nz_hist.append(split_metrics['CPC_train_nz'])
+            val_cpc_full_hist.append(split_metrics['CPC_val_full'])
+            val_cpc_nz_hist.append(split_metrics['CPC_val_nz'])
+            postfix = dict(
+                loss=f'{tl:.4g}',
+                val=f'{vl:.4g}',
                 CPC_train_full=f"{split_metrics['CPC_train_full']:.4g}",
                 CPC_val_full=f"{split_metrics['CPC_val_full']:.4g}",
                 CPC_train_nz=f"{split_metrics['CPC_train_nz']:.4g}",
                 CPC_val_nz=f"{split_metrics['CPC_val_nz']:.4g}",
+                pat=best_pat,
+            )
+        else:
+            train_cpc_full_hist.append(float('nan'))
+            train_cpc_nz_hist.append(float('nan'))
+            val_cpc_full_hist.append(float('nan'))
+            val_cpc_nz_hist.append(float('nan'))
+            postfix = dict(
+                loss=f'{tl:.4g}',
+                val=f'{vl:.4g}',
+                CPC_val=f'{vc_val:.4g}',
+                CPC_full=f'{vc:.4g}',
+                pat=best_pat,
             )
         pbar.set_postfix(**postfix)
 
@@ -224,6 +272,10 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
     predict.val_losses = val_losses
     predict.val_cpc_vals = val_cpc_vals
     predict.val_cpc_fulls = val_cpc_fulls
+    predict.train_cpc_full_hist = train_cpc_full_hist
+    predict.train_cpc_nz_hist = train_cpc_nz_hist
+    predict.val_cpc_full_hist = val_cpc_full_hist
+    predict.val_cpc_nz_hist = val_cpc_nz_hist
     predict.loss_plot_path = str(saved_plot_path) if saved_plot_path is not None else None
 
     return predict
