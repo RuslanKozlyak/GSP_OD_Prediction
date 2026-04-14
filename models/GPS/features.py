@@ -104,6 +104,17 @@ def get_feature_spec(feature_preset=None, use_lu=USE_LU_FEATURES, use_jobs=USE_J
     }
 
 
+def get_feature_names_for_raw(raw, feature_preset=None, use_lu=USE_LU_FEATURES, use_jobs=USE_JOBS_FEATURES):
+    """Return the actual feature names produced for a specific raw sample."""
+    spec = get_feature_spec(feature_preset=feature_preset, use_lu=use_lu, use_jobs=use_jobs)
+    names = list(spec["selected_demo"]) + list(spec["selected_poi"])
+    if use_lu and raw.get("lu") is not None:
+        names += list(spec["selected_lu"])
+    if use_jobs and raw.get("jobs") is not None:
+        names += list(spec["selected_jobs"])
+    return names
+
+
 def build_feature_matrix(raw, feature_preset=None, use_lu=USE_LU_FEATURES, use_jobs=USE_JOBS_FEATURES):
     spec = get_feature_spec(feature_preset=feature_preset, use_lu=use_lu, use_jobs=use_jobs)
     parts = [

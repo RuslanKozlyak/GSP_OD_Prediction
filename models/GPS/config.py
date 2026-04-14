@@ -133,6 +133,9 @@ HUBER_MIN_PROB = 1e-4
 FEATURE_PRESET = "all"  # switch to "reduced" to reproduce the previous demo subset
 USE_LU_FEATURES = True
 USE_JOBS_FEATURES = True
+MULTI_CITY_GLOBAL_SCALING = True
+MULTI_CITY_FEATURE_PRUNE_MAX_ZERO_SHARE = 0.95
+MULTI_CITY_FEATURE_PRUNE_REMOVE_ZERO_VAR = True
 
 # ─── NaN protection ──────────────────────────────────────────────────────────
 NAN_BATCH_THRESHOLD = 0.5

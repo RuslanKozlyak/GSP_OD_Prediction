@@ -11,8 +11,10 @@ from scipy.stats import gaussian_kde
 from .config import (
     DATA_PATH, SHP_PATH, PE_WALK_LEN, HUBER_KDE_BW, HUBER_MIN_PROB,
     N_DEST_SAMPLE, device, split_configured_multi_city_ids,
+    MULTI_CITY_GLOBAL_SCALING, MULTI_CITY_FEATURE_PRUNE_MAX_ZERO_SHARE,
+    MULTI_CITY_FEATURE_PRUNE_REMOVE_ZERO_VAR,
 )
-from .features import build_feature_matrix
+from .features import build_feature_matrix, get_feature_names_for_raw
 from models.shared.data_load import build_single_city_pair_masks
 
 
@@ -51,12 +53,13 @@ def load_area(area_id, data_path=DATA_PATH):
         if os.path.exists(jp):
             raw["jobs"] = np.load(jp)
         nf = build_feature_matrix(raw)
+        feature_names = get_feature_names_for_raw(raw)
         adj = np.load(os.path.join(ap, "adj.npy"))
         dis = np.load(os.path.join(ap, "dis.npy"))
         od = np.load(os.path.join(ap, "od.npy"))
         cp = os.path.join(ap, "coords.npy")
         co = np.load(cp) if os.path.exists(cp) else None
-        return nf, adj, dis, od, co
+        return nf, adj, dis, od, co, feature_names
     except Exception:
         return None
 
@@ -165,7 +168,7 @@ def prepare_single_city_data(area_id=None, pe_type='rwpe', data_path=DATA_PATH, 
 
     data = load_area(area_id, data_path)
     assert data is not None, f"Failed to load area {area_id}"
-    node_features_raw, adjacency, distances, od_matrix_raw, coords = data
+    node_features_raw, adjacency, distances, od_matrix_raw, coords, feature_names_raw = data
     num_nodes = node_features_raw.shape[0]
 
     masks = build_single_city_pair_masks(
@@ -234,6 +237,12 @@ def prepare_single_city_data(area_id=None, pe_type='rwpe', data_path=DATA_PATH, 
         'split_scope': 'single_city',
         'val_dest_dict': val_dest_dict,
         'node_features_scaled': node_features_scaled, 'distances_scaled': distances_scaled,
+        'feature_names_raw': list(feature_names_raw),
+        'feature_names_selected': list(feature_names_raw),
+        'feature_keep_mask': np.ones(node_features_scaled.shape[1], dtype=bool),
+        'feature_pruning_applied': False,
+        'feature_scaling_scope': 'single_city_train_nodes',
+        'distance_scaling_scope': 'single_city_train_pairs',
         'coords': coords, 'coords_tensor': coords_tensor,
     }
 
@@ -251,23 +260,121 @@ def load_multi_city_raw(city_ids=None, data_path=DATA_PATH):
         if data is None:
             print(f"  [SKIP] {cid}")
             continue
-        nf, adj, dis, od, co = data
+        nf, adj, dis, od, co, feature_names = data
         if nf.shape[0] < 10:
             print(f"  [SKIP] {cid}: too few nodes")
             continue
-        multi_city_raw[cid] = {'nfeat': nf, 'adj': adj, 'dis': dis, 'od': od, 'coords': co}
+        multi_city_raw[cid] = {
+            'nfeat': nf, 'adj': adj, 'dis': dis, 'od': od, 'coords': co,
+            'feature_names_raw': list(feature_names),
+        }
         print(f"  {cid}: N={nf.shape[0]}")
-
-    common_feat_dim = min(v['nfeat'].shape[1] for v in multi_city_raw.values())
-    for cid, raw in multi_city_raw.items():
-        nf = raw['nfeat'][:, :common_feat_dim]
-        dis = raw['dis']
-        raw['nfeat_scaled'] = MinMaxScaler().fit(nf).transform(nf)
-        raw['dis_scaled'] = MinMaxScaler().fit(
-            dis.reshape(-1, 1)
-        ).transform(dis.reshape(-1, 1)).reshape(nf.shape[0], nf.shape[0])
-
     return multi_city_raw
+
+
+def _fit_multi_city_feature_pipeline(multi_city_raw, train_city_ids, city_seed_map, pair_split_mode):
+    common_feat_dim = min(v['nfeat'].shape[1] for v in multi_city_raw.values())
+
+    train_feature_blocks = []
+    train_distance_blocks = []
+    feature_names_raw = None
+    for cid in train_city_ids:
+        raw = multi_city_raw[cid]
+        nf = raw['nfeat'][:, :common_feat_dim].astype(np.float32, copy=False)
+        train_feature_blocks.append(nf)
+        if feature_names_raw is None:
+            feature_names_raw = list(raw.get('feature_names_raw', []))[:common_feat_dim]
+        masks = build_single_city_pair_masks(
+            raw['od'], seed=city_seed_map[cid], pair_split_mode=pair_split_mode,
+        )
+        dist_fit = raw['dis'][masks['train_fit_mask']].reshape(-1, 1)
+        if dist_fit.size == 0:
+            dist_fit = raw['dis'].reshape(-1, 1)
+        train_distance_blocks.append(dist_fit.astype(np.float32, copy=False))
+
+    train_features = np.concatenate(train_feature_blocks, axis=0)
+    zero_share = np.mean(train_features == 0, axis=0)
+    keep_mask = np.ones(train_features.shape[1], dtype=bool)
+    if MULTI_CITY_FEATURE_PRUNE_REMOVE_ZERO_VAR:
+        keep_mask &= np.nanstd(train_features, axis=0) > 0
+    if MULTI_CITY_FEATURE_PRUNE_MAX_ZERO_SHARE is not None:
+        keep_mask &= zero_share < float(MULTI_CITY_FEATURE_PRUNE_MAX_ZERO_SHARE)
+    if not np.any(keep_mask):
+        keep_mask = np.nanstd(train_features, axis=0) > 0
+    if not np.any(keep_mask):
+        keep_mask = np.ones(train_features.shape[1], dtype=bool)
+
+    train_features = train_features[:, keep_mask]
+    feature_scaler = MinMaxScaler().fit(train_features)
+    train_distances = np.concatenate(train_distance_blocks, axis=0)
+    distance_scaler = MinMaxScaler().fit(train_distances)
+
+    selected_feature_names = None
+    dropped_feature_names = None
+    if feature_names_raw is not None:
+        selected_feature_names = [
+            name for name, keep in zip(feature_names_raw, keep_mask) if keep
+        ]
+        dropped_feature_names = [
+            name for name, keep in zip(feature_names_raw, keep_mask) if not keep
+        ]
+
+    return {
+        'common_feat_dim': common_feat_dim,
+        'feature_keep_mask': keep_mask,
+        'feature_scaler': feature_scaler,
+        'distance_scaler': distance_scaler,
+        'feature_zero_share_train': zero_share,
+        'feature_names_raw': feature_names_raw,
+        'feature_names_selected': selected_feature_names,
+        'dropped_feature_names': dropped_feature_names,
+    }
+
+
+def _apply_multi_city_feature_pipeline(multi_city_raw, pipeline, use_global_scaling=True):
+    common_feat_dim = pipeline['common_feat_dim']
+    feature_keep_mask = pipeline['feature_keep_mask']
+    feature_scaler = pipeline['feature_scaler'] if use_global_scaling else None
+    distance_scaler = pipeline['distance_scaler'] if use_global_scaling else None
+    feature_names_raw = pipeline.get('feature_names_raw')
+    feature_names_selected = pipeline.get('feature_names_selected')
+    dropped_feature_names = pipeline.get('dropped_feature_names')
+
+    for cid, raw in multi_city_raw.items():
+        nf = raw['nfeat'][:, :common_feat_dim].astype(np.float32, copy=False)
+        nf = nf[:, feature_keep_mask]
+        dis = raw['dis'].astype(np.float32, copy=False)
+
+        if feature_scaler is not None:
+            raw['nfeat_scaled'] = feature_scaler.transform(nf).astype(np.float32, copy=False)
+            raw['feature_scaling_scope'] = 'global_train_cities'
+        else:
+            raw['nfeat_scaled'] = MinMaxScaler().fit(nf).transform(nf).astype(np.float32, copy=False)
+            raw['feature_scaling_scope'] = 'per_city'
+
+        if distance_scaler is not None:
+            raw['dis_scaled'] = distance_scaler.transform(
+                dis.reshape(-1, 1)
+            ).reshape(dis.shape[0], dis.shape[1]).astype(np.float32, copy=False)
+            raw['distance_scaling_scope'] = 'global_train_cities'
+        else:
+            raw['dis_scaled'] = MinMaxScaler().fit(
+                dis.reshape(-1, 1)
+            ).transform(dis.reshape(-1, 1)).reshape(dis.shape[0], dis.shape[1]).astype(np.float32, copy=False)
+            raw['distance_scaling_scope'] = 'per_city'
+
+        raw['feature_keep_mask'] = feature_keep_mask.copy()
+        raw['feature_names_raw'] = list(feature_names_raw) if feature_names_raw is not None else None
+        raw['feature_names_selected'] = (
+            list(feature_names_selected) if feature_names_selected is not None else None
+        )
+        raw['dropped_feature_names'] = (
+            list(dropped_feature_names) if dropped_feature_names is not None else None
+        )
+        raw['feature_pruning_applied'] = bool(np.any(~feature_keep_mask))
+        raw['feature_dim_before_prune'] = int(common_feat_dim)
+        raw['feature_dim_after_prune'] = int(np.sum(feature_keep_mask))
+        raw['feature_zero_share_train'] = pipeline['feature_zero_share_train'].astype(np.float32, copy=False)
 
 
 def split_multi_city(multi_city_raw, seed=42, val_size=2, test_size=2):
@@ -356,6 +463,15 @@ def prepare_city_data(cid, raw, pe_type='rwpe', data_path=DATA_PATH, seed=42,
         'split_scope': 'multi_city',
         'val_dest_dict': vdd,
         'node_features_scaled': nfs, 'distances_scaled': ds,
+        'feature_names_raw': raw.get('feature_names_raw'),
+        'feature_names_selected': raw.get('feature_names_selected'),
+        'feature_keep_mask': raw.get('feature_keep_mask'),
+        'feature_pruning_applied': raw.get('feature_pruning_applied', False),
+        'feature_dim_before_prune': raw.get('feature_dim_before_prune', nfs.shape[1]),
+        'feature_dim_after_prune': raw.get('feature_dim_after_prune', nfs.shape[1]),
+        'feature_scaling_scope': raw.get('feature_scaling_scope', 'per_city'),
+        'distance_scaling_scope': raw.get('distance_scaling_scope', 'per_city'),
+        'dropped_feature_names': raw.get('dropped_feature_names'),
         'coords': coords, 'coords_tensor': coords_tensor,
     }
 
@@ -364,6 +480,25 @@ def prepare_multi_city_data(city_ids=None, pe_type='rwpe', data_path=DATA_PATH, 
                             pair_split_mode='nonzero_pairs'):
     multi_city_raw = load_multi_city_raw(city_ids, data_path)
     mc_city_ids, train_city_ids, val_city_ids, test_city_ids = split_multi_city(multi_city_raw, seed)
+    city_seed_map = {cid: seed + idx for idx, cid in enumerate(mc_city_ids)}
+    pipeline = _fit_multi_city_feature_pipeline(
+        multi_city_raw, train_city_ids, city_seed_map, pair_split_mode,
+    )
+    _apply_multi_city_feature_pipeline(
+        multi_city_raw, pipeline, use_global_scaling=MULTI_CITY_GLOBAL_SCALING,
+    )
+    kept = int(np.sum(pipeline['feature_keep_mask']))
+    total = int(pipeline['common_feat_dim'])
+    scaling_scope = 'global train-city scalers' if MULTI_CITY_GLOBAL_SCALING else 'per-city scalers'
+    print(
+        f"  Multi-city feature pipeline: {scaling_scope}, "
+        f"kept {kept}/{total} features fit on train cities {train_city_ids}"
+    )
+    dropped = pipeline.get('dropped_feature_names') or []
+    if dropped:
+        preview = ", ".join(dropped[:8])
+        suffix = " ..." if len(dropped) > 8 else ""
+        print(f"  Pruned sparse/constant features: {preview}{suffix}")
 
     city_data_dict = {}
     for idx, cid in enumerate(mc_city_ids):

@@ -633,6 +633,7 @@ def train_multi_city(run_id, run_name, config, city_data_dict=None,
                      city_ids=None, data_path=None):
     needs_reload = city_data_dict is None or any(
         cd.get('pair_split_mode') != config.pair_split_mode
+        or cd.get('feature_scaling_scope') != 'global_train_cities'
         for cd in (city_data_dict or {}).values()
     )
     if needs_reload:
