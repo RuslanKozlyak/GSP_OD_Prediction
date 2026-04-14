@@ -171,8 +171,6 @@ class TrainingConfig:
     # ── Destination sampling ──────────────────────────────────────────────────
     use_dest_sampling:  bool  = True
     n_dest_sample:      int   = N_DEST_SAMPLE
-    include_zero_pairs: bool  = True
-    zero_pair_ratio:    float = 0.3
     pair_split_mode:    Literal['nonzero_pairs', 'all_pairs'] = 'nonzero_pairs'
     # ── Training schedule ─────────────────────────────────────────────────────
     epochs:             int   = EPOCHS
@@ -201,6 +199,9 @@ class TrainingConfig:
     gan_disc_hidden_dim: int  = 64
     gan_disc_layers:    int   = 4
     gan_disc_dropout:   float = 0.05
+    # For GAN runs this only enables validation diagnostics in logs/history.
+    # Learning-rate scheduling, early stopping, and checkpoint selection stay
+    # adversarial-loss-driven.
     gan_use_supervised_monitoring: bool = True
     gat_use_edge_attr:  bool  = True
     pair_use_distance:  bool  = True
@@ -317,7 +318,7 @@ class TrainingConfig:
             parts.append("pair_dist=off")
         parts.append(
             f"split={'all' if self.pair_split_mode == 'all_pairs' else 'nz'} "
-            f"zeros={self.include_zero_pairs} samp={self.use_dest_sampling}"
+            f"samp={self.use_dest_sampling}"
         )
         return " | ".join(parts)
 
@@ -386,8 +387,6 @@ def save_metrics_to_csv(run_id, run_name, config, metrics,
         'pe_type': config.pe_type, 'gps_norm_type': config.gps_norm_type,
         'use_log_transform': config.use_log_transform,
         'use_dest_sampling': config.use_dest_sampling,
-        'include_zero_pairs': config.include_zero_pairs,
-        'zero_pair_ratio': config.zero_pair_ratio,
         'pair_split_mode': normalize_pair_split_mode(config.pair_split_mode),
         'use_rle': config.use_rle,
         'learning_rate': config.learning_rate,

@@ -50,8 +50,8 @@ benchmarking/
 
 ### Single-city
 - City **48201** (Harris County, TX)
-- Nonzero OD pairs split **80/10/10** (train/val/test) with seed=42
-- GPS supports optional `include_zero_pairs` flag for training on zero-flow pairs
+- Pair split supports **nonzero_pairs** and **all_pairs** modes with seed=42
+- Zero-flow pairs are controlled by the chosen split mode rather than a separate training flag
 
 ### Multi-city
 - 8 cities: 36061, 06059, 17031, 48201, 06075, 53033, 11001, 47157

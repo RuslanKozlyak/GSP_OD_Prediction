@@ -107,7 +107,9 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         )
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5, min_lr=1e-5)
     use_supervised_monitoring = discriminator is None or config.gan_use_supervised_monitoring
-    use_training_control = discriminator is None or config.gan_use_supervised_monitoring
+    # GAN monitoring is diagnostics only: it must not drive LR scheduling,
+    # early stopping, or checkpoint selection.
+    use_training_control = discriminator is None
 
     max_epochs = config.mc_epochs if is_multi else config.epochs
     history = {
@@ -324,7 +326,7 @@ def _train_loop(run_id, run_name, config, model, city_datas,
         gan_d_loss = np.mean(epoch_gan_d_losses) if epoch_gan_d_losses else float('nan')
         gan_gp = np.mean(epoch_gan_gps) if epoch_gan_gps else float('nan')
 
-        # Paper-style pure GAN runs can disable supervised validation/checkpointing.
+        # Optional GAN monitoring only computes validation diagnostics.
         if use_supervised_monitoring:
             model.eval()
             val_losses = []
@@ -422,8 +424,16 @@ def _train_loop(run_id, run_name, config, model, city_datas,
             'CPC_nz': 0.0, 'MAE_nz': float('inf'), 'RMSE_nz': float('inf'),
         }
         for metrics_csv, run_suffix, selection in (
-            (METRICS_VAL_LOSS_CSV, 'val_loss', 'val_loss_best'),
-            (METRICS_CPC_NZ_BEST_CSV, 'cpc_nz', 'cpc_nz_best'),
+            (
+                METRICS_VAL_LOSS_CSV,
+                'val_loss',
+                ('val_loss_best' if use_training_control else 'gan_g_loss_best'),
+            ),
+            (
+                METRICS_CPC_NZ_BEST_CSV,
+                'cpc_nz',
+                ('cpc_nz_best' if use_training_control else 'gan_g_loss_best'),
+            ),
         ):
             save_metrics_to_csv(
                 run_id, run_name, config, dummy,

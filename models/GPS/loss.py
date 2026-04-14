@@ -24,30 +24,24 @@ def regression_prediction_from_scores(sc, config, pm, use_log_flow, use_log_norm
     return F.softplus(sc)
 
 
-def sample_destinations(oi, nzd, nn, use_sampling=True, n_dest=128, inc_zeros=True, zr=0.3,
-                        eligible_destinations=None):
+def sample_destinations(oi, nzd, nn, use_sampling=True, n_dest=128, eligible_destinations=None):
+    """Sample destinations only from the active split.
+
+    Zero-flow pairs are no longer controlled by a separate flag. They appear in
+    training only when the active split mask includes them (for example,
+    ``pair_split_mode='all_pairs'``).
+    """
     if eligible_destinations is None:
-        eligible = np.arange(nn, dtype=int)
+        eligible = np.asarray(nzd.get(oi, np.array([], dtype=int)), dtype=int)
+        if eligible.size == 0:
+            eligible = np.arange(nn, dtype=int)
     else:
         eligible = np.asarray(eligible_destinations, dtype=int)
         if eligible.size == 0:
             return np.array([], dtype=int)
-    nz = nzd.get(oi, np.array([], dtype=int))
-    if eligible_destinations is not None and nz.size:
-        nz = np.intersect1d(nz, eligible, assume_unique=False)
-    if not use_sampling:
-        if inc_zeros:
-            return eligible
-        return nz
-    if not inc_zeros:
-        av = nz
-        return av if len(av) <= n_dest else np.random.choice(av, n_dest, replace=False)
-    nzn = max(1, int(n_dest * zr))
-    nnz = n_dest - nzn
-    snz = nz if len(nz) <= nnz else np.random.choice(nz, nnz, replace=False)
-    zd = np.setdiff1d(eligible, nz)
-    sz = np.random.choice(zd, min(nzn, len(zd)), replace=False) if len(zd) > 0 else np.array([], dtype=int)
-    return np.concatenate([snz, sz]).astype(int)
+    if not use_sampling or eligible.size <= n_dest:
+        return eligible
+    return np.random.choice(eligible, n_dest, replace=False).astype(int)
 
 
 def compute_loss_for_city(model, cd, config, origin_batch_indices=None, node_embeddings=None):
@@ -80,7 +74,7 @@ def compute_loss_for_city(model, cd, config, origin_batch_indices=None, node_emb
         )
         di = sample_destinations(
             oi, nzd, nn_, config.use_dest_sampling,
-            config.n_dest_sample, config.include_zero_pairs, config.zero_pair_ratio,
+            config.n_dest_sample,
             eligible_destinations=eligible_destinations,
         )
         if len(di) == 0:
