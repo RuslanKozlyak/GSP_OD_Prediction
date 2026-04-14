@@ -1048,18 +1048,42 @@ def run_graph_model(model_name, train_areas, valid_areas, test_areas, data_path=
     )
 
 
-def train_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_PATH,
-                           gps_loader=None, city_ids=None, run_id=None):
-    """Train and persist TransFlowerOrig via the GPS training infrastructure."""
+def _gps_baseline_labels(model_name):
+    if model_name == "TransFlowerOrig":
+        return (
+            "TransFlower Orig (MLP+TF+RLE)",
+            "MC TransFlower Orig (MLP+TF+RLE)",
+        )
+    if model_name == "GAT_GAN_Orig":
+        return (
+            "Orig GAT-GAN (GAT+Linear+WGAN-clip)",
+            "MC Orig GAT-GAN (GAT+Linear+WGAN-clip)",
+        )
+    if model_name == "ODGN":
+        return (
+            "ODGN (GAT+Gravity-Guided+WGAN-clip)",
+            "MC ODGN (GAT+Gravity-Guided+WGAN-clip)",
+        )
+    raise ValueError(f"Unsupported GPS baseline model: {model_name}")
+
+
+def train_gps_baseline(model_name, train_areas, valid_areas, test_areas, data_path=DATA_PATH,
+                       gps_loader=None, city_ids=None, run_id=None):
+    """Train and persist a GPS-family baseline via the GPS training infrastructure."""
     from dataclasses import replace as dc_replace
     from models.GPS.main import train_single_city, train_multi_city
     from models.GPS.config import MC_EPOCHS
-    from .config import TRANSFLOWER_ORIG_CONFIG
+    from .config import GPS_BASELINE_CONFIGS
     from .gps_loader import GPSBenchmarkLoader
 
-    print(f"\n{'=' * 60}\n  Training: TransFlowerOrig\n{'=' * 60}")
+    cfg_template = GPS_BASELINE_CONFIGS.get(model_name)
+    if cfg_template is None:
+        raise ValueError(f"Unsupported GPS baseline model: {model_name}")
+    sc_label, mc_label = _gps_baseline_labels(model_name)
+
+    print(f"\n{'=' * 60}\n  Training: {model_name}\n{'=' * 60}")
     set_global_seed()
-    run_id = run_id or _benchmark_run_id("TransFlowerOrig", train_areas, valid_areas, test_areas)
+    run_id = run_id or _benchmark_run_id(model_name, train_areas, valid_areas, test_areas)
     single_city_split = _is_single_city_split(train_areas, valid_areas, test_areas)
 
     if single_city_split:
@@ -1068,18 +1092,18 @@ def train_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_
             single_city_id=area_id, data_path=data_path,
         )
         city_data = gps_loader.get_single_city_data(
-            pe_type=TRANSFLOWER_ORIG_CONFIG.pe_type,
+            pe_type=cfg_template.pe_type,
             area_id=area_id,
-            pair_split_mode=TRANSFLOWER_ORIG_CONFIG.pair_split_mode,
+            pair_split_mode=cfg_template.pair_split_mode,
         )
         result = train_single_city(
             run_id,
-            "TransFlower Orig (MLP+TF+RLE)",
-            TRANSFLOWER_ORIG_CONFIG,
+            sc_label,
+            cfg_template,
             city_data=city_data,
         )
     else:
-        cfg = dc_replace(TRANSFLOWER_ORIG_CONFIG, mc_epochs=MC_EPOCHS)
+        cfg = dc_replace(cfg_template, mc_epochs=MC_EPOCHS)
         city_ids = city_ids or (train_areas + valid_areas + test_areas)
         seen = set()
         unique_ids = []
@@ -1099,7 +1123,7 @@ def train_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_
         )
         result = train_multi_city(
             run_id,
-            "MC TransFlower Orig (MLP+TF+RLE)",
+            mc_label,
             cfg,
             city_data_dict=mc_dict,
             train_city_ids=mc_train_ids,
@@ -1109,19 +1133,19 @@ def train_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_
 
     cleanup_gpu()
     if result.get("status") != "ok":
-        print(f"  TransFlowerOrig FAILED: {result.get('status')}")
+        print(f"  {model_name} FAILED: {result.get('status')}")
         return None
     return run_id
 
 
-def infer_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_PATH,
-                           gps_loader=None, city_ids=None, run_id=None):
-    """Load a persisted TransFlowerOrig run and evaluate it."""
+def infer_gps_baseline(model_name, train_areas, valid_areas, test_areas, data_path=DATA_PATH,
+                       gps_loader=None, city_ids=None, run_id=None):
+    """Load a persisted GPS-family baseline run and evaluate it."""
     from .gps_loader import GPSBenchmarkLoader
 
-    print(f"\n{'=' * 60}\n  Loading: TransFlowerOrig\n{'=' * 60}")
+    print(f"\n{'=' * 60}\n  Loading: {model_name}\n{'=' * 60}")
     t0 = time.time()
-    run_id = run_id or _benchmark_run_id("TransFlowerOrig", train_areas, valid_areas, test_areas)
+    run_id = run_id or _benchmark_run_id(model_name, train_areas, valid_areas, test_areas)
     single_city_split = _is_single_city_split(train_areas, valid_areas, test_areas)
     metric_runs = []
 
@@ -1180,6 +1204,26 @@ def infer_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_
         if "CPC_train_full" in avg:
             print(f"  Train/Val: {format_train_val_cpc_metrics(avg)}")
     return metric_runs
+
+
+def train_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_PATH,
+                           gps_loader=None, city_ids=None, run_id=None):
+    """Backward-compatible wrapper for the TransFlower GPS-family baseline."""
+    return train_gps_baseline(
+        "TransFlowerOrig",
+        train_areas, valid_areas, test_areas, data_path,
+        gps_loader=gps_loader, city_ids=city_ids, run_id=run_id,
+    )
+
+
+def infer_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_PATH,
+                           gps_loader=None, city_ids=None, run_id=None):
+    """Backward-compatible wrapper for the TransFlower GPS-family baseline."""
+    return infer_gps_baseline(
+        "TransFlowerOrig",
+        train_areas, valid_areas, test_areas, data_path,
+        gps_loader=gps_loader, city_ids=city_ids, run_id=run_id,
+    )
 
 
 def run_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_PATH,

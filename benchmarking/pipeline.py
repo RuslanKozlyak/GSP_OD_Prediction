@@ -19,12 +19,12 @@ from .gps_loader import GPSBenchmarkLoader
 from .repeats import aggregate_metric_samples, single_city_lgbm_run_id, single_city_run_id
 from .runners import (
     infer_flat_model,
+    infer_gps_baseline,
     infer_graph_model,
-    infer_transflower_orig,
     run_diffusion_model,
     train_flat_model,
+    train_gps_baseline,
     train_graph_model,
-    train_transflower_orig,
 )
 
 
@@ -41,8 +41,9 @@ def _train_baseline_model(model_name, train_areas, valid_areas, test_areas, data
         )
     if model_name in ("DiffODGen", "WeDAN"):
         return None
-    if model_name == "TransFlowerOrig":
-        return train_transflower_orig(
+    if model_name in ("TransFlowerOrig", "GAT_GAN_Orig", "ODGN"):
+        return train_gps_baseline(
+            model_name,
             train_areas, valid_areas, test_areas, data_path,
             gps_loader=gps_loader, city_ids=city_ids,
         )
@@ -136,8 +137,9 @@ def _infer_baseline_model(model_name, train_areas, valid_areas, test_areas, data
         return run_diffusion_model(
             model_name, train_areas, valid_areas, test_areas, data_path,
         )
-    if model_name == "TransFlowerOrig":
-        return infer_transflower_orig(
+    if model_name in ("TransFlowerOrig", "GAT_GAN_Orig", "ODGN"):
+        return infer_gps_baseline(
+            model_name,
             train_areas, valid_areas, test_areas, data_path,
             gps_loader=gps_loader, city_ids=city_ids,
         )

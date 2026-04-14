@@ -55,11 +55,14 @@ BASELINE_MODELS = [
     "GMEL",
     "GMEL_LGBM",
     "TransFlowerOrig",
+    "GAT_GAN_Orig",
+    "ODGN",
 ]
 
 FLAT_BASELINE_MODELS = ["RF", "SVR", "GBRT", "DGM", "GM_E", "GM_P"]
 GRAPH_BASELINE_MODELS = ["GMEL", "GMEL_GBRT", "GMEL_LGBM", "NetGAN"]
-SEPARABLE_BASELINE_MODELS = FLAT_BASELINE_MODELS + GRAPH_BASELINE_MODELS + ["TransFlowerOrig"]
+GPS_BASELINE_MODELS = ["TransFlowerOrig", "GAT_GAN_Orig", "ODGN"]
+SEPARABLE_BASELINE_MODELS = FLAT_BASELINE_MODELS + GRAPH_BASELINE_MODELS + GPS_BASELINE_MODELS
 
 SINGLE_CITY_ID = GPS_SINGLE_CITY_ID
 MULTI_CITY_IDS = list(GPS_MULTI_CITY_IDS)
@@ -75,6 +78,51 @@ TRANSFLOWER_ORIG_CONFIG = TrainingConfig(
     pair_split_mode="nonzero_pairs",
     use_rle=True,
 )
+
+GAT_GAN_ORIG_CONFIG = TrainingConfig(
+    encoder_type="gat",
+    decoder_type="linear",
+    training_mode="gan",
+    gan_only=True,
+    loss_type="mae",
+    prediction_mode="raw",
+    use_log_transform=False,
+    pe_type=None,
+    gps_norm_type="none",
+    gnn_layers=3,
+    gnn_heads=8,
+    use_dest_sampling=False,
+    pair_split_mode="nonzero_pairs",
+    learning_rate=3e-4,
+    discriminator_lr=3e-4,
+    weight_decay=0.0,
+    patience=200,
+    adv_weight=1.0,
+    gan_pretrain_epochs=0,
+    gan_regularizer="clip",
+    gan_clip_value=0.01,
+    gan_gp_lambda=0.0,
+    gan_n_critic=5,
+    gan_n_critic_after_epoch=300,
+    gan_n_critic_after=1,
+    gan_noise_dim=0,
+    gan_noise_dim_mode="match_input",
+    gan_eval_num_samples=4,
+    gan_use_supervised_monitoring=True,
+    gat_use_edge_attr=True,
+    pair_use_distance=True,
+)
+
+ODGN_BASELINE_CONFIG = replace(
+    GAT_GAN_ORIG_CONFIG,
+    decoder_type="gravity_guided",
+)
+
+GPS_BASELINE_CONFIGS = {
+    "TransFlowerOrig": TRANSFLOWER_ORIG_CONFIG,
+    "GAT_GAN_Orig": GAT_GAN_ORIG_CONFIG,
+    "ODGN": ODGN_BASELINE_CONFIG,
+}
 
 FLAT_CHUNK_SIZE = 200
 FLAT_SGD_EPOCHS = 5
@@ -205,13 +253,16 @@ def baseline_multi_city_run_id(model_name):
 def baseline_artifact_paths(model_name, run_id):
     if model_name in ("RF", "SVR", "GBRT"):
         return [WEIGHTS_DIR / f"{run_id}.joblib"]
-    if model_name in ("DGM", "GM_E", "GM_P", "NetGAN", "TransFlowerOrig"):
+    if model_name in ("DGM", "GM_E", "GM_P", "NetGAN"):
         base_paths = [WEIGHTS_DIR / f"{run_id}.pt"]
-        if model_name == "TransFlowerOrig":
-            base_paths.append(WEIGHTS_DIR / f"{run_id}.json")
         if model_name == "NetGAN":
             base_paths.append(WEIGHTS_DIR / f"{run_id}_meta.joblib")
         return base_paths
+    if model_name in GPS_BASELINE_MODELS:
+        return [
+            WEIGHTS_DIR / f"{run_id}.pt",
+            WEIGHTS_DIR / f"{run_id}.json",
+        ]
     if model_name in ("GMEL", "GMEL_GBRT"):
         return [
             WEIGHTS_DIR / f"{run_id}.pt",
