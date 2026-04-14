@@ -14,6 +14,7 @@ import torch
 from tqdm.auto import tqdm
 
 from models.shared.metrics import (
+    _SPLIT_METRIC_NAMES,
     average_listed_metrics,
     average_matrix_split_metrics,
     canonical_od_metrics,
@@ -141,21 +142,6 @@ def _stream_subsample_flat_training(areas, data_path, feature_mode, max_samples,
     return np.concatenate(sampled_x, axis=0), np.concatenate(sampled_y, axis=0), sampled, total
 
 
-def _compute_flat_validation_metrics(model, xs_valid, ys_valid, xs_valid_full, ys_valid_full):
-    cpc_vals = []
-    for x_one, y_one in zip(xs_valid, ys_valid):
-        cpc_vals.append(compute_metrics(_predict_flat_array(model, x_one), y_one)['CPC'])
-
-    cpc_fulls = []
-    for x_one, y_one in zip(xs_valid_full, ys_valid_full):
-        cpc_fulls.append(compute_metrics(_predict_flat_array(model, x_one), y_one)['CPC'])
-
-    return {
-        'CPC_val_nz': float(np.mean(cpc_vals)) if cpc_vals else float('nan'),
-        'CPC_val_full': float(np.mean(cpc_fulls)) if cpc_fulls else float('nan'),
-    }
-
-
 def _compute_flat_train_val_metrics(model, payload):
     if payload['single_city_split']:
         pred_flat = _predict_flat_array(model, payload['x_full'])
@@ -174,7 +160,6 @@ def _compute_flat_train_val_metrics(model, payload):
         ('train', 'xs_train_eval', 'ys_train_eval'),
         ('val', 'xs_valid_full', 'ys_valid_full'),
     ):
-        from models.shared.metrics import _SPLIT_METRIC_NAMES
         per_city_metrics = []
         if xs_key in payload and ys_key in payload:
             pairs = zip(payload[xs_key], payload[ys_key])
@@ -678,14 +663,7 @@ def train_flat_model(model_name, train_areas, valid_areas, test_areas, data_path
             **split_metric_kwargs,
             **{k: v for k, v in hp.items() if k not in ('batch_size', 'max_epochs', 'patience')},
         )
-        validation_metrics = _compute_flat_validation_metrics(
-            model,
-            payload['xs_valid'],
-            payload['ys_valid'],
-            payload['xs_valid_full'],
-            payload['ys_valid_full'],
-        )
-        validation_metrics.update(_compute_flat_train_val_metrics(model, payload))
+        validation_metrics = _compute_flat_train_val_metrics(model, payload)
         _print_validation_metrics(validation_metrics)
         _print_train_val_metrics(validation_metrics)
         _save_flat_model_artifact(module, model_name, run_id, model)
@@ -722,14 +700,7 @@ def infer_flat_model(model_name, train_areas, valid_areas, test_areas, data_path
         model = _load_flat_model_artifact(module, model_name, run_id)
         if model is None:
             return []
-        validation_metrics = _compute_flat_validation_metrics(
-            model,
-            payload['xs_valid'],
-            payload['ys_valid'],
-            payload['xs_valid_full'],
-            payload['ys_valid_full'],
-        )
-        validation_metrics.update(_compute_flat_train_val_metrics(model, payload))
+        validation_metrics = _compute_flat_train_val_metrics(model, payload)
         _print_validation_metrics(validation_metrics)
         _print_train_val_metrics(validation_metrics)
 
