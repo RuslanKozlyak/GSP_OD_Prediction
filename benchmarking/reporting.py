@@ -30,10 +30,7 @@ def save_results_table(df, filename):
 
 
 def build_combined_summary(single_city_results, multi_city_results):
-    summary_metrics = [
-        col for col in RESULT_COLUMNS
-        if not col.endswith("_std") and col != "n_runs"
-    ]
+    summary_metrics = list(RESULT_COLUMNS)
     all_models = sorted(set(single_city_results) | set(multi_city_results))
     rows = []
     for model in all_models:
@@ -42,12 +39,10 @@ def build_combined_summary(single_city_results, multi_city_results):
             sc = single_city_results[model]
             for metric in summary_metrics:
                 row[f"SC_{metric}"] = sc.get(metric)
-                row[f"SC_{metric}_std"] = sc.get(f"{metric}_std")
         if model in multi_city_results:
             mc = multi_city_results[model]
             for metric in summary_metrics:
                 row[f"MC_{metric}"] = mc.get(metric)
-                row[f"MC_{metric}_std"] = mc.get(f"{metric}_std")
         rows.append(row)
     return pd.DataFrame(rows).set_index("Model")
 
@@ -86,9 +81,7 @@ def plot_comparison(results_dict, title, metrics_to_plot=None):
 
     for idx, metric in enumerate(available):
         vals = df[metric].values
-        err_col = f"{metric}_std"
-        errs = df[err_col].values if err_col in df.columns else None
-        axes[idx].barh(range(len(df)), vals, color=colors, xerr=errs, capsize=3 if errs is not None else 0)
+        axes[idx].barh(range(len(df)), vals, color=colors)
         axes[idx].set_yticks(range(len(df)))
         axes[idx].set_yticklabels(df.index, fontsize=9)
         axes[idx].set_xlabel(metric)

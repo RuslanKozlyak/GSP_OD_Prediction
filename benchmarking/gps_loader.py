@@ -10,7 +10,6 @@ from models.shared.metrics import format_train_val_cpc_metrics
 
 from .artifacts import save_od_artifacts
 from .config import DATA_PATH, MULTI_CITY_IDS, SINGLE_CITY_ID, cleanup_gpu
-from .config import set_global_seed
 
 _PE_TYPE_UNSET = object()
 
@@ -48,7 +47,7 @@ class GPSBenchmarkLoader:
         return self._multi_city_cache[key]
 
     def load_gps_results(self, run_id, city_data=None, config=None, area_id=None,
-                         inference_seed=None, verbose=True, is_test_city=True,
+                         verbose=True, is_test_city=True,
                          weights_dir=WEIGHTS_DIR):
         from models.GPS.config import load_model_config
 
@@ -74,8 +73,6 @@ class GPSBenchmarkLoader:
             print(f"  Loading {run_id} (pe_type={effective_cfg.pe_type}) ...")
         model = None
         try:
-            if inference_seed is not None:
-                set_global_seed(inference_seed)
             model = make_model(effective_cfg, graph_data_ref=city_data["graph_data"])
             model.load_state_dict(torch.load(str(weight_path), map_location=device))
             model.to(device).eval()
@@ -87,7 +84,6 @@ class GPSBenchmarkLoader:
                 pred,
                 city_data["od_matrix_np"],
                 city_id=city_data.get("city_id", area_id),
-                inference_seed=inference_seed,
             )
             metrics = summarize_prediction_metrics(
                 pred, city_data, is_test_city=is_test_city
@@ -108,7 +104,7 @@ class GPSBenchmarkLoader:
                 del model
             cleanup_gpu()
 
-    def load_lgbm_results(self, run_id, city_data=None, area_id=None, pe_type=_PE_TYPE_UNSET, inference_seed=None):
+    def load_lgbm_results(self, run_id, city_data=None, area_id=None, pe_type=_PE_TYPE_UNSET):
         from models.GPS.config import load_model_config
 
         donor_id = None
@@ -132,8 +128,6 @@ class GPSBenchmarkLoader:
                 area_id=area_id,
                 pair_split_mode=donor_pair_split_mode,
             )
-        if inference_seed is not None:
-            set_global_seed(inference_seed)
         payload = load_saved_lgbm_results(run_id, city_data, return_payload=True)
         if payload is None:
             return None
@@ -143,11 +137,10 @@ class GPSBenchmarkLoader:
             payload['pred_matrix'],
             payload['ground_truth_matrix'],
             city_id=city_data.get("city_id", area_id),
-            inference_seed=inference_seed,
         )
         return metrics
 
-    def load_gmel_gps_results(self, run_id, city_data=None, area_id=None, inference_seed=None):
+    def load_gmel_gps_results(self, run_id, city_data=None, area_id=None):
         """Load a pre-trained GMEL_GPS model + GBRT and evaluate on one city."""
         import json
         from models.GMEL_GPS.model import GMEL_GPS
@@ -180,8 +173,6 @@ class GPSBenchmarkLoader:
         print(f"  Loading {run_id} (pe_type={cfg.pe_type}) ...")
         model = None
         try:
-            if inference_seed is not None:
-                set_global_seed(inference_seed)
             gd = city_data['graph_data']
             model = GMEL_GPS(
                 input_dim  = gd.x.shape[1],
@@ -204,7 +195,6 @@ class GPSBenchmarkLoader:
                 pred,
                 city_data['od_matrix_np'],
                 city_id=city_data.get("city_id", area_id),
-                inference_seed=inference_seed,
             )
             metrics = summarize_prediction_metrics(pred, city_data)['combined']
             print(
@@ -222,7 +212,7 @@ class GPSBenchmarkLoader:
                 del model
             cleanup_gpu()
 
-    def load_multi_city_gps_results(self, run_id, city_ids=None, inference_seed=None,
+    def load_multi_city_gps_results(self, run_id, city_ids=None,
                                     evaluate_all_cities=False, return_split_groups=False,
                                     verbose=True, weights_dir=WEIGHTS_DIR):
         from models.GPS.config import load_model_config
@@ -250,7 +240,6 @@ class GPSBenchmarkLoader:
                 run_id,
                 city_data=city_data_dict[city_id],
                 config=saved_cfg,
-                inference_seed=inference_seed,
                 verbose=verbose,
                 is_test_city=city_id in test_city_id_set,
                 weights_dir=weights_dir,

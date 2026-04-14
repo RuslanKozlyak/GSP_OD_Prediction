@@ -26,10 +26,6 @@ def _artifact_dir(run_id, city_id=None):
     return path
 
 
-def _seed_suffix(inference_seed):
-    return "default" if inference_seed is None else f"seed_{_slugify(inference_seed)}"
-
-
 def _as_matrix(matrix, name):
     arr = np.asarray(matrix, dtype=np.float32)
     if arr.ndim != 2:
@@ -65,18 +61,17 @@ def _save_heatmap(path, matrix, title, vmax):
 
 
 def save_od_artifacts(run_id, pred_matrix, ground_truth_matrix, *, city_id=None,
-                      inference_seed=None, model_name=None):
+                      model_name=None):
     """Persist raw OD matrices plus a heatmap for the predicted OD matrix."""
     pred_matrix = _as_matrix(pred_matrix, "pred_matrix")
     ground_truth_matrix = _as_matrix(ground_truth_matrix, "ground_truth_matrix")
 
     out_dir = _artifact_dir(run_id, city_id=city_id)
-    seed_suffix = _seed_suffix(inference_seed)
     vmax = _heatmap_vmax(pred_matrix, ground_truth_matrix)
 
     gt_path = out_dir / "ground_truth.npy"
-    pred_path = out_dir / f"prediction_{seed_suffix}.npy"
-    heatmap_path = out_dir / f"prediction_{seed_suffix}_heatmap.png"
+    pred_path = out_dir / "prediction.npy"
+    heatmap_path = out_dir / "prediction_heatmap.png"
 
     np.save(gt_path, ground_truth_matrix)
     np.save(pred_path, pred_matrix)
@@ -84,8 +79,6 @@ def save_od_artifacts(run_id, pred_matrix, ground_truth_matrix, *, city_id=None,
     title_parts = [model_name or run_id]
     if city_id is not None:
         title_parts.append(f"city={city_id}")
-    if inference_seed is not None:
-        title_parts.append(f"seed={inference_seed}")
     title_parts.append("prediction")
     _save_heatmap(heatmap_path, pred_matrix, " | ".join(title_parts), vmax=vmax)
 

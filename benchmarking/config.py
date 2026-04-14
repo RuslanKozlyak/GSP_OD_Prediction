@@ -23,7 +23,6 @@ DATA_PATH = _DATA_PATH_WITH_LU if _DATA_PATH_WITH_LU.exists() else (PROJECT_ROOT
 RESULTS_DIR = PROJECT_ROOT / "results"
 
 SEED = 42
-INFERENCE_SEEDS = [42, 43, 44, 45, 46]
 
 # Per baseline training run. Set to None or <= 0 to disable.
 BASELINE_TRAIN_TIMEOUT_SECONDS = int(1.5 * 60 * 60)
@@ -185,10 +184,8 @@ _RESULT_METRIC_COLUMNS.extend([
     "JSD_ODflow",
 ])
 RESULT_COLUMNS = [
-    item
-    for column_name in _RESULT_METRIC_COLUMNS
-    for item in (column_name, f"{column_name}_std")
-] + ["n_runs"]
+    * _RESULT_METRIC_COLUMNS,
+]
 
 
 def set_global_seed(seed: int = SEED) -> None:

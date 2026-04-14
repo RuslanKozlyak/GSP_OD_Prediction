@@ -10,7 +10,6 @@ from models.shared.metrics import format_train_val_cpc_metrics
 from .config import (
     BASELINE_MODELS,
     BASELINE_TRAIN_TIMEOUT_SECONDS,
-    INFERENCE_SEEDS,
     SINGLE_CITY_IDS,
     WEIGHTS_DIR,
     cleanup_gpu,
@@ -124,26 +123,23 @@ def _train_baseline_model_with_timeout(model_name, train_areas, valid_areas, tes
 
 
 def _infer_baseline_model(model_name, train_areas, valid_areas, test_areas, data_path,
-                          gps_loader=None, city_ids=None, inference_seeds=None):
+                          gps_loader=None, city_ids=None):
     if model_name in ("RF", "SVR", "GBRT", "DGM", "GM_E", "GM_P"):
         return infer_flat_model(
             model_name, train_areas, valid_areas, test_areas, data_path,
-            inference_seeds=inference_seeds,
         )
     if model_name in ("GMEL", "GMEL_GBRT", "GMEL_LGBM", "NetGAN"):
         return infer_graph_model(
             model_name, train_areas, valid_areas, test_areas, data_path,
-            inference_seeds=inference_seeds,
         )
     if model_name in ("DiffODGen", "WeDAN"):
         return run_diffusion_model(
             model_name, train_areas, valid_areas, test_areas, data_path,
-            inference_seeds=inference_seeds,
         )
     if model_name == "TransFlowerOrig":
         return infer_transflower_orig(
             train_areas, valid_areas, test_areas, data_path,
-            gps_loader=gps_loader, city_ids=city_ids, inference_seeds=inference_seeds,
+            gps_loader=gps_loader, city_ids=city_ids,
         )
     raise ValueError(f"Unknown model: {model_name}")
 
@@ -263,12 +259,10 @@ def run_single_city_benchmark(
     baseline_models=None,
     gps_loader=None,
     gmel_gps_run_ids=None,
-    inference_seeds=None,
     gps_weights_dir=WEIGHTS_DIR,
     gps_model_type_label="Ours (GPS)",
 ):
     single_city_ids = _normalize_single_city_ids(single_city_ids)
-    inference_seeds = list(INFERENCE_SEEDS if inference_seeds is None else inference_seeds)
     gps_loader = gps_loader or GPSBenchmarkLoader(single_city_id=single_city_ids[0], data_path=data_path)
     baseline_models = list(BASELINE_MODELS if baseline_models is None else baseline_models)
 
@@ -282,15 +276,13 @@ def run_single_city_benchmark(
         metric_samples = []
         for city_id in single_city_ids:
             run_id = single_city_run_id(base_run_id, city_id)
-            for inference_seed in inference_seeds:
-                metrics = gps_loader.load_gps_results(
-                    run_id,
-                    area_id=city_id,
-                    inference_seed=inference_seed,
-                    weights_dir=gps_weights_dir,
-                )
-                if metrics:
-                    metric_samples.append(metrics)
+            metrics = gps_loader.load_gps_results(
+                run_id,
+                area_id=city_id,
+                weights_dir=gps_weights_dir,
+            )
+            if metrics:
+                metric_samples.append(metrics)
         if metric_samples:
             results[base_run_id] = aggregate_metric_samples(metric_samples)
             model_types[base_run_id] = gps_model_type_label
@@ -303,14 +295,12 @@ def run_single_city_benchmark(
         try:
             for city_id in single_city_ids:
                 run_id = single_city_lgbm_run_id(base_run_id, city_id)
-                for inference_seed in inference_seeds:
-                    metrics = gps_loader.load_lgbm_results(
-                        run_id,
-                        area_id=city_id,
-                        inference_seed=inference_seed,
-                    )
-                    if metrics:
-                        metric_samples.append(metrics)
+                metrics = gps_loader.load_lgbm_results(
+                    run_id,
+                    area_id=city_id,
+                )
+                if metrics:
+                    metric_samples.append(metrics)
             if metric_samples:
                 results[result_key] = aggregate_metric_samples(metric_samples)
                 model_types[result_key] = "Ours (GPS+LGBM)"
@@ -325,14 +315,12 @@ def run_single_city_benchmark(
             metric_samples = []
             for city_id in single_city_ids:
                 run_id = single_city_run_id(base_run_id, city_id)
-                for inference_seed in inference_seeds:
-                    metrics = gps_loader.load_gmel_gps_results(
-                        run_id,
-                        area_id=city_id,
-                        inference_seed=inference_seed,
-                    )
-                    if metrics:
-                        metric_samples.append(metrics)
+                metrics = gps_loader.load_gmel_gps_results(
+                    run_id,
+                    area_id=city_id,
+                )
+                if metrics:
+                    metric_samples.append(metrics)
             if metric_samples:
                 results[base_run_id] = aggregate_metric_samples(metric_samples)
                 model_types[base_run_id] = "Ours (GMEL_GPS)"
@@ -350,7 +338,6 @@ def run_single_city_benchmark(
                     [city_id],
                     data_path,
                     gps_loader=gps_loader,
-                    inference_seeds=inference_seeds,
                 )
                 if metrics_list:
                     metric_samples.extend(metrics_list)
@@ -372,11 +359,9 @@ def run_multi_city_benchmark(
     data_path,
     baseline_models=None,
     gps_loader=None,
-    inference_seeds=None,
     gps_weights_dir=WEIGHTS_DIR,
     gps_model_type_label="Ours (GPS)",
 ):
-    inference_seeds = list(INFERENCE_SEEDS if inference_seeds is None else inference_seeds)
     gps_loader = gps_loader or GPSBenchmarkLoader(multi_city_ids=city_ids, data_path=data_path)
     baseline_models = list(BASELINE_MODELS if baseline_models is None else baseline_models)
     mc_train, mc_valid, mc_test = split_multi_city_ids(city_ids)
@@ -386,34 +371,28 @@ def run_multi_city_benchmark(
 
     print("\n[Our Model - GPS variants]")
     for run_id in gps_run_ids:
-        metric_samples = []
         per_city_metric_samples = defaultdict(list)
-        for inference_seed in inference_seeds:
-            metric_groups = gps_loader.load_multi_city_gps_results(
-                run_id,
-                city_ids=city_ids,
-                inference_seed=inference_seed,
-                evaluate_all_cities=True,
-                return_split_groups=True,
-                verbose=False,
-                weights_dir=gps_weights_dir,
+        metric_groups = gps_loader.load_multi_city_gps_results(
+            run_id,
+            city_ids=city_ids,
+            evaluate_all_cities=True,
+            return_split_groups=True,
+            verbose=False,
+            weights_dir=gps_weights_dir,
+        )
+        if metric_groups and metric_groups.get("all"):
+            for city_metric in metric_groups["all"]:
+                city_id = city_metric.get("city_id")
+                if city_id is not None:
+                    per_city_metric_samples[city_id].append(city_metric)
+            overall_metrics = _average_multi_city_metrics(
+                metric_groups["all"],
+                metric_groups.get("test"),
+                metric_groups.get("train"),
+                metric_groups.get("val"),
             )
-            if metric_groups and metric_groups.get("all"):
-                for city_metric in metric_groups["all"]:
-                    city_id = city_metric.get("city_id")
-                    if city_id is not None:
-                        per_city_metric_samples[city_id].append(city_metric)
-                metric_samples.append(
-                    _average_multi_city_metrics(
-                        metric_groups["all"],
-                        metric_groups.get("test"),
-                        metric_groups.get("train"),
-                        metric_groups.get("val"),
-                    )
-                )
-        if metric_samples:
             per_city_summary = _summarize_multi_city_per_city(per_city_metric_samples)
-            results[run_id] = aggregate_metric_samples(metric_samples)
+            results[run_id] = overall_metrics
             results[run_id]["per_city"] = per_city_summary
             model_types[run_id] = gps_model_type_label
             _print_multi_city_city_summary(run_id, per_city_summary, results[run_id])
@@ -425,7 +404,7 @@ def run_multi_city_benchmark(
             metrics_list = _infer_baseline_model(
                 model_name,
                 mc_train, mc_valid, mc_test, data_path,
-                gps_loader=gps_loader, city_ids=city_ids, inference_seeds=inference_seeds,
+                gps_loader=gps_loader, city_ids=city_ids,
             )
             if metrics_list:
                 results[model_name] = aggregate_metric_samples(metrics_list)
@@ -538,28 +517,12 @@ def _print_multi_city_city_summary(run_id, per_city_summary, overall_metrics):
 
 
 def _fmt_metric(metrics, key, precision=4):
-    candidates = (key,)
-    mean = None
-    std = None
-    for candidate in candidates:
-        if candidate in metrics:
-            mean = metrics.get(candidate)
-            std = metrics.get(f"{candidate}_std")
-            break
-    if mean is None:
+    if key not in metrics:
         return "-"
     try:
-        mean = float(mean)
+        mean = float(metrics.get(key))
     except (TypeError, ValueError):
         return "-"
     if mean != mean:
         return "-"
-    if std is None:
-        return f"{mean:.{precision}f}"
-    try:
-        std = float(std)
-    except (TypeError, ValueError):
-        return f"{mean:.{precision}f}"
-    if std != std:
-        return f"{mean:.{precision}f}"
-    return f"{mean:.{precision}f}+/-{std:.{precision}f}"
+    return f"{mean:.{precision}f}"

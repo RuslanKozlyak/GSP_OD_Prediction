@@ -346,16 +346,6 @@ def _load_local_module(module_name, path):
     return module
 
 
-def _repeat_inference(eval_once, inference_seeds):
-    seeds = list(inference_seeds or [None])
-    metric_runs = []
-    for seed in seeds:
-        if seed is not None:
-            set_global_seed(seed)
-        metric_runs.append(average_listed_metrics(eval_once(seed)))
-    return metric_runs
-
-
 def _average_numeric_metrics(metric_dicts):
     numeric_keys = sorted({
         key
@@ -683,7 +673,7 @@ def train_flat_model(model_name, train_areas, valid_areas, test_areas, data_path
 
 
 def infer_flat_model(model_name, train_areas, valid_areas, test_areas, data_path=DATA_PATH,
-                     inference_seeds=None, run_id=None):
+                     run_id=None):
     """Load a flat-feature baseline from disk and evaluate it."""
     print(f"\n{'=' * 60}\n  Loading: {model_name}\n{'=' * 60}")
     t0 = time.time()
@@ -710,50 +700,46 @@ def infer_flat_model(model_name, train_areas, valid_areas, test_areas, data_path
         _print_validation_metrics(validation_metrics)
         _print_train_val_metrics(validation_metrics)
 
-        def evaluate_once(inference_seed=None):
-            if payload['single_city_split'] and payload['od_matrix'] is not None:
-                x_full = payload['xs_test'][0]
-                pred_flat = _predict_flat_array(model, x_full)
-                pred_matrix = pred_flat.reshape(payload['n_nodes'], payload['n_nodes'])
+        if payload['single_city_split'] and payload['od_matrix'] is not None:
+            x_full = payload['xs_test'][0]
+            pred_flat = _predict_flat_array(model, x_full)
+            pred_matrix = pred_flat.reshape(payload['n_nodes'], payload['n_nodes'])
+            save_od_artifacts(
+                run_id,
+                pred_matrix,
+                payload['od_matrix'],
+                city_id=payload['area_id'],
+                model_name=model_name,
+            )
+            mf = canonical_od_metrics(
+                pred_matrix,
+                payload['od_matrix'],
+                test_mask=payload['test_mask'],
+                test_full_mask=payload.get('test_full_mask'),
+                train_mask=payload.get('train_mask'),
+                val_mask=payload.get('val_mask'),
+                train_full_mask=payload.get('train_full_mask'),
+                val_full_mask=payload.get('val_full_mask'),
+            )
+            metric_runs = _attach_validation_metrics([mf], validation_metrics)
+        else:
+            metrics_all = []
+            for area_id, x_one, y_one in zip(
+                payload['test_area_ids'], payload['xs_test'], payload['ys_test']
+            ):
+                nn = int(np.sqrt(y_one.shape[0]))
+                y_hat = _predict_flat_array(model, x_one).reshape(nn, nn)
+                y_true = y_one.reshape(nn, nn)
                 save_od_artifacts(
                     run_id,
-                    pred_matrix,
-                    payload['od_matrix'],
-                    city_id=payload['area_id'],
-                    inference_seed=inference_seed,
+                    y_hat,
+                    y_true,
+                    city_id=area_id,
                     model_name=model_name,
                 )
-                mf = canonical_od_metrics(
-                    pred_matrix,
-                    payload['od_matrix'],
-                    test_mask=payload['test_mask'],
-                    test_full_mask=payload.get('test_full_mask'),
-                    train_mask=payload.get('train_mask'),
-                    val_mask=payload.get('val_mask'),
-                    train_full_mask=payload.get('train_full_mask'),
-                    val_full_mask=payload.get('val_full_mask'),
-                )
-                metrics_all = [mf]
-            else:
-                metrics_all = []
-                for area_id, x_one, y_one in zip(
-                    payload['test_area_ids'], payload['xs_test'], payload['ys_test']
-                ):
-                    nn = int(np.sqrt(y_one.shape[0]))
-                    y_hat = _predict_flat_array(model, x_one).reshape(nn, nn)
-                    y_true = y_one.reshape(nn, nn)
-                    save_od_artifacts(
-                        run_id,
-                        y_hat,
-                        y_true,
-                        city_id=area_id,
-                        inference_seed=inference_seed,
-                        model_name=model_name,
-                    )
-                    metrics_all.append(canonical_od_metrics(y_hat, y_true))
-            return _attach_validation_metrics(metrics_all, validation_metrics)
+                metrics_all.append(canonical_od_metrics(y_hat, y_true))
+            metric_runs = _attach_validation_metrics(metrics_all, validation_metrics)
 
-        metric_runs = _repeat_inference(evaluate_once, inference_seeds)
         if metric_runs:
             avg = average_listed_metrics(metric_runs)
             print(f"  CPC_full={avg['CPC_full']:.4f}  RMSE_full={avg['RMSE_full']:.2f}  "
@@ -767,13 +753,12 @@ def infer_flat_model(model_name, train_areas, valid_areas, test_areas, data_path
         cleanup_gpu()
 
 
-def run_flat_model(model_name, train_areas, valid_areas, test_areas, data_path=DATA_PATH,
-                   inference_seeds=None):
+def run_flat_model(model_name, train_areas, valid_areas, test_areas, data_path=DATA_PATH):
     """Train, save, then load+evaluate a flat-feature model."""
     run_id = train_flat_model(model_name, train_areas, valid_areas, test_areas, data_path)
     return infer_flat_model(
         model_name, train_areas, valid_areas, test_areas, data_path,
-        inference_seeds=inference_seeds, run_id=run_id,
+        run_id=run_id,
     )
 
 
@@ -866,7 +851,7 @@ def train_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
 
 
 def infer_graph_model(model_name, train_areas, valid_areas, test_areas, data_path=DATA_PATH,
-                      inference_seeds=None, run_id=None):
+                      run_id=None):
     """Load a graph-based baseline from disk and evaluate it."""
     print(f"\n{'=' * 60}\n  Loading: {model_name}\n{'=' * 60}")
     t0 = time.time()
@@ -895,57 +880,52 @@ def infer_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
             _print_validation_metrics(validation_metrics)
             _print_train_val_metrics(validation_metrics)
 
-            def evaluate_once(inference_seed=None):
-                if single_city_split and single_city_data is not None:
-                    od_hat = _predict_gmel_matrix(
-                        gmel, decoder, nfeat_scaler,
-                        single_city_data['nfeat'], single_city_data['adj'],
-                        single_city_data['dis'], device,
-                    )
-                    od_full = single_city_data['od'].astype(float)
+            if single_city_split and single_city_data is not None:
+                od_hat = _predict_gmel_matrix(
+                    gmel, decoder, nfeat_scaler,
+                    single_city_data['nfeat'], single_city_data['adj'],
+                    single_city_data['dis'], device,
+                )
+                od_full = single_city_data['od'].astype(float)
+                save_od_artifacts(
+                    run_id,
+                    od_hat,
+                    od_full,
+                    city_id=single_city_data['area_id'],
+                    model_name=model_name,
+                )
+                mf = canonical_od_metrics(
+                    od_hat,
+                    od_full,
+                    test_mask=single_city_data['test_mask'],
+                    test_full_mask=single_city_data.get('test_full_mask'),
+                    train_mask=single_city_data.get('train_mask'),
+                    val_mask=single_city_data.get('val_mask'),
+                    train_full_mask=single_city_data.get('train_full_mask'),
+                    val_full_mask=single_city_data.get('val_full_mask'),
+                )
+                metric_runs = _attach_validation_metrics([mf], validation_metrics)
+            else:
+                metrics_all = []
+                nf_test, adj_test, dis_test, od_test = load_graph_data(
+                    test_areas, data_path, feature_mode=DEFAULT_FEATURE_MODE
+                )
+                gmel.eval()
+                for area_id, nf, adj, dis, od in tqdm(
+                    zip(test_areas, nf_test, adj_test, dis_test, od_test),
+                    total=len(nf_test),
+                    desc="GMEL eval",
+                ):
+                    od_hat = _predict_gmel_matrix(gmel, decoder, nfeat_scaler, nf, adj, dis, device)
                     save_od_artifacts(
                         run_id,
                         od_hat,
-                        od_full,
-                        city_id=single_city_data['area_id'],
-                        inference_seed=inference_seed,
+                        od.astype(float),
+                        city_id=area_id,
                         model_name=model_name,
                     )
-                    mf = canonical_od_metrics(
-                        od_hat,
-                        od_full,
-                        test_mask=single_city_data['test_mask'],
-                        test_full_mask=single_city_data.get('test_full_mask'),
-                        train_mask=single_city_data.get('train_mask'),
-                        val_mask=single_city_data.get('val_mask'),
-                        train_full_mask=single_city_data.get('train_full_mask'),
-                        val_full_mask=single_city_data.get('val_full_mask'),
-                    )
-                    metrics_all = [mf]
-                else:
-                    metrics_all = []
-                    nf_test, adj_test, dis_test, od_test = load_graph_data(
-                        test_areas, data_path, feature_mode=DEFAULT_FEATURE_MODE
-                    )
-                    gmel.eval()
-                    for area_id, nf, adj, dis, od in tqdm(
-                        zip(test_areas, nf_test, adj_test, dis_test, od_test),
-                        total=len(nf_test),
-                        desc="GMEL eval",
-                    ):
-                        od_hat = _predict_gmel_matrix(gmel, decoder, nfeat_scaler, nf, adj, dis, device)
-                        save_od_artifacts(
-                            run_id,
-                            od_hat,
-                            od.astype(float),
-                            city_id=area_id,
-                            inference_seed=inference_seed,
-                            model_name=model_name,
-                        )
-                        metrics_all.append(canonical_od_metrics(od_hat, od))
-                return _attach_validation_metrics(metrics_all, validation_metrics)
-
-            metric_runs = _repeat_inference(evaluate_once, inference_seeds)
+                    metrics_all.append(canonical_od_metrics(od_hat, od))
+                metric_runs = _attach_validation_metrics(metrics_all, validation_metrics)
             del gmel, decoder
 
         elif model_name == "NetGAN":
@@ -976,78 +956,73 @@ def infer_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
             _print_validation_metrics(validation_metrics)
             _print_train_val_metrics(validation_metrics)
 
-            def evaluate_once(inference_seed=None):
-                if single_city_split and single_city_data is not None:
-                    gen = trained['generator']
-                    gen.eval()
-                    nf_s = trained['nfeat_scaler'].transform(single_city_data['nfeat'])
+            if single_city_split and single_city_data is not None:
+                gen = trained['generator']
+                gen.eval()
+                nf_s = trained['nfeat_scaler'].transform(single_city_data['nfeat'])
+                dis_s = trained['dis_scaler'].transform(
+                    single_city_data['dis'].reshape(-1, 1)
+                ).reshape(single_city_data['dis'].shape)
+                nf_t = torch.FloatTensor(nf_s).to(device)
+                dis_t = torch.FloatTensor(dis_s).to(device)
+                g = build_dgl_graph(single_city_data['adj'], device)
+                with torch.no_grad():
+                    od_gen, _, _ = gen.generate_OD_net(g, nf_t, dis_t)
+                od_hat = trained['od_scaler'].inverse_transform(
+                    od_gen.cpu().numpy().reshape(-1, 1)
+                ).reshape(single_city_data['od'].shape)
+                od_hat[od_hat < 0] = 0
+                od_full = single_city_data['od'].astype(float)
+                save_od_artifacts(
+                    run_id,
+                    od_hat,
+                    od_full,
+                    city_id=single_city_data['area_id'],
+                    model_name=model_name,
+                )
+                mf = canonical_od_metrics(
+                    od_hat,
+                    od_full,
+                    test_mask=single_city_data['test_mask'],
+                    test_full_mask=single_city_data.get('test_full_mask'),
+                    train_mask=single_city_data.get('train_mask'),
+                    val_mask=single_city_data.get('val_mask'),
+                    train_full_mask=single_city_data.get('train_full_mask'),
+                    val_full_mask=single_city_data.get('val_full_mask'),
+                )
+                metric_runs = _attach_validation_metrics([mf], validation_metrics)
+            else:
+                metrics_all = []
+                nf_test, adj_test, dis_test, od_test = load_graph_data(
+                    test_areas, data_path, feature_mode=DEFAULT_FEATURE_MODE
+                )
+                gen = trained['generator']
+                gen.eval()
+                for area_id, nf, adj, dis, od in zip(
+                    test_areas, nf_test, adj_test, dis_test, od_test
+                ):
+                    nf_s = trained['nfeat_scaler'].transform(nf)
                     dis_s = trained['dis_scaler'].transform(
-                        single_city_data['dis'].reshape(-1, 1)
-                    ).reshape(single_city_data['dis'].shape)
+                        dis.reshape(-1, 1)
+                    ).reshape(dis.shape)
                     nf_t = torch.FloatTensor(nf_s).to(device)
                     dis_t = torch.FloatTensor(dis_s).to(device)
-                    g = build_dgl_graph(single_city_data['adj'], device)
+                    g = build_dgl_graph(adj, device)
                     with torch.no_grad():
                         od_gen, _, _ = gen.generate_OD_net(g, nf_t, dis_t)
                     od_hat = trained['od_scaler'].inverse_transform(
                         od_gen.cpu().numpy().reshape(-1, 1)
-                    ).reshape(single_city_data['od'].shape)
+                    ).reshape(od.shape)
                     od_hat[od_hat < 0] = 0
-                    od_full = single_city_data['od'].astype(float)
                     save_od_artifacts(
                         run_id,
                         od_hat,
-                        od_full,
-                        city_id=single_city_data['area_id'],
-                        inference_seed=inference_seed,
+                        od.astype(float),
+                        city_id=area_id,
                         model_name=model_name,
                     )
-                    mf = canonical_od_metrics(
-                        od_hat,
-                        od_full,
-                        test_mask=single_city_data['test_mask'],
-                        test_full_mask=single_city_data.get('test_full_mask'),
-                        train_mask=single_city_data.get('train_mask'),
-                        val_mask=single_city_data.get('val_mask'),
-                        train_full_mask=single_city_data.get('train_full_mask'),
-                        val_full_mask=single_city_data.get('val_full_mask'),
-                    )
-                    metrics_all = [mf]
-                else:
-                    metrics_all = []
-                    nf_test, adj_test, dis_test, od_test = load_graph_data(
-                        test_areas, data_path, feature_mode=DEFAULT_FEATURE_MODE
-                    )
-                    gen = trained['generator']
-                    gen.eval()
-                    for area_id, nf, adj, dis, od in zip(
-                        test_areas, nf_test, adj_test, dis_test, od_test
-                    ):
-                        nf_s = trained['nfeat_scaler'].transform(nf)
-                        dis_s = trained['dis_scaler'].transform(
-                            dis.reshape(-1, 1)
-                        ).reshape(dis.shape)
-                        nf_t = torch.FloatTensor(nf_s).to(device)
-                        dis_t = torch.FloatTensor(dis_s).to(device)
-                        g = build_dgl_graph(adj, device)
-                        with torch.no_grad():
-                            od_gen, _, _ = gen.generate_OD_net(g, nf_t, dis_t)
-                        od_hat = trained['od_scaler'].inverse_transform(
-                            od_gen.cpu().numpy().reshape(-1, 1)
-                        ).reshape(od.shape)
-                        od_hat[od_hat < 0] = 0
-                        save_od_artifacts(
-                            run_id,
-                            od_hat,
-                            od.astype(float),
-                            city_id=area_id,
-                            inference_seed=inference_seed,
-                            model_name=model_name,
-                        )
-                        metrics_all.append(canonical_od_metrics(od_hat, od))
-                return _attach_validation_metrics(metrics_all, validation_metrics)
-
-            metric_runs = _repeat_inference(evaluate_once, inference_seeds)
+                    metrics_all.append(canonical_od_metrics(od_hat, od))
+                metric_runs = _attach_validation_metrics(metrics_all, validation_metrics)
             del trained
 
         else:
@@ -1064,12 +1039,12 @@ def infer_graph_model(model_name, train_areas, valid_areas, test_areas, data_pat
 
 
 def run_graph_model(model_name, train_areas, valid_areas, test_areas, data_path=DATA_PATH,
-                    inference_seeds=None):
+):
     """Train, save, then load+evaluate a graph-based model."""
     run_id = train_graph_model(model_name, train_areas, valid_areas, test_areas, data_path)
     return infer_graph_model(
         model_name, train_areas, valid_areas, test_areas, data_path,
-        inference_seeds=inference_seeds, run_id=run_id,
+        run_id=run_id,
     )
 
 
@@ -1140,7 +1115,7 @@ def train_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_
 
 
 def infer_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_PATH,
-                           gps_loader=None, city_ids=None, inference_seeds=None, run_id=None):
+                           gps_loader=None, city_ids=None, run_id=None):
     """Load a persisted TransFlowerOrig run and evaluate it."""
     from .gps_loader import GPSBenchmarkLoader
 
@@ -1155,53 +1130,49 @@ def infer_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_
         gps_loader = gps_loader or GPSBenchmarkLoader(
             single_city_id=area_id, data_path=data_path,
         )
-        for inference_seed in list(inference_seeds or [None]):
-            metrics = gps_loader.load_gps_results(
-                run_id,
-                area_id=area_id,
-                inference_seed=inference_seed,
-            )
-            if metrics:
-                metric_runs.append(metrics)
+        metrics = gps_loader.load_gps_results(
+            run_id,
+            area_id=area_id,
+        )
+        if metrics:
+            metric_runs.append(metrics)
     else:
         city_ids = city_ids or (train_areas + valid_areas + test_areas)
         city_ids = list(dict.fromkeys(city_ids))
         gps_loader = gps_loader or GPSBenchmarkLoader(
             multi_city_ids=city_ids, data_path=data_path,
         )
-        for inference_seed in list(inference_seeds or [None]):
-            metric_groups = gps_loader.load_multi_city_gps_results(
-                run_id,
-                city_ids=city_ids,
-                inference_seed=inference_seed,
-                evaluate_all_cities=True,
-                return_split_groups=True,
-            )
-            if metric_groups and metric_groups.get("all"):
-                averaged = _average_numeric_metrics(metric_groups["all"])
-                test_metrics = metric_groups.get("test") or []
-                if test_metrics:
-                    averaged_test = _average_numeric_metrics(test_metrics)
-                    for key in averaged_test:
-                        if (
-                            key.endswith("_test_full")
-                            or key.endswith("_test_nz")
-                        ):
-                            averaged[key] = averaged_test[key]
-                for prefix, split_metrics in (
-                    ("train", metric_groups.get("train") or []),
-                    ("val", metric_groups.get("val") or []),
-                ):
-                    if split_metrics:
-                        averaged_split = _average_numeric_metrics(split_metrics)
-                        for metric_name in ("CPC", "MAE", "RMSE", "MAPE", "SMAPE", "NRMSE"):
-                            for variant in ("full", "nz"):
-                                source_key = f"{metric_name}_{variant}"
-                                if source_key in averaged_split:
-                                    averaged[f"{metric_name}_{prefix}_{variant}"] = (
-                                        averaged_split[source_key]
-                                    )
-                metric_runs.append(averaged)
+        metric_groups = gps_loader.load_multi_city_gps_results(
+            run_id,
+            city_ids=city_ids,
+            evaluate_all_cities=True,
+            return_split_groups=True,
+        )
+        if metric_groups and metric_groups.get("all"):
+            averaged = _average_numeric_metrics(metric_groups["all"])
+            test_metrics = metric_groups.get("test") or []
+            if test_metrics:
+                averaged_test = _average_numeric_metrics(test_metrics)
+                for key in averaged_test:
+                    if (
+                        key.endswith("_test_full")
+                        or key.endswith("_test_nz")
+                    ):
+                        averaged[key] = averaged_test[key]
+            for prefix, split_metrics in (
+                ("train", metric_groups.get("train") or []),
+                ("val", metric_groups.get("val") or []),
+            ):
+                if split_metrics:
+                    averaged_split = _average_numeric_metrics(split_metrics)
+                    for metric_name in ("CPC", "MAE", "RMSE", "MAPE", "SMAPE", "NRMSE"):
+                        for variant in ("full", "nz"):
+                            source_key = f"{metric_name}_{variant}"
+                            if source_key in averaged_split:
+                                averaged[f"{metric_name}_{prefix}_{variant}"] = (
+                                    averaged_split[source_key]
+                                )
+            metric_runs.append(averaged)
 
     if metric_runs:
         avg = average_listed_metrics(metric_runs)
@@ -1212,7 +1183,7 @@ def infer_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_
 
 
 def run_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_PATH,
-                         gps_loader=None, city_ids=None, inference_seeds=None):
+                         gps_loader=None, city_ids=None):
     """Train, save, then load+evaluate TransFlowerOrig."""
     run_id = train_transflower_orig(
         train_areas, valid_areas, test_areas, data_path,
@@ -1223,12 +1194,11 @@ def run_transflower_orig(train_areas, valid_areas, test_areas, data_path=DATA_PA
     return infer_transflower_orig(
         train_areas, valid_areas, test_areas, data_path,
         gps_loader=gps_loader, city_ids=city_ids,
-        inference_seeds=inference_seeds, run_id=run_id,
+        run_id=run_id,
     )
 
 
-def run_diffusion_model(model_name, train_areas, valid_areas, test_areas, data_path=DATA_PATH,
-                        inference_seeds=None):
+def run_diffusion_model(model_name, train_areas, valid_areas, test_areas, data_path=DATA_PATH):
     """Run DiffODGen/WeDAN as subprocess (complex dependencies)."""
     del train_areas, valid_areas, test_areas, data_path
     print(f"\n{'=' * 60}\n  Running: {model_name}\n{'=' * 60}")
@@ -1280,8 +1250,7 @@ def run_diffusion_model(model_name, train_areas, valid_areas, test_areas, data_p
             for key in ("CPC_train_full", "CPC_val_full", "CPC_train_nz", "CPC_val_nz"):
                 avg_metrics.setdefault(key, float('nan'))
             print(f"  CPC_full={avg_metrics.get('CPC_full', 'N/A')}  ({time.time() - t0:.1f}s)")
-            repeats = list(inference_seeds or [None])
-            return [dict(avg_metrics) for _ in repeats]
+            return [dict(avg_metrics)]
     except Exception as exc:
         print(f"  Could not parse metrics: {exc}")
 

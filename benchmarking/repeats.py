@@ -15,7 +15,7 @@ def single_city_lgbm_run_id(base_run_id, city_id):
 
 
 def aggregate_metric_samples(metric_samples):
-    """Aggregate repeated metric dicts into mean/std columns."""
+    """Aggregate metric dicts into plain mean columns only."""
     if not metric_samples:
         return {}
 
@@ -26,7 +26,7 @@ def aggregate_metric_samples(metric_samples):
         if _is_numeric(value)
     })
 
-    aggregated = {"n_runs": len(metric_samples)}
+    aggregated = {}
     for key in numeric_keys:
         values = [
             float(sample[key])
@@ -35,11 +35,9 @@ def aggregate_metric_samples(metric_samples):
         ]
         if not values:
             aggregated[key] = float('nan')
-            aggregated[f"{key}_std"] = float('nan')
             continue
         arr = np.asarray(values, dtype=float)
         aggregated[key] = float(np.mean(arr))
-        aggregated[f"{key}_std"] = float(np.std(arr))
 
     return aggregated
 
