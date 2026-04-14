@@ -70,7 +70,12 @@ def plot_comparison(results_dict, title, metrics_to_plot=None):
 
     colors = []
     for name in df.index:
-        if "GPS" in name:
+        if (
+            "GPS" in name
+            or str(name).startswith(("SC_", "MC_"))
+            or "ODGN" in str(name)
+            or "_GAN_" in str(name)
+        ):
             colors.append("#2196F3")
         elif name in ("DiffODGen", "WeDAN"):
             colors.append("#9C27B0")

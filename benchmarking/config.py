@@ -29,26 +29,33 @@ INFERENCE_SEEDS = [42, 43, 44, 45, 46]
 BASELINE_TRAIN_TIMEOUT_SECONDS = int(1.5 * 60 * 60)
 
 GPS_BENCHMARK_IDS = [
-    "SC_TF_CE",
+    "SC_GG_CE_NORM_LAPE",
+    "SC_GG_MULTITASK_RAW_LOG_LAPE",
+    "SC_TF_CE_NORM_LAPE",
+    "SC_GAT_GAN_ORIG_PAPER_RAW_NONE_NOPE",
+    "SC_GG_GAN_CE_NORM_GN_LAPE",
+    "SC_ODGN_PAPER",
 ]
 
 GPS_MC_BENCHMARK_IDS = [
-    "MC_BL_CE_lape_log_gn",
+    "MC_GG_CE_NORM_LAPE",
+    "MC_GG_MULTITASK_RAW_LOG_LAPE",
+    "MC_TF_CE_NORM_LAPE",
+    "MC_GAT_GAN_ORIG_PAPER_RAW_NONE_NOPE",
+    "MC_GG_GAN_CE_NORM_GN_LAPE",
+    "MC_ODGN_PAPER",
 ]
 
 BASELINE_MODELS = [
-    # "RF",
-    # "SVR",
-    # "GBRT",
-    # "DGM",
-    # "GM_E",
-    # "GM_P",
-    # "GMEL",
-    # "GMEL_LGBM",
-    # "NetGAN",
-    # "DiffODGen",
-    # "WeDAN",
-    # "TransFlowerOrig",
+    "RF",
+    "SVR",
+    "GBRT",
+    "DGM",
+    "GM_E",
+    "GM_P",
+    "GMEL",
+    "GMEL_LGBM",
+    "TransFlowerOrig",
 ]
 
 FLAT_BASELINE_MODELS = ["RF", "SVR", "GBRT", "DGM", "GM_E", "GM_P"]
@@ -66,6 +73,7 @@ TRANSFLOWER_ORIG_CONFIG = TrainingConfig(
     loss_type="ce",
     prediction_mode="normalized",
     use_dest_sampling=False,
+    pair_split_mode="nonzero_pairs",
     use_rle=True,
 )
 
