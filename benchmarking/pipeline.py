@@ -12,6 +12,7 @@ from .config import (
     BASELINE_TRAIN_TIMEOUT_SECONDS,
     SINGLE_CITY_IDS,
     WEIGHTS_DIR,
+    baseline_train_timeout_seconds,
     cleanup_gpu,
 )
 from .data_utils import split_multi_city_ids
@@ -71,7 +72,9 @@ def _train_baseline_model_worker(result_queue, model_name, train_areas, valid_ar
 
 def _train_baseline_model_with_timeout(model_name, train_areas, valid_areas, test_areas,
                                        data_path, gps_loader=None, city_ids=None,
-                                       timeout_seconds=BASELINE_TRAIN_TIMEOUT_SECONDS):
+                                       timeout_seconds=None):
+    if timeout_seconds is None:
+        timeout_seconds = baseline_train_timeout_seconds(model_name)
     if timeout_seconds is None or timeout_seconds <= 0:
         return _train_baseline_model(
             model_name,

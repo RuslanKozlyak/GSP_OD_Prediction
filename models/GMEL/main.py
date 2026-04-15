@@ -226,7 +226,14 @@ def train(train_areas, val_areas, data_path,
         nfeat_scaler, dis_scaler, od_scaler = get_scalers(nf_v, di_v, od_v)
 
     # ── Phase 1: Train GAT encoder ────────────────────────────────────────────
-    gmel = GMEL().to(device)
+    # Infer input feature dimensionality from the data so the GAT encoder
+    # adapts to whichever feature preset the caller built (e.g. 131 vs 139).
+    if single_city_data is not None:
+        in_dim = int(single_city_data['nfeat'].shape[1])
+    else:
+        first_nf, _, _, _ = next(_iter_areas(train_areas))
+        in_dim = int(first_nf.shape[1])
+    gmel = GMEL(in_dim=in_dim).to(device)
     optimizer = torch.optim.Adam(gmel.parameters(), lr=encoder_lr)
 
     # Pre-load and cache data on GPU (avoid rebuilding graphs every epoch)
@@ -369,6 +376,9 @@ def train(train_areas, val_areas, data_path,
                         **average_matrix_split_metrics(train_pred_mats, train_od_mats, 'train'),
                         **average_matrix_split_metrics(val_pred_mats, val_od_mats, 'val'),
                     }
+                del train_pred_mats, train_od_mats, val_pred_mats, val_od_mats
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
         train_losses.append(float(np.mean(ep_losses)))
         val_losses.append(vl)

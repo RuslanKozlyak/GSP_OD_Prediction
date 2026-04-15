@@ -40,7 +40,7 @@ from .config import (
     get_baseline_hyperparams,
     set_global_seed,
     SEED,
-    SVR_MULTI_CITY_MAX_TRAIN_SAMPLES,
+    FLAT_MULTI_CITY_TRAIN_CAPS,
 )
 
 
@@ -530,6 +530,7 @@ def _save_gmel_artifacts(run_id, model_name, gmel, decoder, nfeat_scaler, dis_sc
             'decoder_type': decoder_type,
             'nfeat_scaler': nfeat_scaler,
             'dis_scaler': dis_scaler,
+            'in_dim': int(getattr(gmel, 'in_dim', 131)),
         },
         str(meta_path),
     )
@@ -562,7 +563,7 @@ def _load_gmel_artifacts(run_id):
         decoder = joblib.load(str(decoder_path))
 
     gmel_module = _load_local_module("benchmark_gmel_model", PROJECT_ROOT / "models" / "GMEL" / "model.py")
-    gmel = gmel_module.GMEL().to(device)
+    gmel = gmel_module.GMEL(in_dim=int(meta.get('in_dim', 131))).to(device)
     gmel.load_state_dict(torch.load(str(encoder_path), map_location=device, weights_only=False))
     gmel.eval()
     return gmel, decoder, meta['nfeat_scaler'], meta.get('dis_scaler')
@@ -612,15 +613,16 @@ def train_flat_model(model_name, train_areas, valid_areas, test_areas, data_path
     run_id = run_id or _benchmark_run_id(model_name, train_areas, valid_areas, test_areas)
     feature_mode = "gravity" if model_name in ("GM_E", "GM_P") else DEFAULT_FEATURE_MODE
     multi_city_split = not _is_single_city_split(train_areas, valid_areas, test_areas)
-    cap_svr = model_name == "SVR" and multi_city_split
+    cap_value = FLAT_MULTI_CITY_TRAIN_CAPS.get(model_name) if multi_city_split else None
+    capped = cap_value is not None and cap_value > 0
     payload = _prepare_flat_payload(
         train_areas,
         valid_areas,
         test_areas,
         data_path,
         feature_mode,
-        train_sample_max=SVR_MULTI_CITY_MAX_TRAIN_SAMPLES if cap_svr else None,
-        keep_train_eval=not cap_svr,
+        train_sample_max=cap_value if capped else None,
+        keep_train_eval=not capped,
     )
     module = load_model_main(model_name)
     hp = get_baseline_hyperparams(model_name)
@@ -680,14 +682,15 @@ def infer_flat_model(model_name, train_areas, valid_areas, test_areas, data_path
     run_id = run_id or _benchmark_run_id(model_name, train_areas, valid_areas, test_areas)
     feature_mode = "gravity" if model_name in ("GM_E", "GM_P") else DEFAULT_FEATURE_MODE
     multi_city_split = not _is_single_city_split(train_areas, valid_areas, test_areas)
-    cap_svr = model_name == "SVR" and multi_city_split
+    cap_value = FLAT_MULTI_CITY_TRAIN_CAPS.get(model_name) if multi_city_split else None
+    capped = cap_value is not None and cap_value > 0
     payload = _prepare_flat_payload(
         train_areas,
         valid_areas,
         test_areas,
         data_path,
         feature_mode,
-        keep_train_eval=not cap_svr,
+        keep_train_eval=not capped,
         include_train_fit=False,
     )
     module = load_model_main(model_name)

@@ -56,11 +56,12 @@ class GAT(nn.Module):
 
 
 class GMEL(nn.Module):
-    def __init__(self):
+    def __init__(self, in_dim=131):
         super(GMEL, self).__init__()
 
-        self.gat_in = GAT()
-        self.gat_out = GAT()
+        self.in_dim = in_dim
+        self.gat_in = GAT(in_dim=in_dim)
+        self.gat_out = GAT(in_dim=in_dim)
 
         self.linear_in = nn.Linear(64, 1)
         self.linear_out = nn.Linear(64, 1)

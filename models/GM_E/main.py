@@ -192,6 +192,9 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
                     **average_matrix_split_metrics(train_pred_mats, train_od_mats, 'train'),
                     **average_matrix_split_metrics(val_pred_mats, val_od_mats, 'val'),
                 }
+                del train_pred_mats, train_od_mats, val_pred_mats, val_od_mats
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
         train_losses.append(float(np.mean(ep_losses)))
         val_losses.append(vl)

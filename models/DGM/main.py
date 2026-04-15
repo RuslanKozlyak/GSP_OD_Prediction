@@ -144,6 +144,14 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
     train_cpc_nz_hist = []
     val_cpc_full_hist = []
     val_cpc_nz_hist = []
+    # Computing train-side CPC over 12+ multi-city full matrices every epoch is
+    # the main driver of CUDA OOM. Re-compute it only every N epochs (val side
+    # stays per-epoch so early stopping signal is unchanged).
+    TRAIN_SPLIT_METRIC_EVERY = 5
+    last_train_split = {
+        'CPC_train_full': float('nan'),
+        'CPC_train_nz':   float('nan'),
+    }
     pbar = tqdm(range(max_epochs), desc='DGM', unit='ep', disable=not verbose)
     for ep in pbar:
         net.train()
@@ -195,22 +203,38 @@ def train(x_train, y_train, xs_valid, ys_valid, xs_valid_full=None, ys_valid_ful
                     val_full_mask=val_full_mask,
                 )
             elif multi_city_split_ready:
-                train_pred_mats = []
-                train_od_mats = []
-                for xt, yt in zip(xs_train_full, ys_train_full):
-                    nn = int(np.sqrt(yt.shape[0]))
-                    train_pred_mats.append(_predict_np(xt).reshape(nn, nn))
-                    train_od_mats.append(yt.reshape(nn, nn))
+                # Reuse the predictions computed for the val CPC loop above
+                # instead of re-running _predict_np on every full city.
                 val_pred_mats = []
                 val_od_mats = []
-                for xv, yv in zip(xs_valid_full, ys_valid_full):
+                for pred_full_np, yv in zip(full_preds, ys_valid_full):
                     nn = int(np.sqrt(yv.shape[0]))
-                    val_pred_mats.append(_predict_np(xv).reshape(nn, nn))
+                    val_pred_mats.append(pred_full_np.reshape(nn, nn))
                     val_od_mats.append(yv.reshape(nn, nn))
-                split_metrics = {
-                    **average_matrix_split_metrics(train_pred_mats, train_od_mats, 'train'),
-                    **average_matrix_split_metrics(val_pred_mats, val_od_mats, 'val'),
-                }
+                val_metrics = average_matrix_split_metrics(val_pred_mats, val_od_mats, 'val')
+
+                # Heavy train-side block: only every TRAIN_SPLIT_METRIC_EVERY
+                # epochs. On skipped epochs, reuse the last computed value.
+                if ep % TRAIN_SPLIT_METRIC_EVERY == 0:
+                    train_pred_mats = []
+                    train_od_mats = []
+                    for xt, yt in zip(xs_train_full, ys_train_full):
+                        nn = int(np.sqrt(yt.shape[0]))
+                        train_pred_mats.append(_predict_np(xt).reshape(nn, nn))
+                        train_od_mats.append(yt.reshape(nn, nn))
+                    train_metrics = average_matrix_split_metrics(train_pred_mats, train_od_mats, 'train')
+                    last_train_split = {
+                        'CPC_train_full': train_metrics['CPC_train_full'],
+                        'CPC_train_nz':   train_metrics['CPC_train_nz'],
+                    }
+                    del train_pred_mats, train_od_mats
+                else:
+                    train_metrics = dict(last_train_split)
+
+                split_metrics = {**train_metrics, **val_metrics}
+                del val_pred_mats, val_od_mats
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
         tl = float(np.mean(ep_losses))
         train_losses.append(tl)

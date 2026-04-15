@@ -27,6 +27,21 @@ SEED = 42
 # Per baseline training run. Set to None or <= 0 to disable.
 BASELINE_TRAIN_TIMEOUT_SECONDS = int(1.5 * 60 * 60)
 
+# Per-model timeout overrides (seconds). Models not listed fall back to
+# BASELINE_TRAIN_TIMEOUT_SECONDS. GAN-based baselines require significantly
+# more wall-clock time per epoch.
+BASELINE_TRAIN_TIMEOUT_OVERRIDES = {
+    "GAT_GAN_Orig": 6 * 60 * 60,
+    "ODGN":         6 * 60 * 60,
+}
+
+
+def baseline_train_timeout_seconds(model_name):
+    """Return per-model training timeout, falling back to the shared default."""
+    return BASELINE_TRAIN_TIMEOUT_OVERRIDES.get(
+        model_name, BASELINE_TRAIN_TIMEOUT_SECONDS
+    )
+
 GPS_BENCHMARK_IDS = [
     "SC_GG_CE_NORM_LAPE",
     "SC_GG_MULTITASK_RAW_LOG_LAPE",
@@ -132,6 +147,18 @@ FLAT_BATCH_SIZE = 10_000
 # Cap the multi-city training set before fitting so the subprocess cannot OOM
 # the notebook/VS Code host. Set to None or <= 0 to use all pairs.
 SVR_MULTI_CITY_MAX_TRAIN_SAMPLES = 250_000
+
+# RF / GBRT fit the whole flat OD matrix via sklearn and will not finish in the
+# default 1.5h baseline timeout for multi-city splits. Cap the training set
+# analogously to SVR. Set to None or <= 0 to use all pairs.
+RF_MULTI_CITY_MAX_TRAIN_SAMPLES = 250_000
+GBRT_MULTI_CITY_MAX_TRAIN_SAMPLES = 250_000
+
+FLAT_MULTI_CITY_TRAIN_CAPS = {
+    "SVR":  SVR_MULTI_CITY_MAX_TRAIN_SAMPLES,
+    "RF":   RF_MULTI_CITY_MAX_TRAIN_SAMPLES,
+    "GBRT": GBRT_MULTI_CITY_MAX_TRAIN_SAMPLES,
+}
 
 # ─── Baseline model hyperparameters ──────────────────────────────────────────
 BASELINE_HYPERPARAMS = {
