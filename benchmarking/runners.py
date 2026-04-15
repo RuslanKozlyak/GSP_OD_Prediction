@@ -44,11 +44,48 @@ from .config import (
 )
 
 
-def _predict_flat_array(model, x):
-    pred = model.predict(x) if hasattr(model, 'predict') else model(x)
-    pred = np.asarray(pred).reshape(-1)
-    pred[pred < 0] = 0
-    return pred
+# Chunk size for flat-model inference. Multi-city full matrices can reach
+# ~5M rows x 139 features (~5.6 GB as float64), which OOMs sklearn predictors
+# when passed in one shot — especially RF, whose internal aggregation
+# allocates (n_trees, n_samples) temporaries. Predict in batches instead.
+FLAT_PREDICT_BATCH_SIZE = 200_000
+
+
+def _predict_flat_array(model, x, batch_size=FLAT_PREDICT_BATCH_SIZE, show_progress=False):
+    """Predict on a flat feature matrix in batches.
+
+    Streams predictions through ``model.predict`` (or ``model(x)`` for
+    torch predictors) in chunks of ``batch_size`` rows so we never hold two
+    full copies of a multi-city OD matrix in RAM at once.
+    """
+    x = np.asarray(x)
+    n = x.shape[0]
+    if n == 0:
+        return np.empty((0,), dtype=np.float32)
+
+    predict = model.predict if hasattr(model, 'predict') else model
+
+    # Small arrays: keep the fast path.
+    if batch_size is None or batch_size <= 0 or n <= batch_size:
+        pred = np.asarray(predict(x)).reshape(-1)
+        pred[pred < 0] = 0
+        return pred
+
+    out = np.empty((n,), dtype=np.float32)
+    iterator = range(0, n, batch_size)
+    if show_progress:
+        from tqdm.auto import tqdm
+        iterator = tqdm(
+            iterator,
+            total=(n + batch_size - 1) // batch_size,
+            desc='predict', unit='batch',
+        )
+    for start in iterator:
+        end = min(start + batch_size, n)
+        chunk = np.asarray(predict(x[start:end])).reshape(-1)
+        out[start:end] = chunk
+    out[out < 0] = 0
+    return out
 
 
 def _subsample_flat_training(xs, ys, max_samples, seed=SEED):
